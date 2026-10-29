@@ -3,7 +3,8 @@
 *How hard should the agent think?*
 
 `howhard` chooses the model and the reasoning effort for a task delegated to an AI
-agent. For each task type it learns, from recorded runs, how often each (model, effort) cell
+agent. It uses task descriptions and snapshots of the changing project alongside task
+types. From recorded runs it learns how often each (model, effort) cell
 finishes cleanly, fails loudly (the failure is caught before release by a test gate, a
 refusal or a review) or fails silently (the failure escapes and is found later, or never),
 and what a run costs in tokens and wall time. It then picks the cell with the lowest expected
