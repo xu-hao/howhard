@@ -3,6 +3,7 @@
 import argparse
 import json
 import sys
+from pathlib import Path
 
 from . import __version__
 from .config import EFFORTS
@@ -22,14 +23,20 @@ def parser():
         command.add_argument("--json", action="store_true")
         if name in ("pick", "summary", "observe"):
             command.add_argument("task_type")
+            text_options = command.add_mutually_exclusive_group()
+            text_options.add_argument("--text", help="task description")
+            text_options.add_argument("--text-file", metavar="PATH", help="read the task description from a UTF-8 file")
+            command.add_argument("--project-context", metavar="PATH", help="JSON snapshot or project parameter overrides")
         if name in ("pick", "summary"):
             command.add_argument("--risk", help="optional risk policy override")
         if name == "pick":
             command.add_argument("--seed", type=int)
+            command.add_argument("--save-decision", metavar="PATH", help="copy the decision receipt to a file")
         if name == "observe":
-            command.add_argument("model")
-            command.add_argument("effort", choices=(*EFFORTS, "model_default"))
-            command.add_argument("outcome", choices=("clean", "loud", "silent"))
+            command.add_argument("model", nargs="?", help="model ID, or outcome when the first argument is a decision ID")
+            command.add_argument("effort", nargs="?", choices=(*EFFORTS, "model_default"))
+            command.add_argument("outcome", nargs="?", choices=("clean", "loud", "silent"))
+            command.add_argument("--decision", metavar="ID_OR_PATH", help="use the original task text and project snapshot")
             command.add_argument("--cause", choices=("depth", "capability", "unrecorded"))
             for option, kind in (("tokens", int), ("seconds", float), ("cost-usd", float), ("ticket", str), ("note", str), ("amends", str), ("date", str), ("id", str)):
                 command.add_argument(f"--{option}", type=kind)
@@ -48,6 +55,7 @@ def render(result):
         chosen = result["chosen"]
         lines.append(f"{chosen['model']} ({chosen['family']}) effort={chosen['effort']} seed={result['seed']}")
         lines.append(f"Silent cap: {'met' if result['cap_met'] else 'UNMET'}")
+        lines.append(f"Decision: {result['decision_id']} (record with: howhard observe {result['decision_id']} clean)")
         if result["needs_review"]:
             lines.append("Independent review is required before release.")
     lines.append(f"Task: {result['task_type']}  Risk: {result['risk_class']}  Constants: {json.dumps(result['constants'], sort_keys=True)}")
@@ -71,13 +79,34 @@ def main(argv=None):
     args = parser().parse_args(argv)
     try:
         engine = Engine(args.config, cache_path=args.cache, journal_path=args.journal)
+        context_options = {}
+        if args.command in ("pick", "summary", "observe"):
+            if args.text_file is not None:
+                context_options["task_text"] = Path(args.text_file).read_text(encoding="utf-8")
+            elif args.text is not None:
+                context_options["task_text"] = args.text
+            if args.project_context is not None:
+                try:
+                    context_options["project_context"] = json.loads(Path(args.project_context).read_bytes())
+                except (ValueError, UnicodeError) as exc:
+                    raise HowHardError("project_context: expected valid JSON") from exc
         if args.command == "pick":
-            result = engine.pick(args.task_type, risk=args.risk, seed=args.seed)
+            result = engine.pick(args.task_type, risk=args.risk, seed=args.seed, **context_options)
+            if args.save_decision is not None:
+                engine.save_decision(result["decision_id"], args.save_decision)
         elif args.command == "summary":
-            result = engine.summary(args.task_type, risk=args.risk)
+            result = engine.summary(args.task_type, risk=args.risk, **context_options)
         elif args.command == "observe":
             options = {key: getattr(args, key) for key in ("cause", "tokens", "seconds", "cost_usd", "ticket", "note", "amends", "date", "id") if getattr(args, key) is not None}
-            result = {"observed": engine.observe(args.task_type, args.model, args.effort, args.outcome, **options), "fit": engine.posterior.statistics}
+            if args.effort is None and args.outcome is None:
+                if args.model not in ("clean", "loud", "silent") or args.decision is not None or context_options:
+                    raise HowHardError("observe: expected DECISION_ID OUTCOME, or TASK_TYPE MODEL EFFORT OUTCOME")
+                observed = engine.observe_decision(args.task_type, args.model, **options)
+            elif args.model is not None and args.effort is not None and args.outcome is not None:
+                observed = engine.observe(args.task_type, args.model, args.effort, args.outcome, decision=args.decision, **context_options, **options)
+            else:
+                raise HowHardError("observe: expected DECISION_ID OUTCOME, or TASK_TYPE MODEL EFFORT OUTCOME")
+            result = {"observed": observed, "fit": engine.posterior.statistics}
         elif args.command == "flush":
             ids = engine.flush()
             result = {"moved": len(ids), "ids": ids, "fit": engine.posterior.statistics}

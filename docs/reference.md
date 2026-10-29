@@ -34,6 +34,10 @@ come entirely from the packaged TOML, optionally overridden by an advanced proje
 At the prior mode, contract work at opus/high is 60% clean, 35% loud and 5% silent;
 probability means differ because the prior is uncertain.
 
+Contextual runs add shared, family-specific and effort-specific slopes on task-text
+and project-snapshot features. The cost and time regressions add shared context slopes.
+See the [context contract](context.md) for the complete encoding and historical semantics.
+
 `fit(prior, rows, start=None)` uses weighted multinomial likelihood, exact gradients and
 Hessians, Newton steps with step halving, and an absolute maximum Newton step below
 `1e-9`. It refuses after 100 iterations. The joint covariance is the inverse negative
@@ -66,7 +70,7 @@ pricing. Its model ids, effort support and prices were checked on 2026-10-29 aga
 
 ## Records and amendments
 
-Every JSONL row requires exactly these keys:
+Every JSONL row requires these base keys:
 
 | Key | Value |
 | --- | --- |
@@ -86,6 +90,8 @@ Every JSONL row requires exactly these keys:
 | `amends` | Earlier row id or null |
 
 Types, enums, missing keys and extra keys are strict. Errors name the file, line and key.
+Contextual rows additionally store `task_text`, `project_context` and `context_encoder`
+together, with optional `decision_id`. Legacy rows keep their missing context.
 Amendments are new silent rows with null measurement and cost fields. Chains change the
 original run's outcome once, retaining its original cell, task, project, weight and
 measurements. Raw rows remain intact. Targets within a file must precede their amendments.
@@ -114,7 +120,8 @@ A changed prior, invalid cache or missing cache starts a full fit. Cache deletio
 reproduces the posterior. `fit.kind` and `fit.iterations` describe the current call.
 An `Engine` is a snapshot: call `refresh()` after external writes.
 
-Exports use `howhard-prior-v1`, vocabularies, labeled means, full shared covariances and
+Legacy exports use `howhard-prior-v1`; contextual exports use `howhard-prior-v2` with
+encoder and feature vocabulary validation. Both contain labeled means, full shared covariances and
 the fixed noise sds. Covariances are multiplied by `transfer.variance_inflation`, default
 2.0. Project terms are excluded by label. Imports validate all keys, names, numerical
 shapes, symmetry and positive definiteness before replacing the destination atomically.
@@ -129,14 +136,15 @@ local policy, retaining their transferred distributions.
 from howhard import Engine
 
 engine = Engine()  # optional config path or directory=...
-choice = engine.pick("specified-implementation", seed=42)
-table = engine.summary("specified-implementation")
-engine.observe("specified-implementation", "claude-opus-5-5", "high", "clean")
+description = "Make transaction rollback safe"
+choice = engine.pick("specified-implementation", description, seed=42)
+table = engine.summary("specified-implementation", description)
+engine.observe_decision(choice["decision_id"], "clean")
 engine.flush()
 engine.export_prior("shared-prior.json")
 ```
 
-Reuse the engine for repeated picks: its deterministic summaries are memoized until
-refresh. `engine.prior` and `engine.posterior` expose labeled means, covariances and fit
+Reuse the engine for repeated picks: deterministic summaries are memoized by task text
+and freshly captured project context until refresh. `engine.prior` and `engine.posterior` expose labeled means, covariances and fit
 statistics. The package runs on Python 3.11+ on POSIX systems (the storage lock uses
 `fcntl`). Runtime dependencies are limited to NumPy.

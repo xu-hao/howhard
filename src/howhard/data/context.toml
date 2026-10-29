@@ -1,0 +1,37 @@
+format = "howhard-context-v1"
+task_buckets = 32
+project_buckets = 16
+word_limit = 2048
+text_limit = 16384
+file_limit = 10000
+source_files = 16
+source_chars = 512
+
+[priors.outcome]
+mean = 0.0 # Context effects start centered on the existing categorical model.
+sd = 0.35 # Shared context uncertainty.
+[priors.interaction]
+mean = 0.0 # Family and effort slopes are learned from contextual runs.
+sd = 0.25 # Shrink interactions until there is evidence.
+[priors.silent]
+mean = 0.0 # Rare escaped failures start with smaller contextual uncertainty.
+sd = 0.1 # Avoid overwhelming existing calibrated silent-failure effects.
+[priors.silent_interaction]
+mean = 0.0 # No initial model-specific or effort-specific context departure.
+sd = 0.07 # Stronger shrinkage for rarely observed escaped failures.
+[priors.tokens]
+mean = 0.0 # No initial change in log token volume.
+sd = 0.4 # Contextual log-token uncertainty.
+[priors.time]
+mean = 0.0 # No initial change in log elapsed time.
+sd = 0.4 # Contextual log-time uncertainty.
+
+[scales]
+task_length = 16384
+task_lines = 128
+files = 10000
+source_bytes = 100000000
+languages = 16
+test_files = 1000
+manifests = 32
+changed_files = 1000

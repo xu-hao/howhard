@@ -6,6 +6,7 @@ import numpy as np
 from .gaussian import Gaussian, inverse
 from .prior import design
 from .validation import HowHardError
+from .context import FEATURE_NAMES, row_context
 
 
 def probabilities(eta):
@@ -42,15 +43,15 @@ def fit(prior, rows, start=None):
     # Canonical aggregation removes input order from every floating-point operation.
     grouped = {}
     for row in rows:
-        key = (row["task_type"], row["family"], row["resolved_effort"], row["project"], row["outcome"])
+        context = tuple(row_context(row).values()) if prior.has_context else ()
+        key = (row["task_type"], row["family"], row["resolved_effort"], row["project"], context, row["outcome"])
         grouped.setdefault(key, []).append(row["weight"])
-    cells = sorted({key[:4] for key in grouped})
+    cells = sorted({key[:5] for key in grouped})
     positions = {cell: i for i, cell in enumerate(cells)}
     counts = np.zeros((len(cells), 3))
     for key in sorted(grouped):
-        counts[positions[key[:4]], ("clean", "loud", "silent").index(key[4])] = math.fsum(sorted(grouped[key]))
-    x = design(distribution, "outcome", cells)
-    precision = inverse(covariance)
+        counts[positions[key[:5]], ("clean", "loud", "silent").index(key[5])] = math.fsum(sorted(grouped[key]))
+    x = design(distribution, "outcome", [c[:4] for c in cells], [dict(zip(FEATURE_NAMES, c[4])) for c in cells])
     beta = mean.copy()
     if isinstance(start, Gaussian):
         lookup = dict(zip(start.labels, start.mean))
@@ -59,15 +60,35 @@ def fit(prior, rows, start=None):
         beta = np.array(start, dtype=float, copy=True)
     if beta.shape != mean.shape or not np.all(np.isfinite(beta)):
         raise HowHardError("fit.start: invalid mode shape or values")
+    # Integrate inactive coefficients under their joint normal prior. This is an
+    # exact marginalization, including imported correlations, not an online fit.
+    # It avoids solving for every unused task/model/context interaction on tiny logs.
+    original_mean, original_covariance = mean, covariance
+    active = np.flatnonzero(np.any(x != 0, axis=0))
+    inactive = np.setdiff1d(np.arange(len(mean)), active)
+    covariance = covariance[np.ix_(active, active)]
+    precision = inverse(covariance)
+    mean, beta, x = mean[active], beta[active], x[:, active]
+    independent = not np.any(original_covariance[np.ix_(inactive, active)])
+    transform = None if independent else original_covariance[:, active] @ precision
     for iteration in range(1, 101):
         value, gradient, hessian = objective(beta, mean, precision, x, counts)
         step = np.linalg.solve(hessian, gradient)
-        final_step = float(np.max(np.abs(step)))
+        final_step = float(np.max(np.abs(step if independent else transform @ step)))
         if final_step < 1e-9:
             # Take the converged Newton step, then evaluate curvature at that point.
             beta -= step
             hessian = objective(beta, mean, precision, x, counts)[2]
-            return Gaussian(distribution.labels, beta, inverse(hessian), {"kind": kind, "iterations": iteration, "final_step": final_step})
+            active_covariance = inverse(hessian)
+            full_mean, full_covariance = original_mean.copy(), original_covariance.copy()
+            if independent:
+                full_mean[active] = beta
+                full_covariance[np.ix_(active, active)] = active_covariance
+            else:
+                full_mean += transform @ (beta - mean)
+                full_covariance += transform @ (active_covariance - covariance) @ transform.T
+                full_covariance = (full_covariance + full_covariance.T) / 2
+            return Gaussian(distribution.labels, full_mean, full_covariance, {"kind": kind, "iterations": iteration, "final_step": final_step})
         scale = 1.0
         while scale > 2 ** -40:
             candidate = beta - scale * step

@@ -3,7 +3,8 @@
 *How hard should the agent think?*
 
 `howhard` chooses the model and the reasoning effort for a task delegated to an AI
-agent. For each task type it learns, from recorded runs, how often each (model, effort) cell
+agent. It uses task descriptions and snapshots of the changing project alongside task
+types. From recorded runs it learns how often each (model, effort) cell
 finishes cleanly, fails loudly (the failure is caught before release by a test gate, a
 refusal or a review) or fails silently (the failure escapes and is found later, or never),
 and what a run costs in tokens and wall time. It then picks the cell with the lowest expected
@@ -23,13 +24,15 @@ It works without configuration or statistical parameter tuning:
 
 ```sh
 python -m pip install .
-howhard pick specified-implementation
-howhard observe specified-implementation claude-opus-5-5 high clean
+howhard pick specified-implementation --text "Make transaction rollback safe"
+# Execute the task with the chosen cell, then use the printed decision ID:
+howhard observe DECISION_ID clean
 howhard summary specified-implementation
 howhard flush
 ```
 
-Record the model and effort actually used by the run. Defaults include a model registry,
+Decision receipts preserve task text and project context from before the task ran.
+The project is inspected again for each new decision. Defaults include a model registry,
 prices, task taxonomy, risk policies and priors. Learning is local to `.howhard/` in the
 working directory. New task names start with the standard policy. If the silent-failure
 cap cannot be met, the default recommendation requires independent review before release.
@@ -41,11 +44,13 @@ Use `--json` for automation and `--seed N` to reproduce a pick. There are six co
 from howhard import Engine
 
 engine = Engine()
-choice = engine.pick("specified-implementation", seed=42)
+choice = engine.pick("specified-implementation", "Make transaction rollback safe", seed=42)
 ```
 
 See the [quickstart](docs/quickstart.md), [documentation index](docs/index.md),
 [model and storage contracts](docs/reference.md), and [changelog](CHANGELOG.md).
+The [context architecture](docs/context.md) explains text features, changing project
+snapshots, receipts and the local lexical encoder's limits.
 Python 3.11+ and a POSIX platform are required. Run tests with
 `python -m pip install -e '.[test]'` followed by `python -m pytest`;
 contributors use [AGCoord and isolated worktrees](docs/contributing.md).
