@@ -4,7 +4,7 @@ Install from a checkout with Python 3.11 or later:
 
 ```sh
 python -m pip install .
-howhard pick specified-implementation
+howhard pick specified-implementation --text "Make transaction rollback safe"
 ```
 
 The result names a concrete model and effort, prints its seed, and explains the expected
@@ -12,13 +12,14 @@ cost and uncertainty of the alternatives. Run the delegated task with that choic
 record what happened:
 
 ```sh
-howhard observe specified-implementation claude-opus-5-5 high clean
-howhard pick specified-implementation
+howhard observe DECISION_ID clean
+howhard pick specified-implementation --text "Repair a failing fixture"
 howhard summary specified-implementation
 howhard flush
 ```
 
-Use the model and effort actually used by the run when recording it. `clean` means no
+Replace `DECISION_ID` with the receipt ID printed by `pick`. It preserves the task text,
+chosen model/effort and project snapshot while the task changes the repository. `clean` means no
 defect was found. `loud` means a gate or review caught a defect before release or live use.
 `silent` means a defect escaped. Optional `--tokens` and `--seconds` measurements help it
 learn running cost and waiting time too. Without measurements it still learns outcomes.
@@ -55,6 +56,10 @@ Transfer contains shared statistical terms and generic names, with uncertainty i
 for a new project. It excludes run records, notes, tickets, concrete model ids and project
 effects. Review names of custom task types before sharing: they are part of the vocabulary.
 Without configuration, imported custom types use the standard class for local policy.
+
+See [task text and project context](context.md) for `--text-file`, receipt files,
+optional project parameters and the encoder's lexical limits. The project is re-inspected
+for every decision, and historical training rows retain their captured snapshots.
 
 The built-in registry is a dated planning snapshot, not a live quote. All defaults are
 maintained by the package; users do not need to tune statistical parameters.

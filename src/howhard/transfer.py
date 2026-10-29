@@ -10,6 +10,7 @@ from .config import EFFORTS
 from .validation import HowHardError, keys, number, text
 
 FORMAT = "howhard-prior-v1"
+CONTEXT_FORMAT = "howhard-prior-v2"
 
 
 def atomic_write(path, data):
@@ -43,21 +44,34 @@ def allowed_labels(vocab):
         outcome.update(f"{kind}.u.{t}" for t in tasks)
         outcome.update(f"{kind}.w.{t}.{m}" for t in tasks for m in families)
         outcome.update(f"{kind}.v.{t}.{e}" for t in tasks for e in efforts)
+        for feature in vocab.get("features", []):
+            outcome.add(f"{kind}.x.{feature}")
+            outcome.update(f"{kind}.x_family.{m}.{feature}" for m in families)
+            outcome.update(f"{kind}.x_effort.{e}.{feature}" for e in efforts)
     result = {"outcome": outcome}
     for block in ("tokens", "time"):
         result[block] = ({f"{block}.task.{t}" for t in tasks} |
                          {f"{block}.family.{m}" for m in families} |
                          {f"{block}.effort.{e}" for e in efforts})
+        result[block].update(f"{block}.x.{feature}" for feature in vocab.get("features", []))
     return result
 
 
 def validate_export(value, config):
-    keys(value, ["format", "vocabularies", "blocks", "noise_sds"], where="import")
-    if value["format"] != FORMAT:
+    from .context import FORMAT as ENCODER, FEATURE_NAMES
+    keys(value, ["format", "vocabularies", "blocks", "noise_sds"], ["context_encoder"], where="import")
+    if value["format"] not in (FORMAT, CONTEXT_FORMAT):
         raise HowHardError("import.format: unsupported format version")
+    contextual = value["format"] == CONTEXT_FORMAT
+    if contextual and value.get("context_encoder") != ENCODER:
+        raise HowHardError("import.context_encoder: unsupported or missing encoder")
+    if not contextual and "context_encoder" in value:
+        raise HowHardError("import.context_encoder: unexpected in a legacy prior")
     vocab = value["vocabularies"]
-    keys(vocab, ["families", "efforts", "task_types"], where="import.vocabularies")
-    known = {"families": config.prior["families"], "efforts": EFFORTS, "task_types": config.task_types}
+    keys(vocab, ["families", "efforts", "task_types", *(["features"] if contextual else [])], where="import.vocabularies")
+    if contextual and vocab["features"] != list(FEATURE_NAMES):
+        raise HowHardError("import.vocabularies.features: incompatible encoder features")
+    known = {"families": config.prior["families"], "efforts": EFFORTS, "task_types": config.task_types, "features": FEATURE_NAMES}
     for key, names in vocab.items():
         if not isinstance(names, list) or not names or any(not isinstance(n, str) for n in names):
             raise HowHardError(f"import.vocabularies.{key}: expected names")
@@ -113,6 +127,11 @@ def export_prior(posterior, config, path):
     value = {"format": FORMAT, "vocabularies": {
         "families": list(config.prior["families"]), "efforts": list(config.prior["efforts"]),
         "task_types": sorted(posterior.prior.task_types)}, "blocks": {}, "noise_sds": posterior.prior.noise.copy()}
+    if posterior.prior.has_context:
+        from .context import FORMAT as ENCODER, FEATURE_NAMES
+        value["format"] = CONTEXT_FORMAT
+        value["context_encoder"] = ENCODER
+        value["vocabularies"]["features"] = list(FEATURE_NAMES)
     for block in ("outcome", "tokens", "time"):
         source = getattr(posterior, block)
         indices = [i for i, label in enumerate(source.labels) if shared(label)]
