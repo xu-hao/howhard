@@ -1,0 +1,6 @@
+include AGENTS.md CHANGELOG.md
+include .readthedocs.yaml
+recursive-include docs *.md *.py *.txt
+recursive-exclude docs/_build *
+recursive-include scripts *
+recursive-include tests *.py

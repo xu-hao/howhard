@@ -1,0 +1,142 @@
+# Model and storage contracts
+
+## Selection
+
+For task type `t`, family `m`, effort `e` and risk class `r`, minimize
+
+```text
+J = C_run + P_loud * C_loud + P_silent * C_silent + lambda_per_hour * T
+```
+
+Costs are USD, and `T` is hours. Families and efforts are categorical axes. The selector
+uses 4,000 joint posterior draws with a fixed internal seed for deterministic means and
+95% intervals. It uses the 97.5th percentile of `P_silent` for admissibility. One fresh
+joint posterior draw chooses the admissible cell with the smallest sampled `J`.
+`explore_within`, when supplied, limits eligible cells by expected `J`.
+
+The `flag-review` fallback samples among all cells and sets `needs_review` when no cell is
+admissible. `lowest-bound` instead selects the lowest upper bound. The result includes the
+seed, chosen concrete id, family, effort, class constants, cap status, every candidate's
+probabilities, expected running cost, time, total cost, sampled cost, and explanations for
+cheaper cells. Explanation components are signed differences and sum to the sampled cost
+difference. Policy filters are explained separately. `summary` performs no Thompson draw.
+
+## Outcome posterior
+
+For each of `loud` and `silent`, the linear predictor is
+
+```text
+a + b[m] + c[e] + d[m,e] + u[t] + w[t,m] + v[t,e] + pi[p] + pi_task[p,t]
+```
+
+Softmax with the clean reference gives the three outcome probabilities. Normal priors
+come entirely from the packaged TOML, optionally overridden by an advanced project.
+At the prior mode, contract work at opus/high is 60% clean, 35% loud and 5% silent;
+probability means differ because the prior is uncertain.
+
+`fit(prior, rows, start=None)` uses weighted multinomial likelihood, exact gradients and
+Hessians, Newton steps with step halving, and an absolute maximum Newton step below
+`1e-9`. It refuses after 100 iterations. The joint covariance is the inverse negative
+log-posterior Hessian at the mode. Full covariance imports are supported. Canonical cell
+aggregation makes the result independent of row order. Every run's evidence weight comes
+from its concrete model's registry entry. Project and project/task departures are fitted
+but never transferred.
+
+## Cost and time
+
+Two independent exact conjugate normal regressions model log total tokens and log seconds:
+
+```text
+task[t] + family[m] + effort[e] + project[p] + normal noise
+```
+
+Only non-null measurements enter the corresponding regression. Zero measurements use
+a one-token or one-second floor before taking a logarithm. The fixed noise sds are in
+TOML. Conditional expected measurements are `exp(mu + noise_sd**2/2)`;
+posterior draws also account for coefficient uncertainty. Tokens include all cached and
+uncached input and output. `cost_usd` is retained for reporting and never fitted.
+
+Model prices and the token mix are data. A blended USD-per-million price or five component
+prices plus shares summing to one are accepted. Missing prices are refused on selection.
+The built-in planning snapshot uses a cache-heavy mix and conservative long-prompt Haiku
+pricing. Its model ids, effort support and prices were checked on 2026-10-29 against
+[Anthropic's model registry](https://platform.claude.com/docs/en/models/overview),
+[effort documentation](https://platform.claude.com/docs/en/build-with-claude/effort) and
+[pricing](https://platform.claude.com/docs/en/about-claude/pricing).
+
+## Records and amendments
+
+Every JSONL row requires exactly these keys:
+
+| Key | Value |
+| --- | --- |
+| `id` | Nonempty string, unique across logs and journal |
+| `date` | `YYYY-MM-DD` |
+| `ticket` | String or null |
+| `task_type` | Known task name; zero-config also accepts new names as standard |
+| `risk_class` | Recorded risk class; fitting uses the current mapping |
+| `model` | Concrete id from the registry |
+| `effort` | low, medium, high, xhigh, max, or model_default |
+| `default_effort` | Historical resolved effort for model_default, otherwise null |
+| `outcome` | clean, loud or silent |
+| `cause` | Null for clean; depth, capability or unrecorded otherwise |
+| `tokens` | Nonnegative integer or null |
+| `seconds`, `cost_usd` | Finite nonnegative number or null |
+| `note` | String, possibly empty |
+| `amends` | Earlier row id or null |
+
+Types, enums, missing keys and extra keys are strict. Errors name the file, line and key.
+Amendments are new silent rows with null measurement and cost fields. Chains change the
+original run's outcome once, retaining its original cell, task, project, weight and
+measurements. Raw rows remain intact. Targets within a file must precede their amendments.
+Across files, targets must exist, have dates no later than their amendments, and form an
+acyclic dependency graph. Dependency ordering keeps amendments valid when flushing moves
+them into the first log ahead of a target in an additional log.
+
+`flush` validates all files before writing. Duplicate refusals list every duplicate and
+leave log and journal unchanged. It appends, fsyncs the log, then truncates and fsyncs the
+journal. A shared advisory lock serializes storage commands within a project. A crash
+between append and truncate can leave duplicate rows, which are refused on the next read;
+there is no claim of an atomic transaction across two files. Preserve a copy and remove
+the already-flushed journal entries after comparing their ids with the log.
+
+## Cache and transfer
+
+The atomic NPZ cache stores labels, distributions, hashes, format and fit statistics.
+SHA-256 covers the format, prior bytes, imported bytes, effective settings and registry,
+and the bytes of every configured log plus the journal. Configuration is included because
+weights, task mappings and project identities affect the posterior. Length prefixes keep
+file boundaries distinct. Row reordering changes the data hash, but never the fit.
+
+A matching cache performs zero fitting. Changed data with the same prior warm-starts the
+same all-row Newton fit, matching labels and initializing new terms at their prior means.
+A changed prior, invalid cache or missing cache starts a full fit. Cache deletion
+reproduces the posterior. `fit.kind` and `fit.iterations` describe the current call.
+An `Engine` is a snapshot: call `refresh()` after external writes.
+
+Exports use `howhard-prior-v1`, vocabularies, labeled means, full shared covariances and
+the fixed noise sds. Covariances are multiplied by `transfer.variance_inflation`, default
+2.0. Project terms are excluded by label. Imports validate all keys, names, numerical
+shapes, symmetry and positive definiteness before replacing the destination atomically.
+Shared terms absent from the file use hand-set priors. New-project terms always use
+their independent hand-set priors. With explicit configuration, register custom task
+types before importing them. Zero-config imports accept custom type names with standard
+local policy, retaining their transferred distributions.
+
+## Python API
+
+```python
+from howhard import Engine
+
+engine = Engine()  # optional config path or directory=...
+choice = engine.pick("specified-implementation", seed=42)
+table = engine.summary("specified-implementation")
+engine.observe("specified-implementation", "claude-opus-5-5", "high", "clean")
+engine.flush()
+engine.export_prior("shared-prior.json")
+```
+
+Reuse the engine for repeated picks: its deterministic summaries are memoized until
+refresh. `engine.prior` and `engine.posterior` expose labeled means, covariances and fit
+statistics. The package runs on Python 3.11+ on POSIX systems (the storage lock uses
+`fcntl`). Runtime dependencies are limited to NumPy.
