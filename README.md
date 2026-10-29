@@ -1,6 +1,8 @@
-# subagent-choice
+# howhard
 
-`subagent-choice` chooses the model and the reasoning effort for a task delegated to an AI
+*How hard should the agent think?*
+
+`howhard` chooses the model and the reasoning effort for a task delegated to an AI
 agent. For each task type it learns, from recorded runs, how often each (model, effort) cell
 finishes cleanly, fails loudly (the failure is caught before release by a test gate, a
 refusal or a review) or fails silently (the failure escapes and is found later, or never),
@@ -16,7 +18,7 @@ by Thompson sampling from the posterior, so cheaper cells keep being tried. A pr
 export what it has learned about generic task types as a prior for another project, without
 exporting any of its records.
 
-The package is plain Python with NumPy and ships a command-line tool, `subagent-choice`.
+The package is plain Python with NumPy and ships a command-line tool, `howhard`; for example, `howhard pick <task-type>`.
 
 ## Status
 
