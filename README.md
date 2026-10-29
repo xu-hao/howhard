@@ -18,9 +18,34 @@ by Thompson sampling from the posterior, so cheaper cells keep being tried. A pr
 export what it has learned about generic task types as a prior for another project, without
 exporting any of its records.
 
-The package is plain Python with NumPy and ships a command-line tool, `howhard`; for example, `howhard pick <task-type>`.
+The package is plain Python with NumPy and ships a command-line tool, `howhard`.
+It works without configuration or statistical parameter tuning:
 
-## Status
+```sh
+python -m pip install .
+howhard pick specified-implementation
+howhard observe specified-implementation claude-opus-5-5 high clean
+howhard summary specified-implementation
+howhard flush
+```
 
-Under construction. The build plan and acceptance criteria are tracked in this repository's
-issues.
+Record the model and effort actually used by the run. Defaults include a model registry,
+prices, task taxonomy, risk policies and priors. Learning is local to `.howhard/` in the
+working directory. New task names start with the standard policy. If the silent-failure
+cap cannot be met, the default recommendation requires independent review before release.
+
+Use `--json` for automation and `--seed N` to reproduce a pick. There are six commands:
+`pick`, `summary`, `observe`, `flush`, `export-prior` and `import-prior`.
+
+```python
+from howhard import Engine
+
+engine = Engine()
+choice = engine.pick("specified-implementation", seed=42)
+```
+
+See the [quickstart](docs/quickstart.md), [documentation index](docs/index.md),
+[model and storage contracts](docs/reference.md), and [changelog](CHANGELOG.md).
+Python 3.11+ and a POSIX platform are required. Run tests with
+`python -m pip install -e '.[test]'` followed by `python -m pytest`;
+contributors use [AGCoord and isolated worktrees](docs/contributing.md).
