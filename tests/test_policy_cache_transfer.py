@@ -42,7 +42,7 @@ def test_explore_within_limits_expected_cost_and_explains_filter(project):
 def test_cap_explanations_and_json_schema(project):
     config = project(rows=[row(i, task="cheap", family="haiku", effort="low") for i in range(30)])
     result = Engine(config).pick("cheap", seed=1)
-    assert set(result) == {"task_type", "risk_class", "constants", "cells", "fit", "chosen", "seed", "cap_met", "needs_review", "why"}
+    assert set(result) == {"task_type", "risk_class", "constants", "cells", "fit", "chosen", "seed", "cap_met", "needs_review", "why", "context", "decision_id"}
     assert result["cells"] == sorted(result["cells"], key=lambda c: (c["C_run"], c["family"], c["effort"]))
     assert all(set(c) == {"model", "family", "effort", "P_clean", "P_loud", "P_silent", "C_run", "T", "J", "sampled_J", "admissible"} for c in result["cells"])
 

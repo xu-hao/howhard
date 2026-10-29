@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.0 — 2026-10-29
+
+- Condition predictions on task descriptions and project snapshots that are captured
+  afresh for every decision, including working-tree changes and optional measured coverage.
+- Learn shared, family-specific and effort-specific contextual outcome effects, plus
+  contextual token and time effects, using a deterministic local lexical encoder.
+- Save decision receipts so later observations keep the original task and project
+  context. Add task-text/file inputs and `observe DECISION_ID OUTCOME` to the CLI.
+- Preserve missing context in legacy rows, retain original context on amendments,
+  and version caches and prior transfers without exporting raw text or snapshots.
+- Marginalize inactive coefficients exactly to keep fitting practical on small logs.
+
 ## 0.1.0 — 2026-10-29
 
 - Start without configuration: packaged registry, prices, risk policies and priors,

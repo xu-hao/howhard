@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from .gaussian import Gaussian
+from .context import FEATURE_NAMES, SETTINGS
 
 
 @dataclass
@@ -15,9 +16,10 @@ class Prior:
     config: object
     task_types: dict
     projects: tuple
+    has_context: bool = False
 
 
-def build_prior(config, rows=(), *, extra_types=None, imported=None):
+def build_prior(config, rows=(), *, extra_types=None, imported=None, contextual=None):
     p = config.prior
     families, efforts = p["families"], p["efforts"]
     tasks = {**config.task_types, **(extra_types or {})}
@@ -25,6 +27,8 @@ def build_prior(config, rows=(), *, extra_types=None, imported=None):
         tasks.setdefault(row["task_type"], "standard")
     tasks = dict(sorted(tasks.items()))
     projects = tuple(sorted({config.data["project"], *(log["project"] for log in config.data["logs"])}))
+    if contextual is None:
+        contextual = any("context_encoder" in row for row in rows) or bool(imported and "context_encoder" in imported)
     blocks = {}
     for block in ("outcome", "tokens", "time"):
         labels, means, variances = [], [], []
@@ -65,6 +69,20 @@ def build_prior(config, rows=(), *, extra_types=None, imported=None):
                 add(f"{block}.effort.{e}", specs["effort"], specs["effort"]["means"][i])
             for project in projects:
                 add(f"{block}.project.{project}", specs["project"])
+        if contextual:
+            if block == "outcome":
+                for kind in ("loud", "silent"):
+                    for feature in FEATURE_NAMES:
+                        add(f"{kind}.x.{feature}", SETTINGS["priors"]["silent" if kind == "silent" else "outcome"])
+                    for family in families:
+                        for feature in FEATURE_NAMES:
+                            add(f"{kind}.x_family.{family}.{feature}", SETTINGS["priors"]["silent_interaction" if kind == "silent" else "interaction"])
+                    for effort in efforts:
+                        for feature in FEATURE_NAMES:
+                            add(f"{kind}.x_effort.{effort}.{feature}", SETTINGS["priors"]["silent_interaction" if kind == "silent" else "interaction"])
+            else:
+                for feature in FEATURE_NAMES:
+                    add(f"{block}.x.{feature}", SETTINGS["priors"][block])
         distribution = Gaussian(tuple(labels), np.array(means, dtype=float), np.diag(variances))
         if imported:
             source = imported["blocks"][block]
@@ -76,7 +94,7 @@ def build_prior(config, rows=(), *, extra_types=None, imported=None):
                 distribution.covariance[np.ix_(dest, dest)] = np.asarray(source["covariance"])[np.ix_(src, src)]
         blocks[block] = distribution
     noise = imported["noise_sds"].copy() if imported else {b: p[b]["noise_sd"] for b in ("tokens", "time")}
-    return Prior(**blocks, noise=noise, config=config, task_types=tasks, projects=projects)
+    return Prior(**blocks, noise=noise, config=config, task_types=tasks, projects=projects, has_context=contextual)
 
 
 def cell_labels(block, task, family, effort, project):
@@ -87,10 +105,22 @@ def cell_labels(block, task, family, effort, project):
     return [[f"{block}.task.{task}", f"{block}.family.{family}", f"{block}.effort.{effort}", f"{block}.project.{project}"]]
 
 
-def design(distribution, block, cells):
+def design(distribution, block, cells, contexts=None):
     lookup = {label: i for i, label in enumerate(distribution.labels)}
     matrix = np.zeros((len(cells) * (2 if block == "outcome" else 1), len(lookup)))
     for i, cell in enumerate(cells):
         for k, labels in enumerate(cell_labels(block, *cell)):
             matrix[i * (2 if block == "outcome" else 1) + k, [lookup[label] for label in labels]] = 1
+        if contexts is not None:
+            for feature, value in contexts[i].items():
+                if not value:
+                    continue
+                _, family, effort, _ = cell
+                for k, kind in enumerate(("loud", "silent") if block == "outcome" else (block,)):
+                    labels = [f"{kind}.x.{feature}"]
+                    if block == "outcome":
+                        labels += [f"{kind}.x_family.{family}.{feature}", f"{kind}.x_effort.{effort}.{feature}"]
+                    for label in labels:
+                        if label in lookup:
+                            matrix[i * (2 if block == "outcome" else 1) + k, lookup[label]] = value
     return matrix
