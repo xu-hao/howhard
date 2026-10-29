@@ -136,14 +136,15 @@ local policy, retaining their transferred distributions.
 from howhard import Engine
 
 engine = Engine()  # optional config path or directory=...
-choice = engine.pick("specified-implementation", seed=42)
-table = engine.summary("specified-implementation")
-engine.observe("specified-implementation", "claude-opus-5-5", "high", "clean")
+description = "Make transaction rollback safe"
+choice = engine.pick("specified-implementation", description, seed=42)
+table = engine.summary("specified-implementation", description)
+engine.observe_decision(choice["decision_id"], "clean")
 engine.flush()
 engine.export_prior("shared-prior.json")
 ```
 
-Reuse the engine for repeated picks: its deterministic summaries are memoized until
-refresh. `engine.prior` and `engine.posterior` expose labeled means, covariances and fit
+Reuse the engine for repeated picks: deterministic summaries are memoized by task text
+and freshly captured project context until refresh. `engine.prior` and `engine.posterior` expose labeled means, covariances and fit
 statistics. The package runs on Python 3.11+ on POSIX systems (the storage lock uses
 `fcntl`). Runtime dependencies are limited to NumPy.
