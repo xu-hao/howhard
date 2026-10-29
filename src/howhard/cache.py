@@ -10,7 +10,7 @@ import numpy as np
 from .gaussian import Gaussian
 from .transfer import atomic_write
 
-FORMAT = "howhard-cache-v1"
+FORMAT = "howhard-cache-v2"
 
 
 @dataclass
@@ -33,7 +33,8 @@ def hashes(config, blobs, imported_bytes):
             h.update(part)
         return h.hexdigest()
     # Configuration affects weights, class assignments and project identities too.
-    prior_hash = digest([FORMAT.encode(), config.source_bytes, config.prior_bytes,
+    from .config import packaged
+    prior_hash = digest([FORMAT.encode(), packaged("context.toml"), config.source_bytes, config.prior_bytes,
                          json.dumps(config.data, sort_keys=True).encode(), imported_bytes])
     data_hash = digest([blob for _, _, blob in blobs])
     return prior_hash, data_hash

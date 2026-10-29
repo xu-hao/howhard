@@ -14,7 +14,7 @@ expected = version("howhard")
 wheel = Path("dist") / f"howhard-{expected}-py3-none-any.whl"
 with zipfile.ZipFile(wheel) as archive:
     names = archive.namelist()
-    for resource in ("default_prior.toml", "default_config.toml"):
+    for resource in ("default_prior.toml", "default_config.toml", "context.toml"):
         assert f"howhard/data/{resource}" in names, resource
     metadata = archive.read(f"howhard-{expected}.dist-info/METADATA").decode()
     assert f"Version: {expected}\n" in metadata
@@ -39,6 +39,9 @@ with tempfile.TemporaryDirectory(prefix="howhard-wheel-") as directory:
     assert installed_version == expected
     command = root / "venv/bin/howhard"
     assert subprocess.check_output([str(command), "--version"], cwd=root, env=environment, text=True).strip() == f"howhard {expected}"
-    picked = json.loads(subprocess.check_output([str(command), "pick", "bookkeeping", "--seed", "42", "--json"], cwd=root, env=environment, text=True))
+    picked = json.loads(subprocess.check_output([str(command), "pick", "bookkeeping", "--text", "repair spelling", "--seed", "42", "--json"], cwd=root, env=environment, text=True))
     assert picked["seed"] == 42 and picked["chosen"]["model"]
+    observed = json.loads(subprocess.check_output([str(command), "observe", picked["decision_id"], "clean", "--json"], cwd=root, env=environment, text=True))
+    assert observed["observed"]["task_text"] == "repair spelling"
+    assert observed["observed"]["project_context"] == picked["context"]["project_context"]
 print(f"Verified howhard {expected} source distribution and clean installed wheel")

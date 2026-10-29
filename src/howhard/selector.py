@@ -8,12 +8,13 @@ from .gaussian import draw, extend
 from .outcomes import probabilities
 from .prior import build_prior, design
 from .validation import HowHardError, text
+from .context import encode
 
 SUMMARY_SEED = 20260501
 SUMMARY_DRAWS = 4000
 
 
-def prepare(posterior, config, task, risk=None):
+def prepare(posterior, config, task, risk=None, context=None):
     text(task, "task_type", label=True)
     cls = risk or config.task_types.get(task)
     if cls is None:
@@ -25,8 +26,8 @@ def prepare(posterior, config, task, risk=None):
     # A risk override changes loss constants. Existing task effects retain their
     # learned distribution; only a previously unknown type needs new prior terms.
     distributions = {b: getattr(posterior, b) for b in ("outcome", "tokens", "time")}
-    if task not in posterior.prior.task_types:
-        prior = build_prior(config, extra_types={**posterior.prior.task_types, task: cls})
+    if task not in posterior.prior.task_types or (context is not None and not posterior.prior.has_context):
+        prior = build_prior(config, extra_types={**posterior.prior.task_types, task: cls}, contextual=posterior.prior.has_context or context is not None)
         distributions = {b: extend(distributions[b], getattr(prior, b)) for b in distributions}
     cells = []
     for family, family_spec in sorted(config.data["families"].items(), key=lambda pair: (pair[1]["tier"], pair[0])):
@@ -39,7 +40,8 @@ def prepare(posterior, config, task, risk=None):
     if not cells:
         raise HowHardError("families: no selectable cells")
     inputs = [(task, c["family"], c["effort"], config.data["project"]) for c in cells]
-    marginals = {b: distributions[b].project(design(distributions[b], b, inputs)) for b in distributions}
+    features = encode(context["task_text"], context["project_context"]) if context is not None else {}
+    marginals = {b: distributions[b].project(design(distributions[b], b, inputs, [features] * len(inputs))) for b in distributions}
     return cls, cells, marginals
 
 
@@ -54,8 +56,8 @@ def components(marginals, cells, noise, constants, rng, size):
     return p, run, hours, sum(parts.values()), parts
 
 
-def summarize(posterior, config, task, risk=None):
-    cls, cells, marginals = prepare(posterior, config, task, risk)
+def summarize(posterior, config, task, risk=None, context=None):
+    cls, cells, marginals = prepare(posterior, config, task, risk, context)
     constants = config.data["classes"][cls].copy()
     p, run, hours, j, _ = components(marginals, cells, posterior.prior.noise, constants, np.random.default_rng(SUMMARY_SEED), SUMMARY_DRAWS)
     table = []
@@ -69,6 +71,8 @@ def summarize(posterior, config, task, risk=None):
     table.sort(key=lambda row: (row["C_run"], row["family"], row["effort"]))
     result = {"task_type": task, "risk_class": cls, "constants": constants, "cells": table,
               "fit": posterior.statistics.copy()}
+    if context is not None:
+        result["context"] = deepcopy(context)
     return result, cells, marginals
 
 

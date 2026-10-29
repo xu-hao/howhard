@@ -10,6 +10,7 @@ import secrets
 
 from .config import EFFORTS
 from .validation import HowHardError, keys, number, text
+from .context import FORMAT as CONTEXT_FORMAT, capture_project, validate_row_context
 
 ROW_KEYS = ("id", "date", "ticket", "task_type", "risk_class", "model", "effort",
             "default_effort", "outcome", "cause", "tokens", "seconds", "cost_usd", "note", "amends")
@@ -35,7 +36,10 @@ def read_bytes(path):
 
 
 def validate_row(row, config, where):
-    keys(row, ROW_KEYS, where=where)
+    keys(row, ROW_KEYS, ["task_text", "project_context", "context_encoder", "decision_id"], where=where)
+    validate_row_context(row, where)
+    if "decision_id" in row:
+        text(row["decision_id"], f"{where}.decision_id")
     for key in ("id", "task_type", "risk_class", "model", "effort", "outcome"):
         text(row[key], f"{where}.{key}")
     text(row["task_type"], f"{where}.task_type", label=True)
@@ -173,7 +177,7 @@ def append_bytes(path, blob):
 
 
 def observe(config, task_type, model, effort, outcome, **options):
-    allowed = {"cause", "tokens", "seconds", "cost_usd", "ticket", "note", "amends", "date", "id"}
+    allowed = {"cause", "tokens", "seconds", "cost_usd", "ticket", "note", "amends", "date", "id", "task_text", "project_context", "decision_id", "risk_class"}
     unknown = options.keys() - allowed
     if unknown:
         raise HowHardError(f"observe: unknown keys {sorted(unknown)}")
@@ -181,11 +185,15 @@ def observe(config, task_type, model, effort, outcome, **options):
     if registry is None:
         raise HowHardError(f"model: unknown model id {model!r}; add it to the model registry")
     row = dict(id=options.get("id", secrets.token_hex(6)), date=options.get("date", date.today().isoformat()),
-               ticket=options.get("ticket"), task_type=task_type, risk_class=config.task_types.get(task_type, "standard"),
+               ticket=options.get("ticket"), task_type=task_type, risk_class=options.get("risk_class", config.task_types.get(task_type, "standard")),
                model=model, effort=effort, default_effort=registry["default_effort"] if effort == "model_default" else None,
                outcome=outcome, cause=options.get("cause", None if outcome == "clean" else "unrecorded"),
                tokens=options.get("tokens"), seconds=options.get("seconds"), cost_usd=options.get("cost_usd"),
                note=options.get("note", ""), amends=options.get("amends"))
+    if "task_text" in options or "project_context" in options:
+        row.update(task_text=options.get("task_text", ""), project_context=capture_project(config, options.get("project_context")), context_encoder=CONTEXT_FORMAT)
+    if "decision_id" in options:
+        row["decision_id"] = options["decision_id"]
     with locked(config):
         _, blobs = snapshot(config)
         path, project, pending = blobs[-1]

@@ -9,6 +9,9 @@ from .prior import build_prior
 from .regression import fit_regression
 from .selector import choose, summarize
 from .transfer import export_prior, import_prior, read_export
+from . import decisions
+from .context import FORMAT, canonical, capture_project, validate_text
+from .validation import HowHardError
 
 
 class Engine:
@@ -54,23 +57,47 @@ class Engine:
         self._summaries.clear()
         return self.posterior
 
-    def _prepared(self, task_type, risk):
-        key = task_type, risk
+    def _prepared(self, task_type, risk, task_text="", project_context=None):
+        context = {"encoder": FORMAT, "task_text": validate_text(task_text), "project_context": capture_project(self.config, project_context)}
+        key = task_type, risk, canonical(context)
         if key not in self._summaries:
-            self._summaries[key] = summarize(self.posterior, self.config, task_type, risk)
+            self._summaries[key] = summarize(self.posterior, self.config, task_type, risk, context)
         return self._summaries[key]
 
-    def summary(self, task_type, *, risk=None):
+    def summary(self, task_type, task_text="", *, project_context=None, risk=None):
         from copy import deepcopy
-        return deepcopy(self._prepared(task_type, risk)[0])
+        return deepcopy(self._prepared(task_type, risk, task_text, project_context)[0])
 
-    def pick(self, task_type, *, risk=None, seed=None, candidates=None):
-        return choose(self._prepared(task_type, risk), self.posterior, self.config, seed, candidates)
+    def pick(self, task_type, task_text="", *, project_context=None, risk=None, seed=None, candidates=None):
+        result = choose(self._prepared(task_type, risk, task_text, project_context), self.posterior, self.config, seed, candidates)
+        result["decision_id"] = decisions.save(self.config, result)
+        return result
 
-    def observe(self, task_type, model, effort, outcome, **options):
+    def observe(self, task_type, model, effort, outcome, *, decision=None, task_text=None, project_context=None, **options):
+        if decision is not None:
+            receipt = decisions.load(self.config, decision)
+            if task_text is not None or project_context is not None or options.get("amends") is not None:
+                raise HowHardError("decision: cannot override receipt context or combine with an amendment")
+            if (task_type, model, effort) != (receipt["task_type"], receipt["chosen"]["model"], receipt["chosen"]["effort"]):
+                raise HowHardError("decision: task type, model and effort must match the receipt")
+            options.update(task_text=receipt["context"]["task_text"], project_context=receipt["context"]["project_context"],
+                           risk_class=receipt["risk_class"], decision_id=decisions.digest(receipt))
+        elif not options.get("amends"):
+            options.update(task_text="" if task_text is None else task_text, project_context=capture_project(self.config, project_context))
+        elif task_text is not None or project_context is not None:
+            raise HowHardError("amends: historical context belongs to the original run")
         row = storage.observe(self.config, task_type, model, effort, outcome, **options)
         self.refresh()
         return row
+
+    def observe_decision(self, decision, outcome, **options):
+        receipt = decisions.load(self.config, decision)
+        return self.observe(receipt["task_type"], receipt["chosen"]["model"], receipt["chosen"]["effort"], outcome, decision=receipt, **options)
+
+    def save_decision(self, decision, path):
+        receipt = decisions.load(self.config, decision)
+        from .transfer import atomic_write
+        atomic_write(path, canonical(receipt) + b"\n")
 
     def flush(self):
         ids = storage.flush(self.config)
