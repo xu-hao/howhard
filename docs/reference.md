@@ -98,9 +98,15 @@ Contextual rows additionally store `task_text`, `project_context` and `context_e
 together, with optional `decision_id`. New observations also record `observed_at`, an
 ISO timestamp with timezone identifying when feedback became available. Legacy rows
 keep their missing context and timestamp.
-Amendments are new silent rows with null measurement and cost fields. Chains change the
-original run's outcome once, retaining its original cell, task, project, weight and
-measurements. Raw rows remain intact. Targets within a file must precede their amendments.
+Amendments are new rows with `amends` set to an earlier row ID and null measurement
+and cost fields. Since 0.3.1, they may correct an outcome to `clean`, `loud` or `silent`;
+earlier versions accepted only `silent` amendments and cannot read the expanded cases.
+The row keys and cache/prior formats are unchanged. The usual cause rule still applies:
+null for clean, and depth, capability or unrecorded for loud/silent.
+Chains replace the original run's effective outcome and cause, counting that run once
+and retaining its original ID, decision, cell, task text, project snapshot, project,
+weight and measurements. Raw rows remain intact. Amendments cannot override historical
+context through the observation API. Targets within a file must precede their amendments.
 Across files, targets must exist, have dates no later than their amendments, and form an
 acyclic dependency graph. Dependency ordering keeps amendments valid when flushing moves
 them into the first log ahead of a target in an additional log.

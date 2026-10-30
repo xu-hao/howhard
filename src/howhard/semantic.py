@@ -482,9 +482,24 @@ def validate_receipt(state):
     return state
 
 
+def learning_event_key(row, raw_rows):
+    roots, latest = {}, row["id"]
+    for raw in raw_rows:
+        root = roots[raw["amends"]] if raw["amends"] else raw["id"]
+        roots[raw["id"]] = root
+        if root == row["id"]:
+            latest = raw["id"]
+    payload = {"writer": SETTINGS["writer_version"], "row": row}
+    # Keep original learning keys stable; each appended correction is a new event,
+    # including a correction that returns to a previously learned classification.
+    if latest != row["id"]:
+        payload["amendment_id"] = latest
+    return digest(payload)
+
+
 def learning_request(engine, evidence_id):
     row = tool(engine, {"tool": "evidence.read", "id": evidence_id}, allow_project=False)
-    event_key = digest({"writer": SETTINGS["writer_version"], "row": row})
+    event_key = learning_event_key(row, engine.raw_rows)
     snapshot = engine.memory.snapshot(include_removed=True)
     receipt = None
     if row.get("decision_id"):
@@ -513,7 +528,7 @@ def apply_learning(engine, evidence_id, response, *, expected_revision, event_ke
         current_rows, _ = snapshot(engine.config)
         root_id = current["observation"]["id"]
         latest = next((row for row in effective_rows(engine.config, current_rows) if row["id"] == root_id), None)
-        if latest is None or digest({"writer": SETTINGS["writer_version"], "row": latest}) != actual_key:
+        if latest is None or learning_event_key(latest, current_rows) != actual_key:
             raise HowHardError("memory learning: evidence changed during the writer call; refresh and retry")
         results = engine.memory.apply(response["operations"], expected_revision=expected_revision, actor="llm", event_key=actual_key)
     return {"status": "updated", "evidence_id": current["observation"]["id"], "operations": results, "reason": response["reason"], "usage": usage}
