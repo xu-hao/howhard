@@ -1,7 +1,7 @@
 """Strict append-only JSONL, amendments and a durable pending journal."""
 
 from contextlib import contextmanager
-from datetime import date
+from datetime import date, datetime, timezone
 import fcntl
 import json
 import os
@@ -36,7 +36,13 @@ def read_bytes(path):
 
 
 def validate_row(row, config, where):
-    keys(row, ROW_KEYS, ["task_text", "project_context", "context_encoder", "decision_id"], where=where)
+    keys(row, ROW_KEYS, ["task_text", "project_context", "context_encoder", "decision_id", "observed_at"], where=where)
+    if "observed_at" in row:
+        try:
+            if not isinstance(row["observed_at"], str) or datetime.fromisoformat(row["observed_at"]).utcoffset() is None:
+                raise ValueError
+        except ValueError as exc:
+            raise HowHardError(f"{where}.observed_at: expected ISO timestamp with timezone") from exc
     validate_row_context(row, where)
     if "decision_id" in row:
         text(row["decision_id"], f"{where}.decision_id")
@@ -185,6 +191,7 @@ def observe(config, task_type, model, effort, outcome, **options):
     if registry is None:
         raise HowHardError(f"model: unknown model id {model!r}; add it to the model registry")
     row = dict(id=options.get("id", secrets.token_hex(6)), date=options.get("date", date.today().isoformat()),
+               observed_at=datetime.now(timezone.utc).isoformat(),
                ticket=options.get("ticket"), task_type=task_type, risk_class=options.get("risk_class", config.task_types.get(task_type, "standard")),
                model=model, effort=effort, default_effort=registry["default_effort"] if effort == "model_default" else None,
                outcome=outcome, cause=options.get("cause", None if outcome == "clean" else "unrecorded"),

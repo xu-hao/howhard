@@ -5,6 +5,10 @@
   reproducibility, cache and portable learning.
 - [Task text and changing project context](context.md) — local text encoding, project
   snapshots, contextual models and decision receipts.
+- [LLM reasoning and writable semantic memory](semantic-memory.md) — reader/writer
+  adapters, memory operations, feedback weights and agent tools.
+- [Real-project evaluation](evaluation.md) — chronological field trials and genuine
+  observed outcomes, with implementation fixtures kept separate.
 - [Advanced configuration](configuration.md) — optional registry, policies and data locations.
 - [Contributor workflow](contributing.md) — issue tracking, worktrees and coordinated checks.
 - [Packaging and release](releasing.md) — versions, distribution validation and publication.
@@ -17,6 +21,8 @@
 quickstart
 reference
 context
+semantic-memory
+evaluation
 configuration
 contributing
 releasing

@@ -16,6 +16,9 @@ def receipt_path(config, decision_id):
 def save(config, result):
     value = {"format": DECISION_FORMAT, "project": config.data["project"],
              **{key: result[key] for key in ("task_type", "risk_class", "chosen", "seed", "context")}}
+    if "semantic" in result:
+        value["format"] = "howhard-decision-v2"
+        value["semantic"] = result["semantic"]
     decision_id = digest(value)
     atomic_write(receipt_path(config, decision_id), canonical(value) + b"\n")
     return decision_id
@@ -38,9 +41,11 @@ def load(config, source):
             raise HowHardError(f"decision: cannot read valid receipt {path}") from exc
         if re.fullmatch(r"[0-9a-f]{64}", source) and digest(value) != source:
             raise HowHardError("decision: receipt content does not match its ID")
-    keys(value, ["format", "project", "task_type", "risk_class", "chosen", "seed", "context"], where="decision")
-    if value["format"] != DECISION_FORMAT:
+    keys(value, ["format", "project", "task_type", "risk_class", "chosen", "seed", "context"], ["semantic"], where="decision")
+    if value["format"] not in (DECISION_FORMAT, "howhard-decision-v2"):
         raise HowHardError("decision.format: unsupported version")
+    if (value["format"] == "howhard-decision-v2") != ("semantic" in value):
+        raise HowHardError("decision.semantic: format and semantic payload must agree")
     if value["project"] != config.data["project"]:
         raise HowHardError("decision.project: does not match this project")
     text(value["task_type"], "decision.task_type", label=True)
@@ -60,4 +65,7 @@ def load(config, source):
         raise HowHardError("decision.context.encoder: unsupported version")
     validate_text(value["context"]["task_text"])
     validate_project(value["context"]["project_context"])
+    if "semantic" in value:
+        from .semantic import validate_receipt
+        validate_receipt(value["semantic"])
     return value

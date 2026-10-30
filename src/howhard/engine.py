@@ -1,6 +1,9 @@
 """Public application API: fit once, inspect summaries and make many seeded picks."""
 
 from pathlib import Path
+import secrets
+import time
+from datetime import datetime, timezone
 
 from . import cache, storage
 from .config import Config, load_config
@@ -11,17 +14,24 @@ from .selector import choose, summarize
 from .transfer import export_prior, import_prior, read_export
 from . import decisions
 from .context import FORMAT, canonical, capture_project, validate_text
+from .context import digest
 from .validation import HowHardError
+from .memory import MemoryStore
+from .llm import resolve
+from . import semantic
 
 
 class Engine:
-    def __init__(self, config=None, *, directory=None, cache_path=None, journal_path=None):
+    def __init__(self, config=None, *, directory=None, cache_path=None, journal_path=None, llm=None):
         self.config = config if isinstance(config, Config) else load_config(config, directory=directory)
         if cache_path is not None:
             self.config.data["cache"] = str(Path(cache_path).resolve())
         if journal_path is not None:
             self.config.data["journal"] = str(Path(journal_path).resolve())
         self.config.validate_paths()
+        self.llm, self.backend = resolve(llm)
+        self.memory = MemoryStore(self.config, evidence=lambda: {r["id"] for r in self.raw_rows})
+        self.last_memory_update = {"status": "not-requested"}
         self._summaries = {}
         self.refresh()
 
@@ -29,6 +39,7 @@ class Engine:
         config = self.config
         with storage.locked(config):
             raw_rows, blobs = storage.snapshot(config)
+        self.raw_rows = raw_rows
         self.rows = storage.effective_rows(config, raw_rows)
         imported, imported_bytes = None, b""
         if "import" in config.data["prior"]:
@@ -39,6 +50,7 @@ class Engine:
         extra_types = {t: config.task_types.get(t, "standard") for t in imported["vocabularies"]["task_types"]} if imported else None
         self.prior = build_prior(config, self.rows, extra_types=extra_types, imported=imported)
         prior_hash, data_hash = cache.hashes(config, blobs, imported_bytes)
+        self.fit_key = [prior_hash, data_hash]
         path = config.path(config.data["cache"])
         cached = None if full else cache.load(path, self.prior)
         start = None
@@ -66,12 +78,148 @@ class Engine:
 
     def summary(self, task_type, task_text="", *, project_context=None, risk=None):
         from copy import deepcopy
-        return deepcopy(self._prepared(task_type, risk, task_text, project_context)[0])
+        prepared = self._semantic_prepared(self._prepared(task_type, risk, task_text, project_context))
+        return deepcopy(prepared[0])
 
     def pick(self, task_type, task_text="", *, project_context=None, risk=None, seed=None, candidates=None):
-        result = choose(self._prepared(task_type, risk, task_text, project_context), self.posterior, self.config, seed, candidates)
+        started = time.monotonic()
+        try:
+            result = self._pick(task_type, task_text, project_context=project_context, risk=risk, seed=seed, candidates=candidates)
+        except Exception as exc:
+            self._decision_event(None, task_type, started, error=type(exc).__name__)
+            raise
+        self._decision_event(result, task_type, started)
+        return result
+
+    def _decision_event(self, result, task_type, started, error=None):
+        event = {"event_id": secrets.token_hex(12), "at_utc": datetime.now(timezone.utc).isoformat(),
+                 "task_type": task_type if isinstance(task_type, str) else type(task_type).__name__, "status": "failed" if error else "completed", "error": error,
+                 "seconds": time.monotonic() - started, "action_probability": None,
+                 "decision_id": result["decision_id"] if result else None,
+                 "backend": result.get("backend", self.backend) if result else self.backend}
+        if result and "semantic" in result:
+            result["routing_overhead"]["end_to_end_seconds"] = event["seconds"]
+        with storage.locked(self.config):
+            storage.append_bytes(self.config.base / ".howhard/decision-events.jsonl", canonical(event) + b"\n")
+
+    def _pick(self, task_type, task_text="", *, project_context=None, risk=None, seed=None, candidates=None):
+        if seed is not None and (type(seed) is not int or seed < 0):
+            raise HowHardError("seed: expected a non-negative integer")
+        prepared = self._semantic_prepared(self._prepared(task_type, risk, task_text, project_context))
+        parts = None
+        if "semantic" in prepared[0]:
+            seed = secrets.randbits(64) if seed is None else seed
+            if type(seed) is not int or seed < 0:
+                raise HowHardError("seed: expected a non-negative integer")
+            parts = semantic.sample(prepared, seed, self.posterior.prior.noise)
+        result = choose(prepared, self.posterior, self.config, seed, candidates, parts)
         result["decision_id"] = decisions.save(self.config, result)
         return result
+
+    def _semantic_prepared(self, prepared, response=None, payload=None, snapshot=None):
+        if self.llm is None and response is None:
+            if self.backend["mode"] == "auto":
+                from copy import deepcopy
+                result = deepcopy(prepared[0])
+                result["backend"] = {"mode": "statistical-fallback", "reason": self.backend.get("reason", "No LLM adapter is available")}
+                return result, prepared[1], prepared[2]
+            return prepared
+        if payload is None:
+            payload, snapshot = semantic.request(self, prepared)
+        if response is None:
+            try:
+                response, payload, usage = semantic.complete(self, payload, snapshot)
+            except HowHardError as exc:
+                if self.backend["mode"] != "auto":
+                    raise
+                from copy import deepcopy
+                result = deepcopy(prepared[0])
+                result["backend"] = {"mode": "statistical-fallback", "reason": str(exc)}
+                result["routing_overhead"] = deepcopy(getattr(self, "last_inference_usage", {"cost_usd": None, "seconds": None}))
+                return result, prepared[1], prepared[2]
+        else:
+            response = semantic.validate_response(response, payload, snapshot)
+            semantic.external_submission(self, payload)
+            usage = {"backend": "calling-agent", "seconds": 0.0, "cost_usd": None, "calls": [], "cached": False, "call_seconds": 0.0, "call_cost_usd": None}
+        return semantic.augment(self, prepared, response, payload, snapshot, usage)
+
+    def memory_beliefs(self):
+        return semantic.beliefs(self)
+
+    def memory_learn(self, evidence_id):
+        self.last_memory_update = semantic.learn(self, evidence_id)
+        return self.last_memory_update
+
+    def prepare(self, task_type, task_text="", *, project_context=None, risk=None):
+        prepared = self._prepared(task_type, risk, task_text, project_context)
+        payload, snapshot = semantic.request(self, prepared)
+        bundle = {"format": "howhard-agent-request-v1", "fit_key": self.fit_key, "payload": payload, "snapshot": snapshot}
+        return self._save_request(bundle)
+
+    def _save_request(self, bundle):
+        from .transfer import atomic_write
+        request_id = digest(bundle)
+        atomic_write(self.config.base / ".howhard/requests" / f"{request_id}.json", canonical(bundle) + b"\n")
+        return {"request_id": request_id, "request": bundle["payload"], "baseline_request": semantic.baseline_request(bundle["payload"])}
+
+    def _load_request(self, request_id):
+        import json
+        import re
+        if not isinstance(request_id, str) or not re.fullmatch(r"[0-9a-f]{64}", request_id):
+            raise HowHardError("request_id: expected SHA-256 request ID")
+        try:
+            bundle = json.loads((self.config.base / ".howhard/requests" / f"{request_id}.json").read_bytes())
+        except (OSError, ValueError) as exc:
+            raise HowHardError("request_id: unavailable or invalid agent request") from exc
+        if digest(bundle) != request_id or bundle.get("format") != "howhard-agent-request-v1":
+            raise HowHardError("request_id: request integrity or format mismatch")
+        if bundle["fit_key"] != self.fit_key or bundle["snapshot"]["revision"] != self.memory.snapshot()["revision"]:
+            raise HowHardError("request_id: stale evidence or memory; prepare a new decision")
+        return bundle
+
+    def retrieve(self, request_id, queries):
+        if not isinstance(queries, list) or not 1 <= len(queries) <= 3:
+            raise HowHardError("retrieval: provide between one and three tool requests")
+        bundle = self._load_request(request_id)
+        if len(bundle["payload"]["retrieval"]) + len(queries) > 3 * semantic.SETTINGS["retrieval_rounds"]:
+            raise HowHardError("retrieval: request budget exceeded")
+        for query in queries:
+            result = semantic.tool(self, query, project_snapshot=bundle["payload"]["context"]["project_context"])
+            bundle["payload"]["retrieval"].append({"request": query, "result": result})
+        return self._save_request(bundle)
+
+    def decide(self, request_id, response, *, seed=None, candidates=None):
+        started = time.monotonic()
+        try:
+            result = self._decide(request_id, response, seed=seed, candidates=candidates)
+        except Exception as exc:
+            self._decision_event(None, "calling-agent", started, error=type(exc).__name__)
+            raise
+        self._decision_event(result, result["task_type"], started)
+        return result
+
+    def _decide(self, request_id, response, *, seed=None, candidates=None):
+        if seed is not None and (type(seed) is not int or seed < 0):
+            raise HowHardError("seed: expected non-negative integer")
+        bundle = self._load_request(request_id)
+        payload = bundle["payload"]
+        prepared = self._prepared(payload["task_type"], payload["risk_class"], payload["context"]["task_text"], payload["context"]["project_context"])
+        prepared = self._semantic_prepared(prepared, response, payload, bundle["snapshot"])
+        seed = secrets.randbits(64) if seed is None else seed
+        if type(seed) is not int or seed < 0:
+            raise HowHardError("seed: expected non-negative integer")
+        parts = semantic.sample(prepared, seed, self.posterior.prior.noise)
+        result = choose(prepared, self.posterior, self.config, seed, candidates, parts)
+        result["decision_id"] = decisions.save(self.config, result)
+        return result
+
+    def memory_learning_context(self, evidence_id):
+        request, event_key = semantic.learning_request(self, evidence_id)
+        return {"request": request, "event_key": event_key, "memory_revision": request["memory_revision"]}
+
+    def apply_memory_learning(self, evidence_id, response, *, expected_revision, event_key):
+        self.last_memory_update = semantic.apply_learning(self, evidence_id, response, expected_revision=expected_revision, event_key=event_key)
+        return self.last_memory_update
 
     def observe(self, task_type, model, effort, outcome, *, decision=None, task_text=None, project_context=None, **options):
         if decision is not None:
@@ -88,6 +236,11 @@ class Engine:
             raise HowHardError("amends: historical context belongs to the original run")
         row = storage.observe(self.config, task_type, model, effort, outcome, **options)
         self.refresh()
+        try:
+            self.last_memory_update = semantic.learn(self, row["id"])
+        except HowHardError as exc:
+            # The observation is durable. Retrying the writer must not duplicate it.
+            self.last_memory_update = {"status": "failed", "error": str(exc), "evidence_id": row["id"]}
         return row
 
     def observe_decision(self, decision, outcome, **options):
