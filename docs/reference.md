@@ -124,11 +124,25 @@ with the usual cause rule. Superseded rows without timestamps/context and unreso
 `model_default` efforts are refused; no context or control is inferred retrospectively.
 Chains replace the original run's effective outcome and cause, counting that run once
 and retaining its original ID, decision, cell, task text, project snapshot, project,
-weight and measurements. Raw rows remain intact. Amendments cannot override historical
-context through the observation API. Targets within a file must precede their amendments.
+weight and uncorrected measurements. Raw rows remain intact. Amendments cannot override
+historical context through the observation API. Targets within a file must precede their amendments.
 Across files, targets must exist, have dates no later than their amendments, and form an
 acyclic dependency graph. Dependency ordering keeps amendments valid when flushing moves
 them into the first log ahead of a target in an additional log.
+
+An amendment may additionally carry `measurement_corrections`, a nonempty object with
+only `tokens`, `seconds` and/or `cost_usd`. Values follow the corresponding base-field
+types and ranges; null explicitly clears a value to unknown. Original rows refuse this
+field, and ordinary amendment `tokens`, `seconds` and `cost_usd` must still be null.
+For example, `Engine.observe(..., amends="run-id", measurement_corrections={"tokens": 100,
+"cost_usd": None})` replaces only those effective values. Unlisted measurements retain
+their current effective values across a chain. Supply the intended current outcome/cause
+as usual, including when only usage changes. No forecast is created retrospectively.
+Regressions, worker-cost totals and predictive memory evidence use the corrected original
+once. Writer `observation` contains current effective usage; `outcome_history` preserves
+the raw original and correction maps as an audit trail, never extra runs or additive usage.
+Matching correction-ID retries remain idempotent and different maps conflict. This is
+an additive row-semantics expansion; readers without this field's support refuse such rows.
 
 `flush` validates all files before writing. Duplicate refusals list every duplicate and
 leave log and journal unchanged. It appends, fsyncs the log, then truncates and fsyncs the
