@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.1 — 2026-10-30
+
+- Allow append-only outcome amendments to clean, loud or silent, retaining the original
+  run's context and measurements and replacing Bayesian and semantic evidence once.
+  Row keys and cache/prior formats are unchanged; earlier versions cannot read clean
+  or loud amendments.
+- Give every correction its own idempotent memory-learning event, including corrections
+  back to an earlier result, and reject writer responses prepared before a correction.
+
 ## 0.3.0 — 2026-10-30
 
 - Add LLM reasoning over original task/project text, persistent semantic memory and
