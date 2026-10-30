@@ -8,7 +8,7 @@ from howhard.outcomes import fit, objective, probabilities
 from howhard.prior import build_prior, design
 from howhard.regression import conjugate, fit_regression
 from howhard.validation import HowHardError
-from conftest import cell, fitted_rows, row
+from conftest import inventory, cell, fitted_rows, row
 
 
 def test_no_data_identity(project):
@@ -106,33 +106,29 @@ def test_xhigh_token_effect_learns_twofold_volume(project):
 def test_null_measurement_ignored_but_outcomes_counted(project):
     engine = Engine(project(rows=[row(i, outcome="loud") for i in range(8)]))
     np.testing.assert_array_equal(engine.posterior.tokens.mean, engine.prior.tokens.mean)
-    assert cell(engine.summary("X"), "opus", "high")["P_loud"]["mean"] > .5
+    assert cell(engine.summary("X", native_candidates=inventory()), "opus", "high")["P_loud"]["mean"] > .5
 
 
 def test_price_changes_only_its_own_running_cost(project):
     config = project()
-    a = Engine(config).summary("Y")
-    model = config.data["families"]["opus"]["current"]
-    config.data["models"][model] = {**config.data["models"][model], "usd_per_mtok": 2 * config.price(model)}
-    config.data["models"][model].pop("prices")
-    b = Engine(config).summary("Y")
+    candidates = inventory()
+    a = Engine(config).summary("Y", native_candidates=candidates)
+    for candidate in candidates:
+        if candidate["model"] == "claude-opus-5-5":
+            candidate["usd_per_mtok"] *= 2
+    b = Engine(config).summary("Y", native_candidates=candidates)
     for before in a["cells"]:
         after = cell(b, before["family"], before["effort"])
         factor = 2 if before["family"] == "opus" else 1
         assert after["C_run"] == pytest.approx(factor * before["C_run"], rel=1e-12)
 
 
-def test_blended_prices_and_malformed_prices(project):
-    config = project()
-    model = config.data["families"]["opus"]["current"]
-    assert config.price(model) == pytest.approx(4 * .04 + 20 * .01 + 5 * .01 + 8 * 0 + .2 * .94)
-
-
 @pytest.mark.parametrize("settings,match", [
     ('[token_mix]\ninput = 0.8', 'token_mix'),
-    ('[models.claude-opus-5-5.prices]\ninput = -1.0', 'input'),
-    ('[models.claude-opus-5-5.prices]\ntypo = 3.0', 'typo'),
+    ('[models.claude-opus-5-5.prices]\ninput = -1.0', 'prices'),
+    ('[models.claude-opus-5-5.prices]\ntypo = 3.0', 'prices'),
     ('[models.claude-opus-5-5]\nusd_per_mtok = "cheap"', 'usd_per_mtok'),
+    ('[models.claude-opus-5-5]\ndefault_effort = "high"', 'default_effort'),
     ('[models.claude-opus-5-5]\nweight = false', 'weight'),
     ('[classes.standard]\nepsilon = 1.0', 'epsilon'),
     ('[task_types]\nX = "unknown"', 'task_types'),

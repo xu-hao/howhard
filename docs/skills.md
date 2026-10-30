@@ -15,7 +15,7 @@ is required for the native path.
 
 Use a current native client and choose the commands for your host:
 
-| Host | Register/install | Invoke |
+| Host | Register/install | Explicit invocation |
 | --- | --- | --- |
 | Codex | `codex plugin marketplace add xu-hao/howhard`, then `codex plugin add howhard@howhard` | `$howhard` or `/skills` |
 | Claude Code | `claude plugin marketplace add xu-hao/howhard`, then `claude plugin install howhard@howhard` | `/howhard:howhard` |
@@ -25,9 +25,7 @@ These CLI flows install/register in the user's plugin environment. Claude Code a
 supports `--scope project` and `--scope local` for marketplace addition and plugin
 installation; select the desired scope explicitly for both steps. Native clients own
 installation, caching, enable/disable and removal. Reopen the agent if a newly installed
-skill is not visible. Older Codex clients with the built-in `$skill-installer` can instead
-be asked to install the howhard skill from `xu-hao/howhard`, path `skills/howhard`; follow
-that first-party skill's instructions rather than copying files manually.
+skill is not visible.
 
 For a source checkout, native marketplace commands can use the checkout directory in
 place of `xu-hao/howhard`; Antigravity can install that directory directly. The portable
@@ -62,6 +60,19 @@ flag. Native uninstall commands are `codex plugin remove howhard@howhard`,
 Python package upgrades do not update the installed skill, and native plugin updates do
 not upgrade the Python package.
 
+## Automatic activation and delegation
+
+[Codex can activate skills implicitly](https://learn.chatgpt.com/docs/build-skills)
+when a task matches their descriptions; `$howhard` and `/skills` request the workflow
+explicitly. Installation makes the skill discoverable. It does not run every skill
+on each subagent start, and this plugin contains no startup hook.
+
+Use howhard in the coordinating agent before spawning a worker: selecting the model and
+effort must happen before that worker starts. Giving a worker a task does not prove it
+loaded howhard, and the worker need not rerun routing just to execute its assigned task.
+For a required workflow, include an explicit howhard instruction in the coordinating
+agent's task or project instructions. Skill discovery and activation remain host-owned.
+
 ## Capability boundaries
 
 The skill uses original task/current project context, an independent baseline, retrieved
@@ -87,8 +98,8 @@ and actual measurements remain visible, while unknown cost is null, not zero.
 
 `howhard paths --llm off --json` reports current capture and durable state roots. Fresh
 Git worktrees share the repository common directory's howhard store, while current task
-context is captured from the current checkout. Existing valid legacy stores and explicit
-configuration are honored; plain folders retain local `.howhard`. A prepared request is
+context is captured from the current checkout. Explicit configuration owns its declared
+paths; plain folders use local `.howhard`. A prepared request is
 bound to its worktree, but frozen-receipt feedback can be recorded in a sibling worktree.
 `--state-dir` supports intentional store selection and refuses another project's claimed
 store. No symlink/config wrapper is required to preserve worktree memory.
@@ -128,7 +139,7 @@ npx --yes skills@1.7.4 remove howhard --yes
 The named removal without an agent filter clears that skill across agent references.
 Local checkout sources such as `/path/to/howhard` are supported; local installs do not
 have the same remote update tracking as Git sources. For immutable sources, replace
-`FULL_COMMIT` with a full 40-character commit containing 0.5.0 or later:
+`FULL_COMMIT` with a full 40-character commit containing the current release:
 
 ```sh
 python -m pip install "git+https://github.com/xu-hao/howhard.git@FULL_COMMIT"
@@ -138,13 +149,7 @@ npx --yes skills@1.7.4 add https://github.com/xu-hao/howhard/tree/FULL_COMMIT/sk
 These are source installs, not PyPI release claims. Choose one installation route per
 host to avoid duplicate skill names and conflicting ownership.
 
-## Migration and contributor validation
-
-Version 0.5.0 retires the bespoke 0.4 `howhard skills install` command and
-`howhard.skill_install` API before 1.0. Preserve local edits and archive those particular
-old howhard copies outside skill discovery before native or optional third-party
-installation; `howhard-install.json` identifies a former copy. Leave unrelated skills,
-instruction files and settings alone. No compatibility copier remains.
+## Contributor validation
 
 Native validation is an explicit read-only contributor check:
 

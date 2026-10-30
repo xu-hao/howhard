@@ -52,8 +52,8 @@ print(json.dumps(decision))
 
 `Engine.prepare(..., native_candidates=inventory)` starts the calling-agent route;
 `engine.retrieve(request_id, queries)` and `engine.decide(request_id, response)` use
-that saved inventory automatically. The older Python family/effort `candidates` filter
-remains available for existing integrations, but native callers need no family mapping.
+that saved inventory automatically. Every new routing request requires an explicit
+native inventory.
 
 ## Independent reasoning and validated decision
 
@@ -102,7 +102,7 @@ Use the returned decision ID and a stable per-execution ID. OUTCOME is clean, lo
 silent based on actual feedback. Add tokens, seconds and cost_usd only when measured;
 unknown values stay null. Tokens include total cached/uncached input and output.
 Do not record an unrun action. A matching stable-ID retry returns the original row,
-including its first timestamp/context and derived risk/default resolution. Explicit
+including its first timestamp/context and derived risk class. Explicit
 changes to task/context, controls, outcome, measurements or notes conflict instead of
 appending or silently updating evidence. After an ambiguous write, inspect `evidence`
 and repeat the same ID/input; never mint a second original ID to retry.
@@ -165,9 +165,8 @@ usage; these reports and mechanical fixtures do not establish routing superiorit
 ## Backend-owned state
 
 `paths` reports project capture and durable state roots. Fresh zero-config Git worktrees
-share the repository common Git directory's `howhard` store. Existing valid local/main
-checkout `.howhard` stores and explicit configuration are honored without automatic
-migration or deletion. Plain folders use local `.howhard`. The project snapshot always
+share the repository common Git directory's `howhard` store. Explicit configuration
+owns its declared paths. Plain folders use local `.howhard`. The project snapshot always
 comes from the current capture root, not from the state directory. `--state-dir PATH`
 (or `Engine(state_directory=...)`) selects an intentional store; project identity checks
 refuse another project's claimed store and new receipts. Stable identity metadata moves

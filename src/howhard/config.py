@@ -9,7 +9,6 @@ import tomllib
 from .validation import HowHardError, keys, number, table, text
 
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
-TOKEN_KINDS = ("input", "output", "cache_write_5m", "cache_write_1h", "cache_read")
 
 
 def merge(base, changes):
@@ -118,14 +117,6 @@ class Config:
         return {**{t: s["class"] for t, s in self.prior["taxonomy"].items()},
                 **self.data.get("task_types", {})}
 
-    def price(self, model):
-        spec = self.data["models"][model]
-        if "usd_per_mtok" in spec:
-            return spec["usd_per_mtok"]
-        if "prices" not in spec:
-            raise HowHardError(f"models.{model}: missing price (usd_per_mtok or prices)")
-        return sum(spec["prices"][k] * self.data["token_mix"][k] for k in TOKEN_KINDS)
-
     def validate_paths(self):
         names = [log["path"] for log in self.data["logs"]]
         names += [self.data[k] for k in ("journal", "cache")]
@@ -150,17 +141,12 @@ def load_config(path=None, *, directory=None, state_directory=None):
         # An explicitly supplied policy must make its fallback intentional.
         if "on_cap_unmet" not in overrides:
             raise HowHardError("config.on_cap_unmet: required; set 'flag-review' or 'lowest-bound'")
-        # A blended price replaces the other price form in the shipped registry.
-        for name, model in table(overrides.get("models", {}), "config.models").items():
-            table(model, f"models.{name}")
-            if "usd_per_mtok" in model and name in default["models"]:
-                default["models"][name].pop("prices", None)
         data = merge(default, overrides)
     else:
         data = default
-    keys(data, ["project", "on_cap_unmet", "journal", "cache", "logs", "prior", "classes", "families", "models", "token_mix"],
+    keys(data, ["project", "on_cap_unmet", "journal", "cache", "logs", "prior", "classes", "models"],
          ["task_types", "transfer"], "config")
-    for key in ("classes", "families", "models", "task_types"):
+    for key in ("classes", "models", "task_types"):
         table(data.get(key, {}), f"config.{key}")
     text(data["project"], "config.project", label=True)
     if data["on_cap_unmet"] not in ("flag-review", "lowest-bound"):
@@ -201,41 +187,16 @@ def load_config(path=None, *, directory=None, state_directory=None):
             number(value, f"classes.{cls}.{key}", nonnegative=True)
         if not 0 < spec["epsilon"] < 1:
             raise HowHardError(f"classes.{cls}.epsilon: expected probability in (0, 1)")
-    keys(data["token_mix"], TOKEN_KINDS, where="token_mix")
-    mix = [number(v, f"token_mix.{k}", nonnegative=True) for k, v in data["token_mix"].items()]
-    if abs(sum(mix) - 1) > 1e-6:
-        raise HowHardError("token_mix: shares must sum to 1")
-    for family, spec in data["families"].items():
-        if family not in prior["families"]:
-            raise HowHardError(f"families.{family}: unknown family")
-        keys(spec, ["tier", "current", "selectable"], where=f"families.{family}")
-        if type(spec["tier"]) is not int or type(spec["selectable"]) is not bool:
-            raise HowHardError(f"families.{family}: tier must be an integer and selectable a boolean")
-        text(spec["current"], f"families.{family}.current")
     for model, spec in data["models"].items():
         text(model, "model id")
-        keys(spec, ["family", "default_effort", "efforts"], ["weight", "usd_per_mtok", "prices"], f"models.{model}")
+        keys(spec, ["family", "efforts"], ["weight"], f"models.{model}")
         text(spec["family"], f"models.{model}.family")
-        if spec["family"] not in data["families"]:
+        if spec["family"] not in prior["families"]:
             raise HowHardError(f"models.{model}.family: unknown family")
         efforts = spec["efforts"]
         if not isinstance(efforts, list) or not efforts or any(e not in EFFORTS for e in efforts) or len(set(efforts)) != len(efforts):
             raise HowHardError(f"models.{model}.efforts: unknown, duplicate or missing effort")
-        if spec["default_effort"] not in efforts:
-            raise HowHardError(f"models.{model}.default_effort: unsupported effort")
         number(spec.get("weight", 1.0), f"models.{model}.weight", positive=True)
-        if "prices" in spec and "usd_per_mtok" in spec:
-            raise HowHardError(f"models.{model}: use one price form")
-        if "usd_per_mtok" in spec:
-            number(spec["usd_per_mtok"], f"models.{model}.usd_per_mtok", nonnegative=True)
-        if "prices" in spec:
-            keys(spec["prices"], TOKEN_KINDS, where=f"models.{model}.prices")
-            for kind, value in spec["prices"].items():
-                number(value, f"models.{model}.prices.{kind}", nonnegative=True)
-    for family, spec in data["families"].items():
-        current = data["models"].get(spec["current"])
-        if current is None or current["family"] != family:
-            raise HowHardError(f"families.{family}.current: model missing or mapped to another family")
     for task, cls in data.get("task_types", {}).items():
         text(task, "task_type", label=True)
         text(cls, f"task_types.{task}")

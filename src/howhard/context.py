@@ -20,7 +20,7 @@ from .validation import HowHardError, keys, number
 SETTINGS = tomllib.loads(packaged("context.toml").decode())
 FORMAT = SETTINGS["format"]
 PROJECT_FORMAT = "howhard-project-v1"
-DECISION_FORMAT = "howhard-decision-v1"
+DECISION_FORMAT = "howhard-decision-v3"
 COUNTS = ("files", "source_bytes", "languages", "test_files", "manifests", "changed_files")
 FLAGS = ("has_ci", "has_lockfile", "has_typing")
 PARAMETERS = (*COUNTS, *FLAGS, "coverage")
@@ -227,19 +227,21 @@ def encode(task_text, project_context):
 
 
 def row_context(row):
-    return encode(row.get("task_text", ""), row.get("project_context"))
+    return encode(row["task_text"], row["project_context"])
 
 
 def validate_row_context(row, where):
-    present = {"task_text", "project_context", "context_encoder"} & row.keys()
-    if present and present != {"task_text", "project_context", "context_encoder"}:
+    fields = {"task_text", "project_context", "context_encoder"}
+    present = fields & row.keys()
+    if not present and row["amends"] is not None:
+        return
+    if present != fields:
         raise HowHardError(f"{where}: task_text, project_context and context_encoder must occur together")
-    if present:
-        if row["context_encoder"] != FORMAT:
-            raise HowHardError(f"{where}.context_encoder: unsupported version")
-        validate_text(row["task_text"], f"{where}.task_text")
-        if row["project_context"] is not None:
-            try:
-                validate_project(row["project_context"])
-            except HowHardError as exc:
-                raise HowHardError(f"{where}.{exc}") from exc
+    if row["context_encoder"] != FORMAT:
+        raise HowHardError(f"{where}.context_encoder: unsupported version")
+    validate_text(row["task_text"], f"{where}.task_text")
+    if row["project_context"] is not None:
+        try:
+            validate_project(row["project_context"])
+        except HowHardError as exc:
+            raise HowHardError(f"{where}.{exc}") from exc

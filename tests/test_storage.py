@@ -16,10 +16,10 @@ def test_observe_round_trip_and_two_observes_flush_in_order(project):
     journal = config.path(config.data["journal"])
     before = log.read_bytes()
     a = engine.observe("X", "claude-opus-5-5", "high", "clean", id="a", tokens=45, seconds=1.2, cost_usd=.01, note="note", ticket="ticket")
-    b = engine.observe("Y", "claude-sonnet-5-5", "model_default", "loud", cause="depth", id="b")
+    b = engine.observe("Y", "claude-sonnet-5-5", "high", "loud", cause="depth", id="b")
     assert log.read_bytes() == before
     assert [json.loads(line) for line in journal.read_text().splitlines()] == [a, b]
-    assert b["default_effort"] == "high"
+    assert b["effort"] == "high"
     assert engine.flush() == ["a", "b"]
     assert journal.read_bytes() == b""
     assert [json.loads(line) for line in log.read_text().splitlines()] == [a, b]
@@ -33,7 +33,7 @@ def test_observe_round_trip_and_two_observes_flush_in_order(project):
     ({"seconds": -1}, "seconds"), ({"cost_usd": float("nan")}, "cost_usd"),
     ({"note": None}, "note"), ({"model": "unknown-model"}, "registry"),
     ({"effort": "huge"}, "effort"), ({"default_effort": "high"}, "default_effort"),
-    ({"effort": "model_default"}, "default_effort"),
+    ({"effort": "model_default"}, "effort"),
     ({"risk_class": "unknown"}, "risk_class"), ({"task_type": "unknown"}, "task_type"),
     ({"outcome": "loud"}, "cause"), ({"cause": "depth"}, "cause"),
     ({"amends": "later"}, "amends"),
@@ -89,7 +89,7 @@ def test_amendment_chain_retains_original_cell_project_and_cost(project):
     ("clean", ["loud", "silent", "clean"]),
 ])
 def test_outcome_corrections_replace_original_evidence_once(project, initial, corrections):
-    original = row(0, effort="model_default", default_effort="high", outcome=initial,
+    original = row(0, effort="high", outcome=initial,
                    tokens=10000, seconds=4.0, cost_usd=.5)
     config = project(rows=[original])
     config.data["models"][original["model"]]["weight"] = .4
@@ -184,15 +184,11 @@ def test_cli_appends_clean_and_loud_corrections(tmp_path, monkeypatch, capsys):
     assert engine.rows[0]["outcome"] == "clean" and engine.rows[0]["tokens"] == 100
 
 
-def test_model_default_historical_resolution_and_new_version(project):
-    config = project(rows=[row(0, effort="model_default", default_effort="high")])
+def test_explicit_new_model_inventory_reuses_known_family_evidence(project):
+    config = project(rows=[row(0, effort="high")])
     config.data["models"]["new-opus"] = deepcopy(config.data["models"]["claude-opus-5-5"])
-    config.data["models"]["claude-opus-5-5"]["default_effort"] = "low"
     engine = Engine(config)
-    assert engine.rows[0]["resolved_effort"] == "high"
-    before = engine.summary("X")
-    config.data["families"]["opus"]["current"] = "new-opus"
-    after = Engine(config).summary("X")
-    a = {(r["family"], r["effort"]): r for r in before["cells"]}
-    for b in after["cells"]:
-        assert b["P_loud"] == a[b["family"], b["effort"]]["P_loud"]
+    before = engine.summary("X", native_candidates=[{"model": "claude-opus-5-5", "effort": "high"}])
+    after = engine.summary("X", native_candidates=[{"model": "new-opus", "effort": "high"}])
+    assert after["cells"][0]["model"] == "new-opus"
+    assert after["cells"][0]["P_loud"] == before["cells"][0]["P_loud"]

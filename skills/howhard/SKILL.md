@@ -24,9 +24,9 @@ the host's actual tools execute the task.
    that limit. Do not supply zero or an API list price for unknown host charges.
 3. Run commands from the current project. `howhard paths --llm off --json` exposes the
    capture/state roots. Fresh Git worktrees share repository state automatically while
-   each task captures its current checkout; valid legacy and explicit stores are
-   retained. Keep protocol inputs/responses in temporary artifacts outside project
-   source. Do not create project wrappers, state contracts or a second memory store.
+   each task captures its current checkout. Explicit store selection remains available.
+   Keep protocol inputs/responses in temporary artifacts outside project source.
+   Do not create project wrappers, state contracts or a second memory store.
 4. For calling-agent reasoning, use `--llm off` and the returned `baseline_request` in a
    separate fresh model context without memory/history or learned tables. Then reason
    over the original task, project and retrieved experience for memory overrides. Copy

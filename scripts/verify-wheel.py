@@ -50,7 +50,9 @@ with tempfile.TemporaryDirectory(prefix="howhard-wheel-") as directory:
     assert installed_version == expected
     command = root / "venv/bin/howhard"
     assert subprocess.check_output([str(command), "--version"], cwd=root, env=environment, text=True).strip() == f"howhard {expected}"
-    picked = json.loads(subprocess.check_output([str(command), "pick", "bookkeeping", "--text", "repair spelling", "--seed", "42", "--json"], cwd=root, env=environment, text=True))
+    inventory = root / "candidates.json"
+    inventory.write_text(json.dumps([{"model": "wheel-native-model", "effort": "ultra"}]))
+    picked = json.loads(subprocess.check_output([str(command), "pick", "bookkeeping", "--candidates", str(inventory), "--text", "repair spelling", "--seed", "42", "--json"], cwd=root, env=environment, text=True))
     assert picked["seed"] == 42 and picked["chosen"]["model"]
     observed = json.loads(subprocess.check_output([str(command), "observe", picked["decision_id"], "clean", "--json"], cwd=root, env=environment, text=True))
     assert observed["observed"]["task_text"] == "repair spelling"
