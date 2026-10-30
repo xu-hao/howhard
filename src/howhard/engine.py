@@ -94,11 +94,11 @@ class Engine:
         return semantic.tool(self, {"tool": "evidence.read", "id": evidence_id}, allow_project=False)
 
     def _register(self, native_candidates):
-        if native_candidates is None:
-            return None
         from .native import register
+        previous = self.config.native_models
         inventory = register(self.config, native_candidates)
-        self.refresh()
+        if previous != self.config.native_models:
+            self.refresh()
         return inventory
 
     def _prepared(self, task_type, risk, task_text="", project_context=None, native_candidates=None):
@@ -114,13 +114,12 @@ class Engine:
         prepared = self._semantic_prepared(self._prepared(task_type, risk, task_text, project_context, inventory))
         return deepcopy(prepared[0])
 
-    def pick(self, task_type, task_text="", *, project_context=None, risk=None, seed=None, candidates=None, native_candidates=None):
-        if native_candidates is not None:
-            from .native import preflight
-            native_candidates = preflight(self.config, native_candidates)
+    def pick(self, task_type, task_text="", *, project_context=None, risk=None, seed=None, native_candidates=None):
+        from .native import preflight
+        native_candidates = preflight(self.config, native_candidates)
         started = time.monotonic()
         try:
-            result = self._pick(task_type, task_text, project_context=project_context, risk=risk, seed=seed, candidates=candidates, native_candidates=native_candidates)
+            result = self._pick(task_type, task_text, project_context=project_context, risk=risk, seed=seed, native_candidates=native_candidates)
         except Exception as exc:
             self._decision_event(None, task_type, started, error=type(exc).__name__)
             raise
@@ -138,7 +137,7 @@ class Engine:
         with storage.locked(self.config):
             storage.append_bytes(self.config.state_root / "decision-events.jsonl", canonical(event) + b"\n")
 
-    def _pick(self, task_type, task_text="", *, project_context=None, risk=None, seed=None, candidates=None, native_candidates=None):
+    def _pick(self, task_type, task_text="", *, project_context=None, risk=None, seed=None, native_candidates=None):
         if seed is not None and (type(seed) is not int or seed < 0):
             raise HowHardError("seed: expected a non-negative integer")
         inventory = self._register(native_candidates)
@@ -149,7 +148,7 @@ class Engine:
             if type(seed) is not int or seed < 0:
                 raise HowHardError("seed: expected a non-negative integer")
             parts = semantic.sample(prepared, seed, self.posterior.prior.noise)
-        result = choose(prepared, self.posterior, self.config, seed, candidates, parts)
+        result = choose(prepared, self.posterior, self.config, seed, parts)
         result["decision_id"] = decisions.save(self.config, result)
         return result
 
@@ -191,9 +190,8 @@ class Engine:
         inventory = self._register(native_candidates)
         prepared = self._prepared(task_type, risk, task_text, project_context, inventory)
         payload, snapshot = semantic.request(self, prepared)
-        bundle = {"format": "howhard-agent-request-v1", "fit_key": self.fit_key, "payload": payload, "snapshot": snapshot}
-        if inventory is not None:
-            bundle["native_candidates"] = inventory
+        bundle = {"format": "howhard-agent-request-v2", "fit_key": self.fit_key, "payload": payload, "snapshot": snapshot}
+        bundle["native_candidates"] = inventory
         bundle["project_root"] = str(self.config.project_root)
         return self._save_request(bundle)
 
@@ -212,10 +210,10 @@ class Engine:
             bundle = json.loads((self.config.state_root / "requests" / f"{request_id}.json").read_bytes())
         except (OSError, ValueError) as exc:
             raise HowHardError("request_id: unavailable or invalid agent request") from exc
-        if digest(bundle) != request_id or bundle.get("format") != "howhard-agent-request-v1":
+        from .validation import keys
+        keys(bundle, ["format", "fit_key", "payload", "snapshot", "native_candidates", "project_root"], where="request")
+        if digest(bundle) != request_id or bundle["format"] != "howhard-agent-request-v2":
             raise HowHardError("request_id: request integrity or format mismatch")
-        if "project_root" not in bundle:
-            raise HowHardError("request_id: legacy request has no worktree binding; prepare fresh context")
         if bundle["project_root"] != str(self.config.project_root):
             raise HowHardError("request_id: belongs to another worktree; prepare in the current project")
         if bundle["fit_key"] != self.fit_key or bundle["snapshot"]["revision"] != self.memory.snapshot()["revision"]:
@@ -233,28 +231,28 @@ class Engine:
             bundle["payload"]["retrieval"].append({"request": query, "result": result})
         return self._save_request(bundle)
 
-    def decide(self, request_id, response, *, seed=None, candidates=None):
+    def decide(self, request_id, response, *, seed=None):
         started = time.monotonic()
         try:
-            result = self._decide(request_id, response, seed=seed, candidates=candidates)
+            result = self._decide(request_id, response, seed=seed)
         except Exception as exc:
             self._decision_event(None, "calling-agent", started, error=type(exc).__name__)
             raise
         self._decision_event(result, result["task_type"], started)
         return result
 
-    def _decide(self, request_id, response, *, seed=None, candidates=None):
+    def _decide(self, request_id, response, *, seed=None):
         if seed is not None and (type(seed) is not int or seed < 0):
             raise HowHardError("seed: expected non-negative integer")
         bundle = self._load_request(request_id)
         payload = bundle["payload"]
-        prepared = self._prepared(payload["task_type"], payload["risk_class"], payload["context"]["task_text"], payload["context"]["project_context"], bundle.get("native_candidates"))
+        prepared = self._prepared(payload["task_type"], payload["risk_class"], payload["context"]["task_text"], payload["context"]["project_context"], bundle["native_candidates"])
         prepared = self._semantic_prepared(prepared, response, payload, bundle["snapshot"])
         seed = secrets.randbits(64) if seed is None else seed
         if type(seed) is not int or seed < 0:
             raise HowHardError("seed: expected non-negative integer")
         parts = semantic.sample(prepared, seed, self.posterior.prior.noise)
-        result = choose(prepared, self.posterior, self.config, seed, candidates, parts)
+        result = choose(prepared, self.posterior, self.config, seed, parts)
         result["decision_id"] = decisions.save(self.config, result)
         return result
 

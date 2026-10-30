@@ -12,7 +12,7 @@ from .validation import HowHardError, keys, number, text
 from .context import FORMAT as CONTEXT_FORMAT, capture_project, validate_row_context
 
 ROW_KEYS = ("id", "date", "ticket", "task_type", "risk_class", "model", "effort",
-            "default_effort", "outcome", "cause", "tokens", "seconds", "cost_usd", "note", "amends")
+            "outcome", "cause", "tokens", "seconds", "cost_usd", "note", "amends", "observed_at")
 
 
 @contextmanager
@@ -38,13 +38,12 @@ def read_bytes(path):
 
 
 def validate_row(row, config, where):
-    keys(row, ROW_KEYS, ["task_text", "project_context", "context_encoder", "decision_id", "observed_at"], where=where)
-    if "observed_at" in row:
-        try:
-            if not isinstance(row["observed_at"], str) or datetime.fromisoformat(row["observed_at"]).utcoffset() is None:
-                raise ValueError
-        except ValueError as exc:
-            raise HowHardError(f"{where}.observed_at: expected ISO timestamp with timezone") from exc
+    keys(row, ROW_KEYS, ["task_text", "project_context", "context_encoder", "decision_id"], where=where)
+    try:
+        if not isinstance(row["observed_at"], str) or datetime.fromisoformat(row["observed_at"]).utcoffset() is None:
+            raise ValueError
+    except ValueError as exc:
+        raise HowHardError(f"{where}.observed_at: expected ISO timestamp with timezone") from exc
     validate_row_context(row, where)
     if "decision_id" in row:
         text(row["decision_id"], f"{where}.decision_id")
@@ -70,13 +69,7 @@ def validate_row(row, config, where):
     model = config.data["models"].get(row["model"])
     if model is None:
         raise HowHardError(f"{where}.model: unknown model id {row['model']!r}; add it to the model registry")
-    if row["effort"] == "model_default":
-        if model.get("native") or row["default_effort"] not in config.efforts:
-            raise HowHardError(f"{where}.default_effort: required for model_default")
-    elif row["effort"] not in config.efforts or row["default_effort"] is not None:
-        raise HowHardError(f"{where}.effort/default_effort: invalid effort or unexpected default_effort")
-    resolved = row["default_effort"] if row["effort"] == "model_default" else row["effort"]
-    if resolved not in model["efforts"]:
+    if row["effort"] not in model["efforts"]:
         raise HowHardError(f"{where}.effort: unsupported by models.{row['model']}")
     if row["outcome"] not in ("clean", "loud", "silent"):
         raise HowHardError(f"{where}.outcome: unknown outcome")
@@ -162,7 +155,7 @@ def effective_rows(config, rows):
             roots[row["id"]] = row["id"]
             model = config.data["models"][row["model"]]
             originals[row["id"]] = {**row, "family": model["family"], "weight": model.get("weight", 1.0),
-                                     "resolved_effort": row["default_effort"] if row["effort"] == "model_default" else row["effort"]}
+                                     "resolved_effort": row["effort"]}
         else:
             root = roots[row["amends"]]
             roots[row["id"]] = root
@@ -209,11 +202,11 @@ def observe(config, task_type, model, effort, outcome, *, _automatic_context=(),
         row = dict(id=options.get("id", secrets.token_hex(6)), date=options.get("date", date.today().isoformat()),
                    observed_at=datetime.now(timezone.utc).isoformat(),
                    ticket=options.get("ticket"), task_type=task_type, risk_class=options.get("risk_class", config.task_types.get(task_type, "standard")),
-                   model=model, effort=effort, default_effort=registry["default_effort"] if effort == "model_default" else None,
+                   model=model, effort=effort,
                    outcome=outcome, cause=options.get("cause", None if outcome == "clean" else "unrecorded"),
                    tokens=options.get("tokens"), seconds=options.get("seconds"), cost_usd=options.get("cost_usd"),
                    note=options.get("note", ""), amends=options.get("amends"))
-        if "task_text" in options or "project_context" in options:
+        if row["amends"] is None:
             row.update(task_text=options.get("task_text", ""), project_context=capture_project(config, options.get("project_context")), context_encoder=CONTEXT_FORMAT)
         if "decision_id" in options:
             row["decision_id"] = options["decision_id"]
@@ -227,19 +220,12 @@ def observe(config, task_type, model, effort, outcome, *, _automatic_context=(),
             recorded = {k: v for k, v in existing.items() if k != "project"}
             comparable = dict(row)
             for field in _automatic_context:
-                if field in recorded:
-                    comparable[field] = recorded[field]
-                else:
-                    comparable.pop(field, None)
-            comparable["observed_at"] = recorded.get("observed_at")
-            if "observed_at" not in recorded:
-                comparable.pop("observed_at", None)
+                comparable[field] = recorded[field]
+            comparable["observed_at"] = recorded["observed_at"]
             if "date" not in options:
                 comparable["date"] = recorded["date"]
             if "risk_class" not in options:
                 comparable["risk_class"] = recorded["risk_class"]
-            if effort == "model_default":
-                comparable["default_effort"] = recorded["default_effort"]
             if comparable != recorded:
                 raise HowHardError(f"observe.id: conflicting feedback for {row['id']!r}")
             return recorded

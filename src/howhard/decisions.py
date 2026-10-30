@@ -18,11 +18,9 @@ def save(config, result):
              "project_identity": config.project_identity,
              **{key: result[key] for key in ("task_type", "risk_class", "chosen", "seed", "context")}}
     if "semantic" in result:
-        value["format"] = "howhard-decision-v2"
         value["semantic"] = result["semantic"]
-    if "cost_policy" in result:
-        value["cost_policy"] = result["cost_policy"]
-        value["native_candidates"] = result["native_candidates"]
+    value["cost_policy"] = result["cost_policy"]
+    value["native_candidates"] = result["native_candidates"]
     decision_id = digest(value)
     atomic_write(receipt_path(config, decision_id), canonical(value) + b"\n")
     return decision_id
@@ -45,34 +43,28 @@ def load(config, source):
             raise HowHardError(f"decision: cannot read valid receipt {path}") from exc
         if re.fullmatch(r"[0-9a-f]{64}", source) and digest(value) != source:
             raise HowHardError("decision: receipt content does not match its ID")
-    keys(value, ["format", "project", "task_type", "risk_class", "chosen", "seed", "context"], ["semantic", "cost_policy", "native_candidates", "project_identity"], where="decision")
-    if value["format"] not in (DECISION_FORMAT, "howhard-decision-v2"):
+    keys(value, ["format", "project", "project_identity", "task_type", "risk_class", "chosen", "seed", "context", "cost_policy", "native_candidates"], ["semantic"], where="decision")
+    if value["format"] != DECISION_FORMAT:
         raise HowHardError("decision.format: unsupported version")
-    if "cost_policy" in value:
-        policy = value["cost_policy"]
-        keys(policy, ["worker_money_included", "unknown_price_models", "comparison"], where="decision.cost_policy")
-        if type(policy["worker_money_included"]) is not bool or not isinstance(policy["unknown_price_models"], list):
-            raise HowHardError("decision.cost_policy: invalid worker money policy")
-        for model_id in policy["unknown_price_models"]:
-            text(model_id, "decision.cost_policy.unknown_price_models")
-        included = policy["worker_money_included"]
-        if included != (not policy["unknown_price_models"]) or policy["comparison"] != ("full-cost" if included else "risk-and-time-excluding-worker-money"):
-            raise HowHardError("decision.cost_policy: inconsistent comparison")
-        from .native import validate
-        inventory = validate(value.get("native_candidates"))
-        unknown = sorted({c["model"] for c in inventory if c.get("usd_per_mtok") is None})
-        if unknown != policy["unknown_price_models"]:
-            raise HowHardError("decision.cost_policy: does not match its native inventory")
-    elif "native_candidates" in value:
-        raise HowHardError("decision.native_candidates: missing cost policy")
-    if (value["format"] == "howhard-decision-v2") != ("semantic" in value):
-        raise HowHardError("decision.semantic: format and semantic payload must agree")
+    policy = value["cost_policy"]
+    keys(policy, ["worker_money_included", "unknown_price_models", "comparison"], where="decision.cost_policy")
+    if type(policy["worker_money_included"]) is not bool or not isinstance(policy["unknown_price_models"], list):
+        raise HowHardError("decision.cost_policy: invalid worker money policy")
+    for model_id in policy["unknown_price_models"]:
+        text(model_id, "decision.cost_policy.unknown_price_models")
+    included = policy["worker_money_included"]
+    if included != (not policy["unknown_price_models"]) or policy["comparison"] != ("full-cost" if included else "risk-and-time-excluding-worker-money"):
+        raise HowHardError("decision.cost_policy: inconsistent comparison")
+    from .native import validate
+    inventory = validate(value["native_candidates"])
+    unknown = sorted({c["model"] for c in inventory if c.get("usd_per_mtok") is None})
+    if unknown != policy["unknown_price_models"]:
+        raise HowHardError("decision.cost_policy: does not match its native inventory")
     if value["project"] != config.data["project"]:
         raise HowHardError("decision.project: does not match this project")
-    if "project_identity" in value:
-        identity = value["project_identity"]
-        if not isinstance(identity, str) or not re.fullmatch(r"[0-9a-f]{32}", identity) or identity != config.project_identity:
-            raise HowHardError("decision.project_identity: does not match this project's identity")
+    identity = value["project_identity"]
+    if not isinstance(identity, str) or not re.fullmatch(r"[0-9a-f]{32}", identity) or identity != config.project_identity:
+        raise HowHardError("decision.project_identity: does not match this project's identity")
     text(value["task_type"], "decision.task_type", label=True)
     text(value["risk_class"], "decision.risk_class")
     if value["risk_class"] not in config.data["classes"]:
@@ -82,7 +74,7 @@ def load(config, source):
     keys(value["chosen"], ["model", "family", "effort"], where="decision.chosen")
     for key, item in value["chosen"].items():
         text(item, f"decision.chosen.{key}")
-    if "native_candidates" in value and (value["chosen"]["model"], value["chosen"]["effort"]) not in {(c["model"], c["effort"]) for c in value["native_candidates"]}:
+    if (value["chosen"]["model"], value["chosen"]["effort"]) not in {(c["model"], c["effort"]) for c in value["native_candidates"]}:
         raise HowHardError("decision.chosen: not in its native candidate inventory")
     model = config.data["models"].get(value["chosen"]["model"])
     if model is None or model["family"] != value["chosen"]["family"] or value["chosen"]["effort"] not in model["efforts"]:

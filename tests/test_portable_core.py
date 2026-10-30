@@ -8,6 +8,7 @@ import subprocess
 import numpy as np
 import pytest
 
+from conftest import inventory
 from howhard import Engine
 from howhard.cli import main
 from howhard.validation import HowHardError
@@ -105,14 +106,13 @@ def test_raw_retry_preserves_first_auto_snapshot_after_project_changes(tmp_path)
     assert engine.raw_rows == before
 
 
-def test_raw_retry_retains_derived_risk_and_default_resolution(project):
+def test_raw_retry_retains_derived_risk_and_exact_effort(project):
     engine = Engine(project(), llm="off")
-    first = engine.observe("Y", "claude-opus-5-5", "model_default", "clean", id="execution")
+    first = engine.observe("Y", "claude-opus-5-5", "high", "clean", id="execution")
     engine.config.data["task_types"]["Y"] = "critical"
-    engine.config.data["models"]["claude-opus-5-5"]["default_effort"] = "low"
-    assert engine.observe("Y", "claude-opus-5-5", "model_default", "clean", id="execution") == first
+    assert engine.observe("Y", "claude-opus-5-5", "high", "clean", id="execution") == first
     with pytest.raises(HowHardError, match="conflict"):
-        engine.observe("Y", "claude-opus-5-5", "model_default", "clean", id="execution", risk_class="critical")
+        engine.observe("Y", "claude-opus-5-5", "high", "clean", id="execution", risk_class="critical")
     with pytest.raises(HowHardError, match="conflict"):
         engine.observe("Y", "claude-opus-5-5", "low", "clean", id="execution")
 
@@ -272,7 +272,7 @@ def test_concurrent_native_inventory_admission_preserves_both_identities(tmp_pat
     assert all(len(request["baseline_request"]["cells"]) == 1 for request in requests)
 
 
-def test_git_legacy_store_and_explicit_config_are_preserved(tmp_path):
+def test_git_ignores_old_store_and_preserves_explicit_config(tmp_path):
     repo, tree = tmp_path / "repo", tmp_path / "tree"
     repo.mkdir()
     def git(*args):
@@ -281,21 +281,21 @@ def test_git_legacy_store_and_explicit_config_are_preserved(tmp_path):
     (repo / "README.md").write_text("Current project")
     git("add", ".")
     git("-c", "user.name=Test", "-c", "user.email=test@example.test", "commit", "-qm", "initial")
-    legacy = repo / ".howhard"
-    legacy.mkdir()
-    (legacy / "outcomes.jsonl").write_bytes(b"")
+    old_store = repo / ".howhard"
+    old_store.mkdir()
+    (old_store / "outcomes.jsonl").write_bytes(b"")
     try:
         git("worktree", "add", "-qb", "work", str(tree))
         engine = Engine(directory=tree, llm="off")
-        assert engine.config.state_root == legacy
+        assert engine.config.state_root == repo / ".git/howhard"
         assert engine.config.project_root == tree
-        assert (legacy / "outcomes.jsonl").read_bytes() == b""
-        assert not (repo / ".git/howhard").exists()
+        assert (old_store / "outcomes.jsonl").read_bytes() == b""
+        assert (repo / ".git/howhard").exists()
         (tree / "howhard.toml").write_text('on_cap_unmet = "flag-review"\n[prior.overrides.outcome.loud.a]\nmean = -1.2\nsd = 0.5\n')
         configured = Engine(directory=tree, llm="off")
         assert configured.config.state_root == tree / ".howhard"
         assert configured.config.prior["outcome"]["loud"]["a"]["mean"] == -1.2
-        assert engine.config.state_root == legacy
+        assert engine.config.state_root == repo / ".git/howhard"
     finally:
         if tree.exists():
             git("worktree", "remove", "--force", str(tree))
@@ -344,22 +344,17 @@ def test_initialized_project_and_state_survive_directory_move(tmp_path, git_proj
 
 
 def test_new_receipts_refuse_different_repository_with_same_project_label(tmp_path):
-    from howhard.decisions import load
     projects = [tmp_path / "first", tmp_path / "other"]
     for project in projects:
         project.mkdir()
         subprocess.run(["git", "-C", str(project), "init", "-q"], check=True)
     first, other = (Engine(directory=p, llm="off") for p in projects)
-    choice = first.pick("task", seed=3)
+    choice = first.pick("task", seed=3, native_candidates=inventory())
     path = first.config.state_root / "decisions" / f"{choice['decision_id']}.json"
     assert first.config.data["project"] == other.config.data["project"] == "local"
     with pytest.raises(HowHardError, match="identity"):
         other.observe_decision(path, "clean", id="foreign")
     assert other.raw_rows == []
-    # Published receipts without the new optional identity retain their label contract.
-    legacy = json.loads(path.read_bytes())
-    legacy.pop("project_identity", None)
-    assert load(other.config, legacy)["project"] == "local"
 
 
 @pytest.mark.parametrize("ancestor", [False, True])
@@ -372,7 +367,7 @@ def test_state_directory_cannot_replace_or_contain_capture_root(tmp_path, ancest
     assert sorted(p.name for p in project.iterdir()) == ["README.md"]
 
 
-def test_default_legacy_state_symlink_cannot_resolve_to_capture_root(tmp_path):
+def test_default_state_symlink_cannot_resolve_to_capture_root(tmp_path):
     (tmp_path / "README.md").write_text("Keep this project source")
     (tmp_path / "pending.jsonl").write_bytes(b"")
     (tmp_path / ".howhard").symlink_to(tmp_path, target_is_directory=True)

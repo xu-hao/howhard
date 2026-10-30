@@ -7,7 +7,7 @@ import pytest
 
 from howhard import Engine
 from howhard.validation import HowHardError
-from conftest import cell
+from conftest import inventory, MODELS, cell
 from howhard.context import capture_project, lexical, FEATURE_NAMES, FORMAT
 from howhard.storage import observe
 
@@ -19,18 +19,18 @@ def test_text_changes_predictions_within_one_type(project):
         observe(engine.config, "Y", "claude-opus-5-5", "high", "loud", task_text="database migration transaction locking", project_context={"files": 100}, id=f"hard-{i}")
         observe(engine.config, "Y", "claude-opus-5-5", "high", "clean", task_text="spelling punctuation typo correction", project_context={"files": 100}, id=f"easy-{i}")
     engine.refresh()
-    hard = cell(engine.summary("Y", task_text="database migration transaction locking", project_context={"files": 100}), "opus", "high")
-    easy = cell(engine.summary("Y", task_text="spelling punctuation typo correction", project_context={"files": 100}), "opus", "high")
+    hard = cell(engine.summary("Y", task_text="database migration transaction locking", project_context={"files": 100}, native_candidates=inventory()), "opus", "high")
+    easy = cell(engine.summary("Y", task_text="spelling punctuation typo correction", project_context={"files": 100}, native_candidates=inventory()), "opus", "high")
     assert hard["P_loud"]["mean"] > easy["P_loud"]["mean"] + .1
 
 
 def test_changed_project_is_recaptured_and_old_rows_are_unchanged(tmp_path):
     (tmp_path / "README.md").write_text("small isolated library")
     engine = Engine(directory=tmp_path)
-    a = engine.pick("bookkeeping", task_text="update the documentation", seed=42)
+    a = engine.pick("bookkeeping", task_text="update the documentation", seed=42, native_candidates=inventory())
     (tmp_path / "README.md").write_text("large distributed system with queues transactions and concurrency")
     (tmp_path / "new.py").write_text("def public_api(): pass\n")
-    b = engine.pick("bookkeeping", task_text="update the documentation", seed=42)
+    b = engine.pick("bookkeeping", task_text="update the documentation", seed=42, native_candidates=inventory())
     assert a["context"]["project_context"]["fingerprint"] != b["context"]["project_context"]["fingerprint"]
     chosen = a["chosen"]
     observed = engine.observe("bookkeeping", chosen["model"], chosen["effort"], "clean", decision=a["decision_id"], id="original")
@@ -45,9 +45,9 @@ def test_changed_project_is_recaptured_and_old_rows_are_unchanged(tmp_path):
 def test_context_reproducible_and_memoized_by_actual_context(project):
     engine = Engine(project())
     args = dict(task_text="repair transaction rollback", project_context={"files": 42, "coverage": .8}, seed=17)
-    a = engine.pick("Y", **args)
-    assert a == engine.pick("Y", **args)
-    b = engine.pick("Y", **{**args, "task_text": "repair spelling"})
+    a = engine.pick("Y", **args, native_candidates=inventory())
+    assert a == engine.pick("Y", **args, native_candidates=inventory())
+    b = engine.pick("Y", **{**args, "task_text": "repair spelling"}, native_candidates=inventory())
     assert a["decision_id"] != b["decision_id"]
     assert len(engine._summaries) == 2
 
@@ -55,7 +55,7 @@ def test_context_reproducible_and_memoized_by_actual_context(project):
 @pytest.mark.parametrize("context", [{"files": -1}, {"coverage": 1.1}, {"unknown": 3}, {"files": True}])
 def test_invalid_project_parameters_are_refused(project, context):
     with pytest.raises(HowHardError):
-        Engine(project()).pick("Y", task_text="test", project_context=context, seed=1)
+        Engine(project()).pick("Y", task_text="test", project_context=context, seed=1, native_candidates=inventory())
 
 
 def test_task_text_can_reverse_family_and_effort_preferences(project):
@@ -72,11 +72,11 @@ def test_task_text_can_reverse_family_and_effort_preferences(project):
             ("sonnet", "high", "distributed transaction concurrency invariants", "loud"),
             ("opus", "xhigh", "distributed transaction concurrency invariants", "clean"),
         ):
-            model = config.data["families"][family]["current"]
+            model = MODELS[family]
             observe(config, "Y", model, effort, outcome, task_text=description, project_context=snapshot, id=f"{i}-{family}-{description[:3]}")
     engine = Engine(config)
-    a = engine.summary("Y", "spelling punctuation correction", project_context=snapshot)
-    b = engine.summary("Y", "distributed transaction concurrency invariants", project_context=snapshot)
+    a = engine.summary("Y", "spelling punctuation correction", project_context=snapshot, native_candidates=inventory())
+    b = engine.summary("Y", "distributed transaction concurrency invariants", project_context=snapshot, native_candidates=inventory())
     assert cell(a, "sonnet", "high")["P_clean"]["mean"] > cell(a, "opus", "xhigh")["P_clean"]["mean"]
     assert cell(b, "sonnet", "high")["P_clean"]["mean"] < cell(b, "opus", "xhigh")["P_clean"]["mean"]
 
@@ -93,8 +93,8 @@ def test_task_text_can_reverse_effort_within_same_family(project):
         ):
             observe(config, "Y", "claude-opus-5-5", effort, outcome, task_text=description, project_context=snapshot, id=f"{i}-{effort}-{description[:3]}")
     engine = Engine(config)
-    a = engine.summary("Y", "spelling punctuation correction", project_context=snapshot)
-    b = engine.summary("Y", "distributed transaction concurrency invariants", project_context=snapshot)
+    a = engine.summary("Y", "spelling punctuation correction", project_context=snapshot, native_candidates=inventory())
+    b = engine.summary("Y", "distributed transaction concurrency invariants", project_context=snapshot, native_candidates=inventory())
     assert cell(a, "opus", "high")["P_clean"]["mean"] > cell(a, "opus", "xhigh")["P_clean"]["mean"]
     assert cell(b, "opus", "high")["P_clean"]["mean"] < cell(b, "opus", "xhigh")["P_clean"]["mean"]
 
@@ -107,8 +107,8 @@ def test_project_parameters_change_outcomes_tokens_and_time(project):
         observe(config, "Y", "claude-opus-5-5", "high", "clean", task_text="same task", project_context=small, tokens=1000, seconds=10, id=f"small-{i}")
         observe(config, "Y", "claude-opus-5-5", "high", "loud", task_text="same task", project_context=large, tokens=100000, seconds=1000, id=f"large-{i}")
     engine = Engine(config)
-    a = cell(engine.summary("Y", "same task", project_context=small), "opus", "high")
-    b = cell(engine.summary("Y", "same task", project_context=large), "opus", "high")
+    a = cell(engine.summary("Y", "same task", project_context=small, native_candidates=inventory()), "opus", "high")
+    b = cell(engine.summary("Y", "same task", project_context=large, native_candidates=inventory()), "opus", "high")
     assert a["P_loud"]["mean"] + .1 < b["P_loud"]["mean"]
     assert a["C_run"] < b["C_run"] / 2
     assert a["T"] < b["T"] / 2
@@ -120,10 +120,10 @@ def test_changing_project_parameters_can_reverse_family_preference(project):
     large = capture_project(config, {"files": 10000, "coverage": 0.0})
     for i in range(24):
         for family, context, outcome in (("sonnet", small, "clean"), ("opus", small, "loud"), ("sonnet", large, "loud"), ("opus", large, "clean")):
-            observe(config, "Y", config.data["families"][family]["current"], "high", outcome, task_text="same description", project_context=context, id=f"{i}-{family}-{context['parameters']['files']}")
+            observe(config, "Y", MODELS[family], "high", outcome, task_text="same description", project_context=context, id=f"{i}-{family}-{context['parameters']['files']}")
     engine = Engine(config)
-    a = engine.summary("Y", "same description", project_context=small)
-    b = engine.summary("Y", "same description", project_context=large)
+    a = engine.summary("Y", "same description", project_context=small, native_candidates=inventory())
+    b = engine.summary("Y", "same description", project_context=large, native_candidates=inventory())
     assert cell(a, "sonnet", "high")["P_clean"]["mean"] > cell(a, "opus", "high")["P_clean"]["mean"]
     assert cell(b, "sonnet", "high")["P_clean"]["mean"] < cell(b, "opus", "high")["P_clean"]["mean"]
 
@@ -162,12 +162,12 @@ def test_virtual_environment_does_not_change_project_snapshot(tmp_path):
     assert capture_project(config) == before
 
 
-def test_receipt_cli_round_trip_after_project_change(tmp_path, monkeypatch, capsys):
+def test_receipt_cli_round_trip_after_project_change(tmp_path, monkeypatch, capsys, candidate_file):
     from howhard.cli import main
     monkeypatch.chdir(tmp_path)
     (tmp_path / "README.md").write_text("original description")
     (tmp_path / "task.txt").write_text("repair the transaction rollback")
-    assert main(["pick", "specified-implementation", "--text-file", "task.txt", "--save-decision", "receipt.json", "--json", "--seed", "42"]) == 0
+    assert main(["pick", "specified-implementation", "--text-file", "task.txt", "--save-decision", "receipt.json", "--json", "--seed", "42", "--candidates", str(candidate_file)]) == 0
     choice = json.loads(capsys.readouterr().out)
     (tmp_path / "README.md").write_text("completely different repository now")
     assert main(["observe", "receipt.json", "clean", "--json", "--id", "from-receipt"]) == 0
@@ -217,12 +217,12 @@ def test_context_transfer_excludes_text_and_snapshots(project, tmp_path):
 def test_receipt_mismatch_and_partial_row_context_refused(project):
     config = project()
     engine = Engine(config)
-    picked = engine.pick("Y", "fix spelling", seed=3)
+    picked = engine.pick("Y", "fix spelling", seed=3, native_candidates=inventory())
     with pytest.raises(HowHardError, match="match"):
         engine.observe("X", picked["chosen"]["model"], picked["chosen"]["effort"], "clean", decision=picked)
     log = config.path(config.data["logs"][0]["path"])
     from conftest import row
-    log.write_text(json.dumps({**row(1), "task_text": "partial"}) + "\n")
+    log.write_text(json.dumps({k: v for k, v in row(1).items() if k != "context_encoder"}) + "\n")
     with pytest.raises(HowHardError, match="occur together"):
         Engine(config)
 
@@ -233,7 +233,7 @@ def test_hashing_and_receipt_reproducible_across_processes(project):
     import sys
     config = project()
     # A path-stable snapshot avoids inspecting process-local temporary artifacts.
-    script = 'from howhard import Engine; import json; e=Engine("howhard.toml"); print(json.dumps(e.pick("Y", "Unicode CAFÉ rollback transaction", seed=42), sort_keys=True))'
+    script = 'from howhard import Engine; import json; e=Engine("howhard.toml"); print(json.dumps(e.pick("Y", "Unicode CAFÉ rollback transaction", seed=42, native_candidates=[{"model":"claude-opus-5-5","effort":"high"}]), sort_keys=True))'
     outputs = []
     for seed in ("1", "999"):
         env = {**os.environ, "PYTHONHASHSEED": seed}
@@ -247,7 +247,7 @@ def test_hashing_and_receipt_reproducible_across_processes(project):
 def test_context_encoder_mismatch_and_corrupt_receipt_refused(project, tmp_path):
     from howhard.decisions import receipt_path
     engine = Engine(project())
-    choice = engine.pick("Y", "private task", seed=2)
+    choice = engine.pick("Y", "private task", seed=2, native_candidates=inventory())
     receipt = receipt_path(engine.config, choice["decision_id"])
     data = json.loads(receipt.read_bytes())
     data["context"]["task_text"] = "tampered"

@@ -4,6 +4,7 @@ import json
 import sys
 import pytest
 
+from conftest import inventory
 from howhard import Engine
 from howhard.cli import main
 from howhard.llm import CommandLLM, LLMError
@@ -37,7 +38,7 @@ def test_memory_cli_full_lifecycle(tmp_path, monkeypatch, capsys):
 def test_calling_agent_request_retrieval_decision_and_writer(project):
     engine = Engine(project(), llm="off")
     entry = engine.memory.add("Migration", "Use boundary validation")
-    request = engine.prepare("Y", "Repair transaction ordering")
+    request = engine.prepare("Y", "Repair transaction ordering", native_candidates=inventory())
     assert "memories" not in request["baseline_request"]
     looked_up = engine.retrieve(request["request_id"], [{"tool": "memory.read", "id": entry["id"]}])
     fixture = FixtureLLM()
@@ -53,7 +54,7 @@ def test_calling_agent_request_retrieval_decision_and_writer(project):
         engine.decide(looked_up["request_id"], response, seed=4)
 
 
-def test_command_adapter_and_cli_integration(tmp_path, monkeypatch, capsys):
+def test_command_adapter_and_cli_integration(tmp_path, monkeypatch, capsys, candidate_file):
     script = tmp_path / "fixture_model.py"
     script.write_text('''import json,sys
 r=json.load(sys.stdin)["request"]
@@ -66,7 +67,7 @@ else:
 ''')
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("HOWHARD_LLM_COMMAND", json.dumps([sys.executable, str(script)]))
-    assert main(["pick", "bookkeeping", "--text", "Track issue", "--llm", "command", "--json", "--seed", "8"]) == 0
+    assert main(["pick", "bookkeeping", "--text", "Track issue", "--llm", "command", "--json", "--seed", "8", "--candidates", str(candidate_file)]) == 0
     picked = json.loads(capsys.readouterr().out)
     assert picked["backend"]["mode"] == "semantic"
     assert main(["observe", picked["decision_id"], "clean", "--llm", "command", "--json", "--id", "run"]) == 0
@@ -94,7 +95,7 @@ def test_command_invalid_json_timeout_and_secret_free_identity(tmp_path):
 
 def test_report_scores_observed_actions_and_keeps_unknown_costs(project):
     engine = Engine(project(), llm=FixtureLLM())
-    picked = engine.pick("Y", "Task", seed=1, candidates=[("opus", "high")])
+    picked = engine.pick("Y", "Task", seed=1, native_candidates=inventory([("opus", "high")]))
     engine.observe_decision(picked["decision_id"], "clean", id="one", cost_usd=.2)
     stats = report(engine)
     assert stats["runs"] == 1 and stats["outcomes"]["clean"] == 1
@@ -106,7 +107,7 @@ def test_report_scores_observed_actions_and_keeps_unknown_costs(project):
 
 def test_calling_agent_costs_and_decisions_are_not_reported_as_free(project):
     engine = Engine(project(), llm="off")
-    pending = engine.prepare("Y", "Task")
+    pending = engine.prepare("Y", "Task", native_candidates=inventory())
     response = FixtureLLM().complete(pending["baseline_request"])
     response["memory_forecasts"] = []
     engine.decide(pending["request_id"], response, seed=1)

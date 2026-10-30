@@ -6,21 +6,21 @@ import pytest
 from howhard import Engine
 from howhard.transfer import import_prior, shared
 from howhard.validation import HowHardError
-from conftest import cell, row
+from conftest import inventory, cell, row
 
 
 def test_both_cap_fallbacks_and_why_components(project):
     config = project()
     config.data["classes"]["standard"]["epsilon"] = 1e-9
     engine = Engine(config)
-    flagged = engine.pick("Y", seed=42)
+    flagged = engine.pick("Y", seed=42, native_candidates=inventory())
     assert not flagged["cap_met"] and flagged["needs_review"]
     chosen = cell(flagged, flagged["chosen"]["family"], flagged["chosen"]["effort"])
     for why in flagged["why"]:
         cheaper = cell(flagged, why["family"], why["effort"])
         assert sum(why["components"].values()) == pytest.approx(cheaper["sampled_J"] - chosen["sampled_J"], abs=1e-9)
     config.data["on_cap_unmet"] = "lowest-bound"
-    other = Engine(config).pick("Y", seed=42)
+    other = Engine(config).pick("Y", seed=42, native_candidates=inventory())
     assert not other["cap_met"] and not other["needs_review"]
     picked = cell(other, other["chosen"]["family"], other["chosen"]["effort"])
     assert picked["P_silent"]["upper"] == min(c["P_silent"]["upper"] for c in other["cells"])
@@ -31,18 +31,18 @@ def test_explore_within_limits_expected_cost_and_explains_filter(project):
     config.data["classes"]["standard"]["epsilon"] = .99
     config.data["classes"]["standard"]["explore_within"] = 0
     engine = Engine(config)
-    summary = engine.summary("Y")
+    summary = engine.summary("Y", native_candidates=inventory())
     minimum = min(c["J"] for c in summary["cells"])
     for seed in range(50):
-        result = engine.pick("Y", seed=seed)
+        result = engine.pick("Y", seed=seed, native_candidates=inventory())
         assert cell(result, result["chosen"]["family"], result["chosen"]["effort"])["J"] == minimum
     assert any(w["reason"] == "explore-within" for w in result["why"])
 
 
 def test_cap_explanations_and_json_schema(project):
     config = project(rows=[row(i, task="cheap", family="haiku", effort="low") for i in range(30)])
-    result = Engine(config).pick("cheap", seed=1)
-    assert set(result) == {"task_type", "risk_class", "constants", "cells", "fit", "chosen", "seed", "cap_met", "needs_review", "why", "context", "decision_id"}
+    result = Engine(config).pick("cheap", seed=1, native_candidates=inventory())
+    assert set(result) == {"task_type", "risk_class", "constants", "cells", "fit", "chosen", "seed", "cap_met", "needs_review", "why", "context", "decision_id", "native_candidates", "cost_policy", "paths"}
     assert result["cells"] == sorted(result["cells"], key=lambda c: (c["C_run"], c["family"], c["effort"]))
     assert all(set(c) == {"model", "family", "effort", "P_clean", "P_loud", "P_silent", "C_run", "T", "J", "sampled_J", "admissible"} for c in result["cells"])
 
@@ -92,8 +92,10 @@ def test_export_inflation_preserves_means_and_cross_covariances(project, tmp_pat
     for block in ("outcome", "tokens", "time"):
         source = getattr(engine.posterior, block)
         indices = [i for i, label in enumerate(source.labels) if shared(label)]
-        np.testing.assert_array_equal(value["blocks"][block]["mean"], source.mean[indices])
-        np.testing.assert_array_equal(value["blocks"][block]["covariance"], source.covariance[np.ix_(indices, indices)] * 2)
+        exported = value["blocks"][block]
+        positions = [exported["labels"].index(source.labels[i]) for i in indices]
+        np.testing.assert_array_equal(np.asarray(exported["mean"])[positions], source.mean[indices])
+        np.testing.assert_array_equal(np.asarray(exported["covariance"])[np.ix_(positions, positions)], source.covariance[np.ix_(indices, indices)] * 2)
 
 
 @pytest.mark.parametrize("malformation,match", [
