@@ -1,6 +1,6 @@
 {
   "name": "howhard",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Recommend model and reasoning effort from task context, then learn from actual feedback through writable semantic memory.",
   "author": {"name": "howhard contributors"},
   "repository": "https://github.com/xu-hao/howhard"

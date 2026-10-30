@@ -20,7 +20,7 @@ def strings(value, where):
 
 class MemoryStore:
     def __init__(self, config, evidence=None):
-        self.path = config.base / ".howhard" / "memory.sqlite3"
+        self.path = config.state_root / "memory.sqlite3"
         self._evidence = evidence or (lambda: set())
 
     @contextmanager

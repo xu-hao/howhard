@@ -132,9 +132,10 @@ def export_prior(posterior, config, path):
         value["format"] = CONTEXT_FORMAT
         value["context_encoder"] = ENCODER
         value["vocabularies"]["features"] = list(FEATURE_NAMES)
+    allowed = allowed_labels(value["vocabularies"])
     for block in ("outcome", "tokens", "time"):
         source = getattr(posterior, block)
-        indices = [i for i, label in enumerate(source.labels) if shared(label)]
+        indices = [i for i, label in enumerate(source.labels) if shared(label) and label in allowed[block]]
         value["blocks"][block] = {"labels": [source.labels[i] for i in indices],
             "mean": source.mean[indices].tolist(),
             "covariance": (source.covariance[np.ix_(indices, indices)] * inflation).tolist()}

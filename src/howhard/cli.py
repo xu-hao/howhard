@@ -6,8 +6,8 @@ import sys
 from pathlib import Path
 
 from . import __version__
-from .config import EFFORTS
 from .engine import Engine
+from .config import load_config
 from .validation import HowHardError
 
 
@@ -16,6 +16,7 @@ def common(command):
     command.add_argument("--cache", metavar="PATH", help=argparse.SUPPRESS)
     command.add_argument("--journal", metavar="PATH", help=argparse.SUPPRESS)
     command.add_argument("--llm", choices=("auto", "off", "claude", "command"), help="LLM backend; auto reuses an installed Claude CLI")
+    command.add_argument("--state-dir", metavar="PATH", help="explicit durable state directory; current project capture stays separate")
     command.add_argument("--json", action="store_true")
 
 
@@ -23,7 +24,7 @@ def parser():
     root = argparse.ArgumentParser(prog="howhard", description="Choose a model and effort, then learn from the outcome. No setup required.")
     root.add_argument("--version", action="version", version=f"howhard {__version__}")
     commands = root.add_subparsers(dest="command", required=True)
-    for name in ("pick", "summary", "observe", "flush", "export-prior", "import-prior", "context", "decide", "retrieve", "report"):
+    for name in ("pick", "summary", "observe", "flush", "export-prior", "import-prior", "context", "decide", "retrieve", "report", "evidence", "paths"):
         command = commands.add_parser(name)
         common(command)
         if name in ("pick", "summary", "observe", "context"):
@@ -34,12 +35,17 @@ def parser():
             command.add_argument("--project-context", metavar="PATH", help="JSON snapshot or project parameter overrides")
         if name in ("pick", "summary", "context"):
             command.add_argument("--risk", help="optional risk policy override")
+            command.add_argument("--candidates", metavar="FILE", help="JSON native model/effort inventory, with optional usd_per_mtok")
+        if name == "evidence":
+            command.add_argument("id")
+            command.add_argument("--raw", action="store_true", help="return the exact recorded row rather than current effective evidence")
         if name == "pick":
             command.add_argument("--seed", type=int)
             command.add_argument("--save-decision", metavar="PATH", help="copy the decision receipt to a file")
         if name == "observe":
+            command.add_argument("--native", action="store_true", help="admit a known actual native model/control for raw feedback without a decision")
             command.add_argument("model", nargs="?", help="model ID, or outcome when the first argument is a decision ID")
-            command.add_argument("effort", nargs="?", choices=(*EFFORTS, "model_default"))
+            command.add_argument("effort", nargs="?", help="exact registered effort/control identity")
             command.add_argument("outcome", nargs="?", choices=("clean", "loud", "silent"))
             command.add_argument("--decision", metavar="ID_OR_PATH", help="use the original task text and project snapshot")
             command.add_argument("--cause", choices=("depth", "capability", "unrecorded"))
@@ -102,6 +108,8 @@ def render(result):
     if "semantic" in result:
         lines.append(result["semantic"]["reason"])
         lines.append("Intervals: statistical safety guard plus approximate weighted semantic envelope")
+    if not result.get("cost_policy", {}).get("worker_money_included", True):
+        lines.append("Worker monetary cost is unknown for at least one candidate and omitted uniformly from comparison; J includes risk and time only.")
     if "chosen" in result:
         chosen = result["chosen"]
         lines.append(f"{chosen['model']} ({chosen['family']}) effort={chosen['effort']} seed={result['seed']}")
@@ -116,7 +124,7 @@ def render(result):
         for name in ("P_clean", "P_loud", "P_silent"):
             p = row[name]
             fields.append(f"{p['mean']:.3f} [{p['lower']:.3f}, {p['upper']:.3f}]")
-        fields.extend((f"{row['C_run']:.4f}", f"{row['T']:.4f}", f"{row['J']:.4f}",
+        fields.extend((f"{row['C_run']:.4f}" if row["C_run"] is not None else "unknown", f"{row['T']:.4f}", f"{row['J']:.4f}",
                        f"{row['sampled_J']:.4f}" if "sampled_J" in row else "—", str(row["admissible"])))
         lines.append("  ".join(fields))
     for reason in result.get("why", []):
@@ -179,7 +187,12 @@ def memory_command(engine, args):
 def main(argv=None):
     args = parser().parse_args(argv)
     try:
-        engine = Engine(args.config, cache_path=args.cache, journal_path=args.journal, llm=args.llm)
+        config = load_config(args.config, directory=Path.cwd(), state_directory=args.state_dir)
+        native_candidates = None
+        if args.command in ("pick", "summary", "context") and args.candidates is not None:
+            from .native import preflight
+            native_candidates = preflight(config, read_json(args.candidates))
+        engine = Engine(config, cache_path=args.cache, journal_path=args.journal, llm=args.llm)
         context_options = {}
         if args.command in ("pick", "summary", "observe", "context"):
             if args.text_file is not None:
@@ -192,13 +205,17 @@ def main(argv=None):
                 except (ValueError, UnicodeError) as exc:
                     raise HowHardError("project_context: expected valid JSON") from exc
         if args.command == "pick":
-            result = engine.pick(args.task_type, risk=args.risk, seed=args.seed, **context_options)
+            result = engine.pick(args.task_type, risk=args.risk, seed=args.seed, native_candidates=native_candidates, **context_options)
             if args.save_decision is not None:
                 engine.save_decision(result["decision_id"], args.save_decision)
         elif args.command == "summary":
-            result = engine.summary(args.task_type, risk=args.risk, **context_options)
+            result = engine.summary(args.task_type, risk=args.risk, native_candidates=native_candidates, **context_options)
         elif args.command == "context":
-            result = engine.prepare(args.task_type, risk=args.risk, **context_options)
+            result = engine.prepare(args.task_type, risk=args.risk, native_candidates=native_candidates, **context_options)
+        elif args.command == "evidence":
+            result = engine.evidence(args.id, raw=args.raw)
+        elif args.command == "paths":
+            result = engine.paths
         elif args.command == "decide":
             result = engine.decide(args.request_id, read_json(args.file), seed=args.seed)
         elif args.command == "retrieve":
@@ -213,9 +230,9 @@ def main(argv=None):
             if args.effort is None and args.outcome is None:
                 if args.model not in ("clean", "loud", "silent") or args.decision is not None or context_options:
                     raise HowHardError("observe: expected DECISION_ID OUTCOME, or TASK_TYPE MODEL EFFORT OUTCOME")
-                observed = engine.observe_decision(args.task_type, args.model, **options)
+                observed = engine.observe_decision(args.task_type, args.model, native=args.native, **options)
             elif args.model is not None and args.effort is not None and args.outcome is not None:
-                observed = engine.observe(args.task_type, args.model, args.effort, args.outcome, decision=args.decision, **context_options, **options)
+                observed = engine.observe(args.task_type, args.model, args.effort, args.outcome, decision=args.decision, native=args.native, **context_options, **options)
             else:
                 raise HowHardError("observe: expected DECISION_ID OUTCOME, or TASK_TYPE MODEL EFFORT OUTCOME")
             result = {"observed": observed, "fit": engine.posterior.statistics, "memory_update": engine.last_memory_update}

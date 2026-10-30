@@ -14,7 +14,7 @@ SUMMARY_SEED = 20260501
 SUMMARY_DRAWS = 4000
 
 
-def prepare(posterior, config, task, risk=None, context=None):
+def prepare(posterior, config, task, risk=None, context=None, native_candidates=None):
     text(task, "task_type", label=True)
     cls = risk or config.task_types.get(task)
     if cls is None:
@@ -30,15 +30,30 @@ def prepare(posterior, config, task, risk=None, context=None):
         prior = build_prior(config, extra_types={**posterior.prior.task_types, task: cls}, contextual=posterior.prior.has_context or context is not None)
         distributions = {b: extend(distributions[b], getattr(prior, b)) for b in distributions}
     cells = []
-    for family, family_spec in sorted(config.data["families"].items(), key=lambda pair: (pair[1]["tier"], pair[0])):
-        if not family_spec["selectable"]:
-            continue
-        model = family_spec["current"]
-        for effort in config.prior["efforts"]:
-            if effort in config.data["models"][model]["efforts"]:
-                cells.append(dict(model=model, family=family, effort=effort, price=config.price(model)))
+    if native_candidates is not None:
+        pairs = set()
+        for candidate in native_candidates:
+            model, effort = candidate["model"], candidate["effort"]
+            spec = config.data["models"][model]
+            family = spec["family"]
+            if (family, effort) in pairs:
+                raise HowHardError("candidates: registered models share a family/effort cell; cannot distinguish their forecasts")
+            pairs.add((family, effort))
+            price = candidate.get("usd_per_mtok")  # Host worker pricing is not an API list-price assumption.
+            cells.append(dict(model=model, family=family, effort=effort, price=price))
+    else:
+        for family, family_spec in sorted(config.data["families"].items(), key=lambda pair: (pair[1]["tier"], pair[0])):
+            if not family_spec["selectable"]:
+                continue
+            model = family_spec["current"]
+            for effort in config.prior["efforts"]:
+                if effort in config.data["models"][model]["efforts"]:
+                    cells.append(dict(model=model, family=family, effort=effort, price=config.price(model)))
     if not cells:
         raise HowHardError("families: no selectable cells")
+    monetary = all(c["price"] is not None for c in cells)
+    for cell in cells:
+        cell["comparison_price"] = cell["price"] if monetary else 0.0
     inputs = [(task, c["family"], c["effort"], config.data["project"]) for c in cells]
     features = encode(context["task_text"], context["project_context"]) if context is not None else {}
     marginals = {b: distributions[b].project(design(distributions[b], b, inputs, [features] * len(inputs))) for b in distributions}
@@ -50,27 +65,34 @@ def components(marginals, cells, noise, constants, rng, size):
     p = probabilities(outcome)
     tokens = np.exp(draw(*marginals["tokens"], rng, size) + noise["tokens"] ** 2 / 2)
     hours = np.exp(draw(*marginals["time"], rng, size) + noise["time"] ** 2 / 2) / 3600
-    run = tokens / 1e6 * np.array([c["price"] for c in cells])
-    parts = {"run": run, "loud": p[:, :, 1] * constants["C_loud"],
+    run = tokens / 1e6 * np.array([c["price"] if c["price"] is not None else np.nan for c in cells])
+    compared_run = tokens / 1e6 * np.array([c["comparison_price"] for c in cells])
+    parts = {"run": compared_run, "loud": p[:, :, 1] * constants["C_loud"],
              "silent": p[:, :, 2] * constants["C_silent"], "time": hours * constants["lambda_per_hour"]}
     return p, run, hours, sum(parts.values()), parts
 
 
-def summarize(posterior, config, task, risk=None, context=None):
-    cls, cells, marginals = prepare(posterior, config, task, risk, context)
+def summarize(posterior, config, task, risk=None, context=None, native_candidates=None):
+    cls, cells, marginals = prepare(posterior, config, task, risk, context, native_candidates)
     constants = config.data["classes"][cls].copy()
     p, run, hours, j, _ = components(marginals, cells, posterior.prior.noise, constants, np.random.default_rng(SUMMARY_SEED), SUMMARY_DRAWS)
     table = []
     for i, cell in enumerate(cells):
-        row = {k: v for k, v in cell.items() if k != "price"}
+        row = {k: v for k, v in cell.items() if k not in ("price", "comparison_price")}
         for k, name in enumerate(("P_clean", "P_loud", "P_silent")):
             row[name] = {"mean": float(p[:, i, k].mean()), "lower": float(np.quantile(p[:, i, k], .025)), "upper": float(np.quantile(p[:, i, k], .975))}
-        row.update(C_run=float(run[:, i].mean()), T=float(hours[:, i].mean()), J=float(j[:, i].mean()),
+        row.update(C_run=float(run[:, i].mean()) if cell["price"] is not None else None, T=float(hours[:, i].mean()), J=float(j[:, i].mean()),
                    admissible=row["P_silent"]["upper"] <= constants["epsilon"])
         table.append(row)
-    table.sort(key=lambda row: (row["C_run"], row["family"], row["effort"]))
+    table.sort(key=lambda row: (row["C_run"] if row["C_run"] is not None else float("inf"), row["family"], row["effort"]))
     result = {"task_type": task, "risk_class": cls, "constants": constants, "cells": table,
               "fit": posterior.statistics.copy()}
+    if native_candidates is not None:
+        result["native_candidates"] = deepcopy(native_candidates)
+        result["cost_policy"] = {"worker_money_included": all(c["price"] is not None for c in cells),
+                                 "unknown_price_models": sorted({c["model"] for c in cells if c["price"] is None}),
+                                 "comparison": "full-cost" if all(c["price"] is not None for c in cells) else "risk-and-time-excluding-worker-money"}
+        result["paths"] = {"project_root": str(config.project_root), "state_root": str(config.state_root)}
     if context is not None:
         result["context"] = deepcopy(context)
     return result, cells, marginals
@@ -115,6 +137,8 @@ def choose(prepared, posterior, config, seed=None, candidates=None, sample_parts
                   needs_review=not cap_met and config.data["on_cap_unmet"] == "flag-review", why=[])
     pick_index = indices[chosen["family"], chosen["effort"]]
     for row in result["cells"]:
+        if not result.get("cost_policy", {}).get("worker_money_included", True):
+            continue  # Unknown prices do not establish a cheaper monetary alternative.
         if row["C_run"] >= chosen["C_run"]:
             continue
         explanation = {k: row[k] for k in ("model", "family", "effort")}

@@ -69,3 +69,10 @@ This does not alter any provider model weights or train a provider model.
 An absent file starts with the shipped prior. `import-prior FILE` validates before writing
 there. `[transfer] variance_inflation = 2.0` overrides the exported covariance multiplier.
 `--cache` and `--journal` are available for integration overrides.
+
+Native host use does not require this configuration. The skill supplies discovered
+model/control cells through `--candidates`, and the backend owns their minimal historical
+metadata and neutral defaults. Native price omission means unknown, not the packaged API
+price. `--state-dir` redirects standard `.howhard/` data paths while honoring custom
+configured paths, and keeps current project capture separate. Explicit configuration
+without that override retains its existing data locations and prior settings.

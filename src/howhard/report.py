@@ -38,7 +38,7 @@ def report(engine):
     metrics = {key: {"runs": len(values), "mean_log_loss": sum(v[0] for v in values) / len(values) if values else None,
                      "mean_brier": sum(v[1] for v in values) / len(values) if values else None} for key, values in scored.items()}
     events = []
-    path = engine.config.base / ".howhard/inference.jsonl"
+    path = engine.config.state_root / "inference.jsonl"
     if path.exists():
         for line, value in enumerate(path.read_text().splitlines(), 1):
             try:
@@ -49,7 +49,7 @@ def report(engine):
     measured = [e for e in events if not e.get("external")]
     unknown_inference = sum(e["cost_usd"] is None for e in measured)
     decisions = []
-    decision_path = engine.config.base / ".howhard/decision-events.jsonl"
+    decision_path = engine.config.state_root / "decision-events.jsonl"
     if decision_path.exists():
         try:
             decisions = [json.loads(line) for line in decision_path.read_text().splitlines()]

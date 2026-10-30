@@ -1,38 +1,45 @@
-# Host inventory and execution controls
+# Host capabilities and native identity
 
-The same skill files work in all three hosts. Discovery, tool availability, account
-access and execution controls are separate capabilities. Check the live tool schema,
-current host settings and any project-declared adapter; documentation examples do not
-prove a model is available to this account.
+Installation/discovery and execution controls are separate. Inspect the actual tool
+schema and current account/settings; a model listed by a provider is not automatically
+available to this host. No project adapter or statistical configuration is required.
 
-| Host | Discover the installed skill | Execution boundary |
+| Host | Invoke the installed skill | Execution boundary |
 | --- | --- | --- |
-| Codex | Mention `$howhard` or select it with `/skills`; automatic discovery is enabled. Restart if a new skill is not visible. | Use the actual delegation tool schema. Supply model/effort only when those controls exist and the requested values are supported. A model available in an API or another host is not automatically available to this tool. |
-| Claude Code | With the native howhard plugin invoke `/howhard:howhard`; a standalone skill uses `/howhard`. Relevance matching can load either. Restart if the installed skill is not visible. | Inspect the available agent/subagent tool and model settings. CLI defaults and provider names do not prove that a particular delegated task used the requested concrete model or effort. Preserve the resolved identity when available. |
-| Antigravity (`agy`) | Ask the agent to use the howhard skill; check the host's skill listing/discovery UI and restart if it is not visible. | Use only the current surface's tools and controls. The documented custom-subagent model values are `inherit`, `flash`, and `pro`; that frontmatter table has no effort field. Do not assume an arbitrary concrete model ID or five-level effort can be passed to `invoke_subagent`. Check current model settings and report unsupported controls. |
+| Codex | `$howhard` or `/skills` | Use the live delegation tool's supported model and effort fields. Do not assume that another Codex surface or API exposes the same controls. |
+| Claude Code | Native plugin: `/howhard:howhard`; standalone skill: `/howhard` | Inspect the actual agent/subagent controls and resolved identity. Provider names or CLI defaults do not prove which cell ran. |
+| Antigravity (`agy`) | `/howhard` or request it by name | Its documented custom-subagent model values include inherit/flash/pro, with no effort field in that frontmatter table. Inspect the current surface; do not invent a concrete model ID or effort parameter for it. |
 
-The shipped howhard registry contains Anthropic model IDs. It is a planning snapshot,
-not a universal inventory or a guarantee those IDs exist in the host. Installation
-does not add native Codex or Antigravity registry entries. Without a validated compatible
-registry and enforceable host controls, report the gap instead of routing under a false
-identity. Existing family labels are a closed statistical vocabulary; do not relabel
-another provider's model as an Anthropic model to make selection succeed.
+Supply only cells with known native model and explicit effort/control identities to
+howhard's `--candidates` input. The backend preserves exact values; it does not translate
+provider IDs or map ultra to max. Bounded effort identifiers containing letters, digits,
+underscores and hyphens are categorical controls, with no assumed ordering for newly
+introduced values. Null/no-effort and `model_default` are not native inventory controls.
+If a host cannot expose an enforceable control or the actual identity is unknown,
+report the limitation instead of selecting a falsely labeled cell.
 
-A project may explicitly declare an optional adapter that owns a real inventory,
-registry mapping, candidate restriction, state directory and execution receipts. Read
-its contract before running it. A defensible approximate family mapping must be explicit,
-documented and weighted as such; do not invent equivalence or prices. Keep requested
-and actual host identities in that adapter's audit. If the mapping cannot represent the
-actual executed cell, do not attach its outcome to a different cell's decision receipt.
-Standalone use needs no adapter when registry cells already match the host controls.
+Unregistered native model IDs automatically receive distinct neutral family effects
+and ordinary evidence weight. Backend-emitted family keys are internal forecast keys,
+not a request to classify the model. Their identity/control metadata persists for later
+feedback but does not make old candidates active in future decisions. Existing configured
+model identities retain their historical mapping; an ambiguous configured family/effort
+collision is refused rather than silently merging distinct forecasts.
 
-If a host supports only an inherited model or a fixed effort, restrict recommendations
-to the accurately known executable cell. If the inherited identity is unknown, disclose
-it and keep the run unscored until it can be attributed. A host may require the user to
-change a setting before a new execution; a recommendation alone cannot change a running
-agent. Do not quietly substitute a model or effort after selecting a receipt.
+Native worker pricing is unknown unless intentionally supplied for that execution
+surface. A subscription or bundled allowance is not an observed zero price or an API
+list-price quote. Omit it when unknown. The backend then excludes worker money uniformly
+from the entire candidate comparison, keeps unknown `C_run` null and labels the partial
+objective. It still records actual measured costs/resources when supplied. Calling the
+legacy registry-only path without an inventory preserves its packaged planning prices.
 
-Official discovery/control references, checked 2026-10-30:
+Delegate using the chosen exact native controls, then compare requested and actual
+execution identity. If another known cell actually ran, raw `observe --native` records
+it with frozen task/project context and a provenance note, without crediting the original
+forecast. If actual identity/control remains unknown, do not invent a cell or matched
+outcome. Preserve the known facts in the host's existing task response and report that
+learning remains pending until attribution is possible; create no project audit wrapper.
+
+Official capability/discovery references, checked 2026-10-30:
 
 - [Codex skills](https://learn.chatgpt.com/docs/build-skills)
 - [Claude Code skills](https://code.claude.com/docs/en/skills)
