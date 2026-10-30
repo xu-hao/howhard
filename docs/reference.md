@@ -1,5 +1,9 @@
 # Model and storage contracts
 
+These are the statistical baseline contracts. The optional [LLM semantic-memory layer](semantic-memory.md)
+adds original-text reasoning, mutable memory and approximate predictive weights, with
+its conservative interval policy reported separately.
+
 ## Selection
 
 For task type `t`, family `m`, effort `e` and risk class `r`, minimize
@@ -91,7 +95,9 @@ Every JSONL row requires these base keys:
 
 Types, enums, missing keys and extra keys are strict. Errors name the file, line and key.
 Contextual rows additionally store `task_text`, `project_context` and `context_encoder`
-together, with optional `decision_id`. Legacy rows keep their missing context.
+together, with optional `decision_id`. New observations also record `observed_at`, an
+ISO timestamp with timezone identifying when feedback became available. Legacy rows
+keep their missing context and timestamp.
 Amendments are new silent rows with null measurement and cost fields. Chains change the
 original run's outcome once, retaining its original cell, task, project, weight and
 measurements. Raw rows remain intact. Targets within a file must precede their amendments.

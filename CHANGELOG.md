@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.3.0 — 2026-10-30
+
+- Add LLM reasoning over original task/project text, persistent semantic memory and
+  bounded evidence retrieval, with an isolated stateless forecast baseline.
+- Support add, edit, remove, restore, merge and split memory operations through the
+  CLI, Python API and LLM writer, with transactional edits and preserved history.
+- Update approximate predictive weights from actual selected-action forecasts and
+  effective outcomes, including resource evidence, amendments and fresh edit versions.
+- Reuse an authenticated Claude CLI with tools disabled, accept custom adapters and
+  expose a calling-agent protocol. Explicit LLM errors remain explicit; automatic
+  statistical fallback is labeled.
+- Preserve semantic forecasts and memory versions in receipts, audit inference and
+  writer usage, and report observed-action forecast metrics and unknown costs honestly.
+- Add a real-project evaluation protocol. Keep correctness fixtures separate from
+  routing-quality evidence; defer Read the Docs publishing.
+
 ## 0.2.0 — 2026-10-29
 
 - Condition predictions on task descriptions and project snapshots that are captured

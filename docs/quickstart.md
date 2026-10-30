@@ -33,8 +33,10 @@ The shipped taxonomy includes `contract-change`, `sensitive-change`,
 `environment-setup`, `bookkeeping` and `worktree-cleanup`. Their definitions and default
 classes are in the packaged `data/default_prior.toml`.
 
-No initialization, credentials, network access or model training is needed. howhard
-recommends a choice; the caller executes the task. It stores the pending journal, outcome
+The statistical workflow needs no initialization, credentials, network access or model
+training; select it with `--llm off`. The default LLM path reuses an installed,
+authenticated Claude CLI; explicit LLM requests require model access. howhard recommends
+a choice; the caller executes the task. It stores the pending journal, outcome
 log, posterior cache, optional imported prior and a file lock in `.howhard/` in the working
 directory. `observe` appends only to the journal. `flush` appends pending rows to the log
 and empties the journal. Both refit using all evidence.
@@ -64,3 +66,16 @@ for every decision, and historical training rows retain their captured snapshots
 The built-in registry is a dated planning snapshot, not a live quote. All defaults are
 maintained by the package; users do not need to tune statistical parameters.
 Advanced integrations can use the [optional configuration](configuration.md).
+
+After observations, the LLM writer may add or revise provisional semantic memories:
+
+```sh
+howhard memory list
+howhard memory beliefs
+howhard memory remove MEMORY_ID
+howhard memory restore MEMORY_ID
+howhard report --json
+```
+
+See [semantic memory](semantic-memory.md) for complete memory management and provider
+options, and [real-project evaluation](evaluation.md) for measuring useful learning.

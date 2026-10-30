@@ -88,7 +88,7 @@ def git(directory, *args):
         return None
 
 
-def capture_project(config, overrides=None):
+def capture_project(config, overrides=None, *, required_path=None):
     """Read the current working tree; never revisit it when fitting historical rows."""
     if overrides is not None:
         if not isinstance(overrides, dict):
@@ -122,6 +122,8 @@ def capture_project(config, overrides=None):
         if len(paths) >= SETTINGS["file_limit"]:
             truncated = True
             break
+    if required_path is not None and required_path.resolve() not in {path.resolve() for _, path in paths}:
+        raise HowHardError("retrieval.path: file is outside the captured snapshot (ignored, excluded or beyond the scan limit)")
     params = {key: 0 for key in COUNTS}
     params.update({key: False for key in FLAGS}, coverage=None)
     languages, descriptors, stamps, sources = set(), [], [], []
@@ -157,13 +159,16 @@ def capture_project(config, overrides=None):
                 continue
     params["languages"] = len(languages)
     # Use a stable path set, not status text: filenames with spaces/newlines remain intact.
+    changed_paths = set()
     changed = git(root, "ls-files", "-z", "--modified", "--deleted", "--others", "--exclude-standard")
     if changed is not None:
         changed_paths = {os.fsdecode(p) for p in changed.split(b"\0") if p}
         staged = git(root, "diff", "--cached", "--name-only", "-z", "--no-renames")
         if staged is not None:
             changed_paths.update(os.fsdecode(p) for p in staged.split(b"\0") if p)
-        params["changed_files"] = sum((root / p).resolve() not in excluded and not any(part in IGNORED or part.startswith(".venv") for part in Path(p).parts) for p in changed_paths)
+        changed_paths = {p for p in changed_paths if (root / p).resolve() not in excluded and
+                         not any(part in IGNORED or part.startswith(".venv") or part.endswith(".egg-info") for part in Path(p).parts)}
+        params["changed_files"] = len(changed_paths)
     revision = git(root, "rev-parse", "--verify", "HEAD")
     revision = revision.decode().strip() if revision else None
     snippets = []
@@ -179,7 +184,7 @@ def capture_project(config, overrides=None):
     text = "\n".join(part for part in (documentation, source_text) if part)
     params.update(overrides or {})
     value = {"format": PROJECT_FORMAT, "parameters": params, "text": text, "revision": revision,
-             "fingerprint": digest([params, text, revision, stamps]), "truncated": truncated}
+             "fingerprint": digest([params, text, revision, stamps, sorted(changed_paths)]), "truncated": truncated}
     return validate_project(value)
 
 

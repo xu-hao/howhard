@@ -1,5 +1,8 @@
 # Task text and changing project context
 
+This page describes the statistical baseline. The [LLM semantic-memory path](semantic-memory.md)
+reads original semantic text and mutable memories in addition to this model.
+
 Each decision conditions on the task type, task description, and a fresh snapshot of
 the current project. Project context belongs to a run: it can change between two tasks
 in the same repository. Historical rows keep the snapshot captured for that run.
