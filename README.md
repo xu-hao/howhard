@@ -45,9 +45,20 @@ keeps the statistical workflow. Automatic fallback is labeled, and an explicit L
 request fails clearly. The [semantic-memory guide](docs/semantic-memory.md) covers all
 memory operations, custom/calling-agent adapters and approximation limits.
 
+Install the bundled reusable skill into Codex, Claude Code and Antigravity (`agy`):
+
+```sh
+howhard skills install --host all --scope project
+# Or explicitly choose --scope user for your other projects.
+```
+
+The [skill installation guide](docs/skills.md) covers source/pinned Git installation,
+host discovery paths, safe repeat installs and standalone/project-adapter use. The skill
+guides the workflow; actual host tools must support and enforce the recommended cell.
+
 Use `--json` for automation and `--seed N` to reproduce selection from recorded forecasts.
 Commands include `pick`, `summary`, `observe`, `flush`, prior import/export, `memory`,
-`report`, and the calling-agent `context` / `retrieve` / `decide` workflow.
+`report`, `skills install`, and the calling-agent `context` / `retrieve` / `decide` workflow.
 
 ```python
 from howhard import Engine
