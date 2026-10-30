@@ -25,7 +25,6 @@ Before release:
 5. Upload to PyPI only if the user explicitly authorizes that upload. Implementation,
    tests, commits, pushes, merges, tags and GitHub releases do not authorize PyPI.
 
-The workflows contain no upload credentials and do not publish packages. The Read the
-Docs configuration builds Sphinx from this repository with strict warnings and the same
-canonical index. External hosting must be connected separately before a hosted docs
-URL can be claimed.
+The workflows contain no upload credentials and do not publish packages. The connected
+[Read the Docs site](https://howhard.readthedocs.io/en/latest/) builds Sphinx from this
+repository with strict warnings and the same canonical index.
