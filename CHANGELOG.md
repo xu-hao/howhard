@@ -5,6 +5,9 @@
 - Allow append-only measured-usage corrections with a validated amendment-only
   `measurement_corrections` map and CLI JSON input. Explicit replacements or null clears
   update effective regressions, worker costs and learning once while preserving raw history.
+- Document a copyable coordinating-agent instruction requiring howhard before authorized
+  worker delegation, with actual feedback, an independent-baseline recursion exception
+  and an explicit distinction between agent instructions and host enforcement.
 - Remove registry-only routing and the Python family/effort candidate filter. Every
   routing request now requires the host's native inventory; prices come only from that
   inventory. Remove packaged API prices, token mixes, family activation flags and
