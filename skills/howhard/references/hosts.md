@@ -31,9 +31,9 @@ control exactly match the chosen cell. Inherited or ambiguous settings alone do 
 establish a match; use raw feedback for a known different actual cell and leave feedback
 unscored only when the actual cell is unknown. Add usage only when measured.
 
-Unregistered native model IDs automatically receive distinct neutral family effects
-and ordinary evidence weight. Backend-emitted family keys are internal forecast keys,
-not a request to classify the model. Their identity/control metadata persists for later
+Unregistered native model IDs automatically receive distinct opaque identity labels
+and ordinary evidence weight, without fitted family effects. Backend-emitted family
+keys are internal forecast keys, not a request to classify the model. Their identity/control metadata persists for later
 feedback but does not make old candidates active in future decisions. Existing configured
 model identities retain their historical mapping; an ambiguous configured family/effort
 collision is refused rather than silently merging distinct forecasts.
