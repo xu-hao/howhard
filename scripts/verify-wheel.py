@@ -26,6 +26,13 @@ with tarfile.open(sdist) as archive:
     assert f"howhard-{expected}/tests/conftest.py" in archive.getnames()
     for name in ("SKILL.md", "references/hosts.md", "references/workflow.md"):
         assert f"howhard-{expected}/skills/howhard/{name}" in archive.getnames()
+    for name in ("plugin.json", ".claude-plugin/plugin.json", ".antigravity-plugin/plugin.json"):
+        manifest = json.load(archive.extractfile(f"howhard-{expected}/{name}"))
+        assert manifest["name"] == "howhard" and manifest["version"] == expected
+    for name in (".agents/plugins/marketplace.json", ".claude-plugin/marketplace.json"):
+        marketplace = json.load(archive.extractfile(f"howhard-{expected}/{name}"))
+        assert marketplace["name"] == "howhard"
+        assert [plugin["name"] for plugin in marketplace["plugins"]] == ["howhard"]
 
 # Exercise an installed wheel outside the source checkout. No editable install or
 # inherited PYTHONPATH can supply its resources or entry point.

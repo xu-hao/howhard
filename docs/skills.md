@@ -1,16 +1,89 @@
-# Install the howhard skill with the standard CLI
+# Native installation of the howhard skill
 
-The canonical reusable skill lives at `skills/howhard/SKILL.md` with progressive
-`references/hosts.md` and `references/workflow.md`. Install it with the established
-[skills CLI](https://github.com/vercel-labs/skills), which discovers standard root skill
-folders and manages installation, central content, agent links, lock metadata and updates.
-howhard supplies the skill and Python backend; it does not implement a skill installer.
+All three hosts support the common Agent Skills format: a `SKILL.md` with `name` and
+`description` frontmatter and a Markdown workflow. The canonical content is
+`skills/howhard/SKILL.md`, with progressive `references/hosts.md` and
+`references/workflow.md`. Thin native plugin manifests point at this one root skill
+folder. howhard implements no skill copier or plugin installer.
 
-## Install and choose scope
+The complete [Quickstart](quickstart.md) covers backend installation, native skill
+installation, invocation and real feedback. Keep the Python environment active when
+starting the agent so it can find the `howhard` executable. No Node/npm installation
+is required for the native path.
 
-The complete [Quickstart](quickstart.md) covers Python backend installation, first use
-and real feedback. Skill installation needs Git and Node.js 22.20.0+ with npm/npx.
-The examples pin the tested `skills` CLI version 1.7.4. From the intended project:
+## First-party plugin installation
+
+Use a current native client and choose the commands for your host:
+
+| Host | Register/install | Invoke |
+| --- | --- | --- |
+| Codex | `codex plugin marketplace add xu-hao/howhard`, then `codex plugin add howhard@howhard` | `$howhard` or `/skills` |
+| Claude Code | `claude plugin marketplace add xu-hao/howhard`, then `claude plugin install howhard@howhard` | `/howhard:howhard` |
+| Antigravity (`agy`) | `agy plugin install https://github.com/xu-hao/howhard` | `/howhard` |
+
+These CLI flows install/register in the user's plugin environment. Claude Code also
+supports `--scope project` and `--scope local` for marketplace addition and plugin
+installation; select the desired scope explicitly for both steps. Native clients own
+installation, caching, enable/disable and removal. Reopen the agent if a newly installed
+skill is not visible. Older Codex clients with the built-in `$skill-installer` can instead
+be asked to install the howhard skill from `xu-hao/howhard`, path `skills/howhard`; follow
+that first-party skill's instructions rather than copying files manually.
+
+For a source checkout, native marketplace commands can use the checkout directory in
+place of `xu-hao/howhard`; Antigravity can install that directory directly. The portable
+root `plugin.json` and `.agents/plugins/marketplace.json` support Codex. Claude Code uses
+`.claude-plugin/plugin.json` plus its marketplace, while Antigravity selects
+`.antigravity-plugin/plugin.json`. Default `skills/` discovery lets each wrapper load
+identical content. The Codex marketplace's `source.path` is relative to the repository
+root, not to `.agents/plugins/`.
+
+The wrappers contain no hooks, authentication setup, MCP server, provider calls or model
+controls. Plugin installation is separate from Python backend installation and does not
+publish the plugin into any official public directory. The skill remains in the source
+distribution; the Python wheel supplies the backend without another skill copy.
+
+Official format/packaging references, checked 2026-10-30:
+
+- [Codex portable plugins and marketplaces](https://developers.openai.com/plugins/build/plugins)
+- [Claude Code plugin manifests](https://code.claude.com/docs/en/plugins-reference) and
+  [marketplaces](https://code.claude.com/docs/en/plugin-marketplaces)
+- [Antigravity plugin authoring](https://antigravity.google/docs/build-plugins) and
+  [native plugin installation](https://antigravity.google/docs/plugins)
+
+## Native lifecycle
+
+Inspect installed plugins with `codex plugin list`, `claude plugin list`, or
+`agy plugin list`. Codex refreshes marketplace snapshots through `codex plugin marketplace
+upgrade`; use its `--help` for available selectors. Claude Code provides `claude plugin
+update howhard@howhard`. Antigravity's plugin UI/manager owns installed updates; consult
+`agy plugin help` for the current CLI operations instead of assuming a generic update
+flag. Native uninstall commands are `codex plugin remove howhard@howhard`,
+`claude plugin uninstall howhard@howhard` and `agy plugin uninstall howhard`.
+Python package upgrades do not update the installed skill, and native plugin updates do
+not upgrade the Python package.
+
+## Capability boundaries
+
+The skill uses original task/current project context, an independent baseline, retrieved
+memory and validated prospective forecasts. The calling-agent workflow uses the host's
+existing LLM without an additional API key; an independent baseline still needs a fresh
+context without memories/history. If that is unavailable, disclose it and use the labeled
+statistical path.
+
+A skill provides instructions, the howhard CLI/API stores validated evidence, and the
+host's tools enforce execution controls. Installation does not add model access or a
+delegation tool. The shipped registry contains Anthropic IDs: never silently relabel
+another provider's model. Restrict recommendations to actual supported cells and disclose
+unsupported effort/model controls or unknown execution identity. Keep such runs honestly
+unscored instead of attaching them to a different decision receipt. An optional project
+adapter can be declared by that project's own instructions; standalone planning needs
+no adapter or statistical tuning.
+
+## Optional third-party cross-agent installation
+
+The [skills CLI](https://github.com/vercel-labs/skills) is an optional third-party tool,
+not any host's first-party installer. Version 1.7.4 requires Node.js 22.20.0+ and npm/npx.
+From the target project it can discover and install the same root skill:
 
 ```sh
 npx --yes skills@1.7.4 add xu-hao/howhard --list
@@ -18,65 +91,10 @@ npx --yes skills@1.7.4 add xu-hao/howhard --skill howhard --agent codex claude-c
 npx --yes skills@1.7.4 list --agent codex claude-code antigravity antigravity-cli
 ```
 
-Project scope is the default; the current working directory is the target. Remove agent
-IDs you do not use. `antigravity` and `antigravity-cli` are separate targets. For user-wide
-installation, explicitly append `--global` to the same `add` command. The installer owns
-agent destinations; do not recreate its path selection or force independent copies.
-Default installation uses a managed central skill with agent links where appropriate.
-Inspect the standard command's summary and listing for the installed scope/locations.
-See its [agent IDs](https://github.com/vercel-labs/skills/blob/main/docs/agents.md) and
-[commands](https://github.com/vercel-labs/skills/blob/main/docs/commands.md).
-
-## Local and immutable sources
-
-A source checkout is directly discoverable; run this from the target project:
-
-```sh
-npx --yes skills@1.7.4 add /path/to/howhard --skill howhard --agent codex claude-code antigravity antigravity-cli --yes
-```
-
-For reproducible backend and skill installation from the same public Git revision,
-capture a full commit hash containing 0.5.0 or later and use it for both sources:
-
-```sh
-howhard_revision="$(git ls-remote https://github.com/xu-hao/howhard.git refs/heads/main | cut -f1)"
-test "${#howhard_revision}" -eq 40
-python -m pip install "git+https://github.com/xu-hao/howhard.git@${howhard_revision}"
-npx --yes skills@1.7.4 add "https://github.com/xu-hao/howhard/tree/${howhard_revision}/skills/howhard" --skill howhard --agent codex claude-code antigravity antigravity-cli --yes
-```
-
-Record and reuse the same full hash instead of resolving `main` again when reproducing
-an installation. These are source installs, not PyPI release claims. The skill is included
-in the source distribution, while the Python wheel supplies the backend rather than a
-second skill copy. Installing/upgrading the Python package does not install/update a skill;
-standard skill commands do not upgrade the Python backend.
-
-## Invoke and enforce capabilities
-
-In Codex mention `$howhard` or select it with `/skills`. In Claude Code invoke `/howhard`.
-In Antigravity invoke `/howhard` or request the skill by name; IDE Customizations lists
-active skills. Reopen the relevant agent if a newly installed skill is not visible.
-Standard frontmatter permits automatic discovery; supporting references load when needed.
-
-The skill teaches task/context reasoning, independent baseline and memory-conditioned
-forecasts, actual host delegation, stable execution feedback, corrections and mutable
-memory. The calling-agent path uses the host's existing model access without an extra
-API key. A genuinely independent baseline needs a separate fresh context; when that is
-unavailable, disclose it and use the explicitly statistical path.
-
-A skill provides instructions, the howhard CLI/API stores validated evidence, and the
-host's actual tools enforce execution controls. Installation does not add model access
-or a delegation tool. The shipped planning registry contains Anthropic IDs; do not pass
-those IDs to another provider or silently equate models. Restrict recommendations to
-actual supported model/effort cells. If the host cannot enforce or report them, disclose
-the capability gap and retain honest unscored metadata rather than false matched outcomes.
-A project may declare an optional adapter in its own `AGENTS.md` or runbook for host
-inventory, candidate restrictions, state conventions and execution receipts. No project
-adapter or statistical tuning is required for standalone planning.
-
-## Check, update and remove
-
-Use the standard tool for lifecycle operations:
+Project scope is the default. `--global` selects user-wide installation. Antigravity
+App/IDE and CLI have separate agent IDs. This tool manages its central content, agent
+links and lock metadata; do not recreate its destination logic or force independent
+copies. Use its own lifecycle operations:
 
 ```sh
 npx --yes skills@1.7.4 check
@@ -84,32 +102,53 @@ npx --yes skills@1.7.4 update howhard --project --yes
 npx --yes skills@1.7.4 remove howhard --yes
 ```
 
-`check` reports available updates for tracked sources and can return nonzero when updates
-exist. Local source installations do not provide the same remote update tracking as Git
-sources. Review changes before updating; an update intentionally changes the installed
-skill. Use `--global` for a global update/removal and `list --global` to inspect that scope.
-Omitting an agent filter on the skill-specific removal clears howhard across agent
-references, including shared universal locations, without removing other named skills.
-
-Version 0.5.0 retires the bespoke 0.4 `howhard skills install` command and
-`howhard.skill_install` API before 1.0. Existing 0.4 skill copies are not automatically
-managed by the standard tool. Preserve local edits and archive those specific howhard
-installations outside skill discovery before standard installation; the former
-`howhard-install.json` marker identifies such a copy. Do not remove unrelated skills,
-instruction files or settings. No compatibility copier remains.
-
-## Contributor integration smoke
-
-The ordinary Python suite and wheel/docs gate do not download npm packages. Run the real
-standard-CLI integration explicitly through AGCoord, using a task-owned npm cache:
+The named removal without an agent filter clears that skill across agent references.
+Local checkout sources such as `/path/to/howhard` are supported; local installs do not
+have the same remote update tracking as Git sources. For immutable sources, replace
+`FULL_COMMIT` with a full 40-character commit containing 0.5.0 or later:
 
 ```sh
-agc run --label "standard skills integration" --resource cpu=1 -- env npm_config_cache=/tmp/howhard-issue-N-npm-cache DO_NOT_TRACK=1 .venv/bin/python scripts/check-skills.py
+python -m pip install "git+https://github.com/xu-hao/howhard.git@FULL_COMMIT"
+npx --yes skills@1.7.4 add https://github.com/xu-hao/howhard/tree/FULL_COMMIT/skills/howhard --skill howhard --agent codex claude-code antigravity antigravity-cli --yes
 ```
 
-Replace `N` with the issue tracking the work. The smoke uses the current canonical root
-layout in its own disposable project, discovers howhard, adds it for all four agent IDs,
-reads installed references, lists it, repeats installation and removes it through the
-standard CLI. It stops its subprocesses and removes its temporary project. No global
-installation, real agent call or npm dependency is added to the ordinary test suite.
-Retain the coordinator log with the change's validation evidence.
+These are source installs, not PyPI release claims. Choose one installation route per
+host to avoid duplicate skill names and conflicting ownership.
+
+## Migration and contributor validation
+
+Version 0.5.0 retires the bespoke 0.4 `howhard skills install` command and
+`howhard.skill_install` API before 1.0. Preserve local edits and archive those particular
+old howhard copies outside skill discovery before native or optional third-party
+installation; `howhard-install.json` identifies a former copy. Leave unrelated skills,
+instruction files and settings alone. No compatibility copier remains.
+
+Native validation is an explicit read-only contributor check:
+
+```sh
+agc run --label "native plugin validation" --resource cpu=1 -- .venv/bin/python scripts/check-plugins.py
+```
+
+It runs Claude's strict marketplace check and Antigravity's checkout validation, then
+strictly validates an exact disposable Antigravity payload with its manifest/shared skill.
+The multiprovider checkout intentionally has contributor `AGENTS.md` outside plugin
+rules and a portable root manifest superseded by Antigravity's own manifest; that client
+reports these as warnings. Claude's validator also prints separate public-directory
+submission advisories for missing license/art; those are not its manifest-validation
+verdict, and this project does not claim public-directory submission. Codex has no
+standalone plugin validator in the checked CLI. Its command shapes/documented portable
+schema were verified; unregistered read-only local listing returned no entries, so it is
+not claimed as a successful installation. No global native install or live agent call
+is exercised by these checks.
+
+The optional third-party integration smoke is separate from the ordinary Python gate:
+
+```sh
+agc run --label "optional skills integration" --resource cpu=1 -- env npm_config_cache=/tmp/howhard-issue-N-npm-cache DO_NOT_TRACK=1 .venv/bin/python scripts/check-skills.py
+```
+
+Replace `N` with the tracking issue. It uses its own disposable project and task-owned
+npm cache to discover/add all four agent IDs, read references, list/repeat/remove through
+the real CLI, and stop/clean its processes and temporary project. No npm dependency or
+network-enabled agent setup is added to ordinary tests. Retain coordinator logs as
+validation artifacts.
