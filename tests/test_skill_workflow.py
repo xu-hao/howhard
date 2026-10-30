@@ -19,21 +19,18 @@ def test_retired_skill_copier_is_rejected_before_project_state(tmp_path, monkeyp
     assert sorted(p.name for p in tmp_path.iterdir()) == ["howhard.toml"]
 
 
-def test_canonical_candidate_example_executes_only_supplied_cells(tmp_path, monkeypatch, capsys):
+def test_canonical_native_example_preserves_supplied_identity(tmp_path, monkeypatch, capsys):
     from howhard import Engine
     monkeypatch.chdir(tmp_path)
     (tmp_path / "task.txt").write_text("Verify rollback at the public boundary")
-    (tmp_path / "host-cells.json").write_text(json.dumps([
-        {"model": "claude-opus-5-5", "effort": "high"},
-        {"model": "unregistered-host-model", "effort": "high"},
+    (tmp_path / "host-candidates.json").write_text(json.dumps([
+        {"model": "actual-native-model", "effort": "ultra"},
     ]))
     workflow = (Path(__file__).resolve().parents[1] / "skills/howhard/references/workflow.md").read_text()
     example = workflow.split("```python\n", 1)[1].split("```", 1)[0]
     exec(compile(example, "canonical-workflow-example", "exec"), {})
     decision = json.loads(capsys.readouterr().out)
-    assert decision["chosen"]["model"] == "claude-opus-5-5"
-    assert decision["chosen"]["effort"] == "high"
-    assert Engine(directory=tmp_path).raw_rows == []  # A recommendation is not execution evidence.
-    (tmp_path / "host-cells.json").write_text('[{"model": "unregistered-host-model", "effort": "high"}]')
-    with pytest.raises(SystemExit, match="Capability gap"):
-        exec(compile(example, "canonical-workflow-example", "exec"), {})
+    assert decision["chosen"]["model"] == "actual-native-model"
+    assert decision["chosen"]["effort"] == "ultra"
+    assert decision["cells"][0]["C_run"] is None
+    assert Engine(directory=tmp_path).raw_rows == []

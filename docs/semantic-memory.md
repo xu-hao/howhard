@@ -35,7 +35,7 @@ provider.
 
 ## Persistent state and real memory operations
 
-Memories live in `.howhard/memory.sqlite3`. Each has an ID, content version, title, free-form
+Memories live in `memory.sqlite3` within the backend state root reported by `howhard paths`. Each has an ID, content version, title, free-form
 body, project/shared scope, evidence references and parent links. Scope describes intended
 applicability inside this project's store; `shared` does not automatically upload or copy
 memory to other directories. Semantic memory is not included in generic prior exports.
@@ -132,7 +132,8 @@ posterior guarantee. Results identify the interval method and preserve review fa
 
 ## Writer, failures and replay
 
-After `observe`, an LLM writer sees the effective result, original decision, supporting
+After `observe`, an LLM writer sees the effective result, the full `outcome_history` of
+original/amendment rows and notes, original decision, supporting
 experience, beliefs and current memory. It can emit any supported memory operation.
 The backend validates and commits the operations atomically. It rejects stale memory
 or an outcome that was amended while the writer ran. The triggering experience may
@@ -151,6 +152,16 @@ Routing seeds reproduce selection given recorded forecasts. They do not make fre
 LLM calls deterministic. Cached forecasts and content-addressed receipts support replay;
 operational timing/cache metadata may differ between invocations. Existing logs,
 v1 receipts and generic prior formats remain readable. Semantic receipts use v2.
+
+Native host selection supplies `--candidates FILE` to `context` or `pick` before any
+baseline/reader forecasts. The inventory is generated from actual host controls, not a
+project adapter. It is bound to the saved request; retrieve/decide cannot replace it.
+Unpriced native inventories uniformly exclude worker money and label that limitation.
+Direct `evidence RUN_ID [--raw]` reads feedback without preparing another decision.
+Matching stable-ID retries preserve the first observation; conflicts remain explicit.
+Raw `observe --native` records a different verified execution without attaching an
+unexecuted forecast. State is shared automatically across fresh Git worktrees, with
+current project capture kept separate; inspect `paths` for the resolved roots.
 
 ## Calling-agent and provider interfaces
 
@@ -186,9 +197,9 @@ not appear in receipts. Nested Claude inference uses the calling-agent protocol.
 ## Measurement and evaluation
 
 Actual baseline/reader/writer calls, including errors, are recorded in
-`.howhard/inference.jsonl` with provider usage and resolved models. Decision attempts
+`inference.jsonl` in the backend state root with provider usage and resolved models. Decision attempts
 record wall-clock duration, failures and an explicitly unknown action propensity in
-`.howhard/decision-events.jsonl`. Outcome rows record when feedback became available.
+`decision-events.jsonl` in that same store. Outcome rows record when feedback became available.
 Inference cost stays unknown when the adapter cannot supply it; it is never silently
 reported as zero. Writer cost is included in inference reports.
 Claude CLI dollar figures are CLI-reported accounting estimates, not a statement of

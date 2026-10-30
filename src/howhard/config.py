@@ -1,7 +1,7 @@
 """Packaged defaults and optional, strictly validated project overrides."""
 
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from importlib.resources import files
 from pathlib import Path
 import tomllib
@@ -93,9 +93,25 @@ class Config:
     source_bytes: bytes
     prior_bytes: bytes
     explicit: bool
+    project_root: Path | None = None
+    state_root: Path | None = None
+    identity_path: Path | None = None
+    project_identity: str = ""
+    native_models: dict = field(default_factory=dict)
 
     def path(self, value):
-        return self.base / text(value, "path")
+        relative = Path(text(value, "path"))
+        if relative.parts[:1] == (".howhard",) and self.state_root is not None:
+            return self.state_root.joinpath(*relative.parts[1:])
+        return self.base / relative
+
+    @property
+    def families(self):
+        return [*self.prior["families"], *(self.data["models"][model]["family"] for model in sorted(self.native_models))]
+
+    @property
+    def efforts(self):
+        return [*self.prior["efforts"], *sorted({e for spec in self.native_models.values() for e in spec["efforts"]} - set(self.prior["efforts"]))]
 
     @property
     def task_types(self):
@@ -120,7 +136,7 @@ class Config:
             raise HowHardError("config paths: logs, journal, lock, cache and prior files must be distinct")
 
 
-def load_config(path=None, *, directory=None):
+def load_config(path=None, *, directory=None, state_directory=None):
     base = Path(directory or Path.cwd()).resolve()
     if path is None and (base / "howhard.toml").is_file():
         path = base / "howhard.toml"
@@ -226,5 +242,10 @@ def load_config(path=None, *, directory=None):
         if cls not in data["classes"]:
             raise HowHardError(f"task_types.{task}: unknown class {cls!r}")
     config = Config(data, prior, base, packaged("default_config.toml") + raw, prior_raw, path is not None)
+    from .state import roots
+    project = Path(directory).resolve() if directory is not None else base
+    # Explicit configuration owns its relative data paths and supplemental store.
+    selected_state = state_directory if state_directory is not None else base / ".howhard" if path is not None else None
+    config.project_root, config.state_root, config.identity_path, config.project_identity = roots(project, explicit=path is not None, state_directory=selected_state)
     config.validate_paths()
     return config

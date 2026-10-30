@@ -58,4 +58,16 @@ with tempfile.TemporaryDirectory(prefix="howhard-wheel-") as directory:
     entry = json.loads(subprocess.check_output([str(command), "memory", "add", "--title", "Installed memory", "--body", "An editable semantic memory", "--json"], cwd=root, env=environment, text=True))
     removed = json.loads(subprocess.check_output([str(command), "memory", "remove", entry["id"], "--json"], cwd=root, env=environment, text=True))
     assert removed["active"] is False
+    # Mechanical native workflow from the installed wheel, with no provider/agent calls.
+    inventory = root / "native-candidates.json"
+    inventory.write_text(json.dumps([{"model": "wheel-native-model", "effort": "ultra"}]))
+    native_choice = json.loads(subprocess.check_output([str(command), "pick", "task", "--candidates", str(inventory), "--llm", "off", "--json"], cwd=root, env=environment, text=True))
+    assert native_choice["chosen"]["model"] == "wheel-native-model" and native_choice["chosen"]["effort"] == "ultra"
+    assert native_choice["cells"][0]["C_run"] is None
+    assert not native_choice["cost_policy"]["worker_money_included"]
+    observation = [str(command), "observe", native_choice["decision_id"], "clean", "--id", "wheel-execution", "--llm", "off", "--json"]
+    first = json.loads(subprocess.check_output(observation, cwd=root, env=environment, text=True))["observed"]
+    assert json.loads(subprocess.check_output(observation, cwd=root, env=environment, text=True))["observed"] == first
+    evidence = json.loads(subprocess.check_output([str(command), "evidence", "wheel-execution", "--llm", "off", "--json"], cwd=root, env=environment, text=True))
+    assert evidence["model"] == "wheel-native-model"
 print(f"Verified howhard {expected} source distribution and clean installed wheel")
