@@ -89,8 +89,8 @@ def validate_row(row, config, where):
             if key == "tokens" and type(row[key]) is not int:
                 raise HowHardError(f"{where}.tokens: expected integer or null")
     if row["amends"] is not None:
-        if row["outcome"] != "silent" or any(row[k] is not None for k in ("tokens", "seconds", "cost_usd")):
-            raise HowHardError(f"{where}.amends: amendments must be silent with null tokens, seconds and cost_usd")
+        if any(row[k] is not None for k in ("tokens", "seconds", "cost_usd")):
+            raise HowHardError(f"{where}.amends: amendments require null tokens, seconds and cost_usd")
 
 
 def parse_rows(blobs, config):

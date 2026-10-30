@@ -8,6 +8,7 @@ import pytest
 from howhard import Engine
 from howhard.decisions import load
 from howhard.llm import LLMError
+from howhard.report import report
 
 
 class FixtureLLM:
@@ -83,6 +84,62 @@ def test_feedback_changes_weight_amendment_replaces_it_and_edit_resets(project):
     assert load(engine.config, pick["decision_id"])["semantic"]["memories"][0]["body"] == memory["body"]
 
 
+def test_correction_chain_replays_forecasts_and_writer_events_once(project):
+    from howhard.llm import SETTINGS
+    provider = FixtureLLM()
+    engine = Engine(project(), llm=provider)
+    model = "claude-opus-5-5"
+    engine.config.data["models"][model]["weight"] = .4
+    memory = engine.memory.add("Review", "Review can revise an earlier outcome judgment.")
+    choice = engine.pick("Y", "review", seed=1, candidates=[("opus", "high")])
+    engine.observe_decision(choice["decision_id"], "clean", id="original", tokens=10000, seconds=30)
+    initial = expert(engine, memory)
+    first_key = engine.memory_learning_context("original")["event_key"]
+    target = "original"
+    keys = {first_key}
+    for index, outcome in enumerate(("loud", "silent", "clean")):
+        amendment = f"correction-{index}"
+        provider.fail_writer = index == 0
+        engine.observe("X", "claude-sonnet-5-5", "low", outcome, amends=target, id=amendment)
+        if provider.fail_writer:
+            assert engine.last_memory_update["status"] == "failed"
+            provider.fail_writer = False
+            assert engine.memory_learn(amendment)["status"] == "updated"
+        assert engine.last_memory_update["status"] == "updated"
+        writer = provider.calls[-1]
+        assert writer["kind"] == "learn"
+        assert writer["observation"]["id"] == "original"
+        assert writer["observation"]["outcome"] == outcome
+        assert writer["observation"]["decision_id"] == choice["decision_id"]
+        assert writer["observation"]["project_context"] == choice["context"]["project_context"]
+        current = expert(engine, memory)
+        assert current["evidence_count"] == 1
+        worlds = choice["semantic"]["worlds"]
+        key = current["key"]
+        forecasts = {name: next(c for c in panel if (c["family"], c["effort"]) == ("opus", "high"))
+                     for name, panel in worlds.items()}
+        # Resource evidence is unchanged; only the outcome likelihood ratio changes.
+        expected = initial["log_score"] + SETTINGS["belief"]["temperature"] * .4 * math.log(
+            (forecasts[key][outcome] / forecasts["statistical"][outcome]) /
+            (forecasts[key]["clean"] / forecasts["statistical"]["clean"]))
+        assert current["log_score"] == pytest.approx(expected)
+        metrics_report = report(engine)
+        assert metrics_report["runs"] == 1 and metrics_report["outcomes"][outcome] == 1
+        for metrics in metrics_report["forecast_metrics"].values():
+            assert metrics["runs"] == 1
+        assert metrics_report["forecast_metrics"]["statistical"]["mean_log_loss"] == pytest.approx(
+            -math.log(forecasts["statistical"][outcome]))
+        event_key = engine.memory_learning_context(amendment)["event_key"]
+        assert event_key not in keys
+        keys.add(event_key)
+        calls = len(provider.calls)
+        assert engine.memory_learn("original")["status"] == "already-learned"
+        assert engine.memory_learn(amendment)["status"] == "already-learned"
+        assert len(provider.calls) == calls
+        target = amendment
+    assert expert(engine, memory)["log_score"] == pytest.approx(initial["log_score"])
+
+
 def test_unrelated_cell_does_not_credit_memory_and_removal_stops_influence(project):
     provider = FixtureLLM()
     engine = Engine(project(), llm=provider)
@@ -155,14 +212,21 @@ def test_explicit_backend_failure_is_not_silent_and_auto_fallback_is_visible(pro
     assert all(e["cost_usd"] is None for e in events)
 
 
-def test_stale_writer_outcome_is_rejected_without_memory_mutation(project):
+@pytest.mark.parametrize("corrections", [["loud"], ["silent"], ["loud", "clean"]])
+@pytest.mark.parametrize("refresh", [False, True])
+def test_stale_writer_outcome_is_rejected_without_memory_mutation(project, corrections, refresh):
     from howhard.validation import HowHardError
     config = project()
     engine = Engine(config, llm="off")
     engine.observe("Y", "claude-opus-5-5", "high", "clean", id="original")
     pending = engine.memory_learning_context("original")
     other = Engine(config, llm="off")
-    other.observe("Y", "claude-opus-5-5", "high", "silent", amends="original", id="correction")
+    target = "original"
+    for index, outcome in enumerate(corrections):
+        target = other.observe("Y", "claude-opus-5-5", "high", outcome,
+                               amends=target, id=f"correction-{index}")["id"]
+    if refresh:
+        engine.refresh()
     with pytest.raises(HowHardError, match="evidence changed"):
         engine.apply_memory_learning("original", {"operations": [{"op": "add", "title": "Stale", "body": "Old hypothesis"}], "reason": "Old feedback"}, expected_revision=pending["memory_revision"], event_key=pending["event_key"])
     assert engine.memory.list() == []

@@ -117,8 +117,10 @@ also scale these updates.
 These are approximate predictive-evidence weights, not probabilities that statements
 are true and not an exact posterior over all possible natural-language memories.
 They measure predictive support and do not establish causal explanations. The LLM's
-own confidence is not evidence. Outcome amendments replay the original run's effective
-result once, replacing its earlier score rather than adding another independent run.
+own confidence is not evidence. Outcome amendments to clean, loud or silent replay the
+original run's forecasts against its effective result once, replacing its earlier score
+rather than adding another independent run. Original measurements and registry evidence
+weight still apply; an amendment does not create a new forecast exposure.
 
 Selection samples competing predictors and retains the cost objective. Semantic
 intervals use a weighted forecast envelope together with the statistical model's
@@ -139,7 +141,11 @@ motivate a new memory, but does not become retrospective predictive validation.
 Observation storage completes before inference. A failed writer does not lose the
 outcome; the CLI returns `memory_update.status = failed`. Retry with
 `howhard memory learn RUN_ID`. Repeated learning of an unchanged effective run is
-idempotent. An amendment makes a new effective learning event.
+idempotent. Each appended amendment makes a new effective learning event, even when a
+chain returns to an earlier classification. Learning by the original ID or any amendment
+ID resolves to the same current event. A failed correction writer can be retried without
+recording another outcome. Pending writer responses are rejected after any correction,
+including a chain that returns to the result the writer originally saw.
 
 Routing seeds reproduce selection given recorded forecasts. They do not make fresh
 LLM calls deterministic. Cached forecasts and content-addressed receipts support replay;
