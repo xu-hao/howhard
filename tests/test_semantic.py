@@ -5,6 +5,7 @@ import json
 import math
 import pytest
 
+from conftest import inventory
 from howhard import Engine
 from howhard.decisions import load
 from howhard.llm import LLMError
@@ -35,6 +36,8 @@ class FixtureLLM:
             return {"request_more": [{"tool": "memory.search", "query": "migration"}, {"tool": "project.read", "path": "README.md"}]}
         forecasts = []
         for memory in request["memories"]:
+            if not any(c["family"] == "opus" and c["effort"] == "high" for c in request["cells"]):
+                continue
             forecasts.append({"id": memory["id"], "version": memory["version"], "forecasts": [{"family": "opus", "effort": "high", "clean": .98, "loud": .015, "silent": .005, "tokens": 10000., "seconds": 30.}]})
         return {"memory_forecasts": forecasts, "reason": "Memory-conditioned fixture"}
 
@@ -47,7 +50,7 @@ def test_independent_baseline_and_original_semantic_inputs_are_preserved(project
     provider = FixtureLLM()
     engine = Engine(project(), llm=provider)
     memory = engine.memory.add("Migration", "Preserve transaction ordering across service boundaries.")
-    result = engine.pick("Y", "Preserve τ-ordering; never commit a partial distributed transaction", seed=42)
+    result = engine.pick("Y", "Preserve τ-ordering; never commit a partial distributed transaction", seed=42, native_candidates=inventory())
     baseline, reader = provider.calls
     assert baseline["phase"] == "baseline"
     assert not {"memories", "beliefs", "evidence", "retrieval"} & baseline.keys()
@@ -55,9 +58,9 @@ def test_independent_baseline_and_original_semantic_inputs_are_preserved(project
     assert reader["context"]["task_text"] == result["context"]["task_text"]
     assert reader["memories"][0]["body"] == memory["body"]
     receipt = load(engine.config, result["decision_id"])
-    assert receipt["format"] == "howhard-decision-v2"
+    assert receipt["format"] == "howhard-decision-v3"
     assert receipt["semantic"]["memories"][0]["body"] == memory["body"]
-    again = engine.pick("Y", result["context"]["task_text"], seed=42)
+    again = engine.pick("Y", result["context"]["task_text"], seed=42, native_candidates=inventory())
     assert again["chosen"] == result["chosen"]
     assert again["decision_id"] == result["decision_id"]
     assert again["backend"]["inference_cached"]
@@ -69,7 +72,7 @@ def test_feedback_changes_weight_amendment_replaces_it_and_edit_resets(project):
     engine = Engine(project(), llm=provider)
     memory = engine.memory.add("Migration", "Transaction tasks need careful reasoning.")
     before = expert(engine, memory)
-    pick = engine.pick("Y", "migration", seed=1, candidates=[("opus", "high")])
+    pick = engine.pick("Y", "migration", seed=1, native_candidates=inventory([("opus", "high")]))
     engine.observe_decision(pick["decision_id"], "clean", id="first")
     after = expert(engine, memory)
     assert after["log_score"] > before["log_score"]
@@ -91,7 +94,7 @@ def test_correction_chain_replays_forecasts_and_writer_events_once(project):
     model = "claude-opus-5-5"
     engine.config.data["models"][model]["weight"] = .4
     memory = engine.memory.add("Review", "Review can revise an earlier outcome judgment.")
-    choice = engine.pick("Y", "review", seed=1, candidates=[("opus", "high")])
+    choice = engine.pick("Y", "review", seed=1, native_candidates=inventory([("opus", "high")]))
     engine.observe_decision(choice["decision_id"], "clean", id="original", tokens=10000, seconds=30)
     initial = expert(engine, memory)
     first_key = engine.memory_learning_context("original")["event_key"]
@@ -144,15 +147,19 @@ def test_unrelated_cell_does_not_credit_memory_and_removal_stops_influence(proje
     provider = FixtureLLM()
     engine = Engine(project(), llm=provider)
     memory = engine.memory.add("Migration", "Transaction boundary guidance")
-    pick = engine.pick("Y", "migration", seed=2, candidates=[("sonnet", "high")])
+    candidates = inventory([("sonnet", "high"), ("opus", "high")])
+    candidates[1]["usd_per_mtok"] = 1e9
+    pick = engine.pick("Y", "migration", seed=2, native_candidates=candidates)
+    assert pick["chosen"]["family"] == "sonnet"
+    assert pick["semantic"]["exposures"][f"memory:{memory['id']}:{memory['version']}"] == [["opus", "high"]]
     engine.observe_decision(pick["decision_id"], "clean", id="unrelated")
     assert expert(engine, memory)["evidence_count"] == 0
     engine.memory.remove(memory["id"])
-    result = engine.pick("Y", "migration", seed=2)
+    result = engine.pick("Y", "migration", seed=2, native_candidates=inventory())
     assert result["semantic"]["memories"] == []
     assert set(result["semantic"]["worlds"]) == {"statistical", "llm"}
     engine.memory.restore(memory["id"])
-    assert engine.pick("Y", "migration", seed=2)["semantic"]["memories"][0]["id"] == memory["id"]
+    assert engine.pick("Y", "migration", seed=2, native_candidates=inventory())["semantic"]["memories"][0]["id"] == memory["id"]
 
 
 def test_writer_can_add_remove_and_split_with_recoverable_failure(project):
@@ -185,7 +192,7 @@ def test_retrieval_results_frozen_and_changed_memory_invalidates_cache(project):
     (config.base / "README.md").write_text("Project semantics before the run")
     engine = Engine(config, llm=provider)
     memory = engine.memory.add("Migration", "Ordering constraints")
-    result = engine.pick("Y", "migration", seed=4)
+    result = engine.pick("Y", "migration", seed=4, native_candidates=inventory())
     assert any(r["request"]["tool"] == "project.read" for r in result["semantic"]["retrieval"])
     (config.base / "README.md").write_text("A different project state after the run")
     engine.observe_decision(result["decision_id"], "clean", id="done")
@@ -193,7 +200,7 @@ def test_retrieval_results_frozen_and_changed_memory_invalidates_cache(project):
     assert "before" in receipt["semantic"]["retrieval"][1]["result"]["text"]
     before = len(provider.calls)
     engine.memory.edit(memory["id"], body="New semantics")
-    engine.pick("Y", "migration", seed=4)
+    engine.pick("Y", "migration", seed=4, native_candidates=inventory())
     assert len(provider.calls) > before
 
 
@@ -204,9 +211,9 @@ def test_explicit_backend_failure_is_not_silent_and_auto_fallback_is_visible(pro
             raise LLMError("unavailable")
     engine = Engine(project(), llm=Broken())
     with pytest.raises(LLMError):
-        engine.pick("Y", "task", seed=1)
+        engine.pick("Y", "task", seed=1, native_candidates=inventory())
     engine.backend["mode"] = "auto"
-    assert engine.pick("Y", "task", seed=1)["backend"]["mode"] == "statistical-fallback"
+    assert engine.pick("Y", "task", seed=1, native_candidates=inventory())["backend"]["mode"] == "statistical-fallback"
     events = [json.loads(line) for line in (engine.config.base / ".howhard/inference.jsonl").read_text().splitlines()]
     assert len(events) == 2 and all(e["status"] == "failed" for e in events)
     assert all(e["cost_usd"] is None for e in events)
@@ -238,7 +245,7 @@ def test_project_retrieval_rejects_changed_context_and_private_state(project):
     readme = config.base / "README.md"
     readme.write_text("Original project")
     engine = Engine(config, llm="off")
-    pending = engine.prepare("Y", "Task")
+    pending = engine.prepare("Y", "Task", native_candidates=inventory())
     readme.write_text("Changed project")
     with pytest.raises(HowHardError, match="Project changed"):
         engine.retrieve(pending["request_id"], [{"tool": "project.read", "path": "README.md"}])
@@ -250,12 +257,12 @@ def test_project_retrieval_rejects_changed_context_and_private_state(project):
 def test_corrupted_inference_cache_is_recomputed(project):
     provider = FixtureLLM()
     engine = Engine(project(), llm=provider)
-    first = engine.pick("Y", "Task", seed=3)
+    first = engine.pick("Y", "Task", seed=3, native_candidates=inventory())
     cache = next((engine.config.base / ".howhard/llm-cache").glob("*.json"))
     data = json.loads(cache.read_bytes())
     data["response"]["reason"] = "Tampered result"
     cache.write_text(json.dumps(data))
-    second = engine.pick("Y", "Task", seed=3)
+    second = engine.pick("Y", "Task", seed=3, native_candidates=inventory())
     assert len(provider.calls) == 2
     assert second["semantic"]["reason"] == first["semantic"]["reason"]
     assert not second["backend"]["inference_cached"]
@@ -266,7 +273,7 @@ def test_invalid_seed_does_not_spend_inference(project):
     provider = FixtureLLM()
     engine = Engine(project(), llm=provider)
     with pytest.raises(HowHardError, match="seed"):
-        engine.pick("Y", "Task", seed=-1)
+        engine.pick("Y", "Task", seed=-1, native_candidates=inventory())
     assert provider.calls == []
 
 
@@ -279,7 +286,7 @@ def test_project_retrieval_does_not_read_files_omitted_from_git_snapshot(project
     (config.base / "README.md").write_text("A public project description")
     (config.base / "ignored.py").write_text("excluded from decision-time project capture")
     engine = Engine(config, llm="off")
-    pending = engine.prepare("Y", "Task")
+    pending = engine.prepare("Y", "Task", native_candidates=inventory())
     # Internal requests/memory state must not change the project fingerprint.
     engine.retrieve(pending["request_id"], [{"tool": "project.read", "path": "README.md"}])
     with pytest.raises(HowHardError, match="outside the captured snapshot"):

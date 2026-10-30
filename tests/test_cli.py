@@ -4,6 +4,7 @@ import subprocess
 import sys
 import pytest
 
+from conftest import inventory
 from howhard import Engine, __version__, load_config
 from howhard.cli import main
 
@@ -20,9 +21,9 @@ def test_packaged_defaults_available_through_resources():
         assert files("howhard").joinpath("data", name).read_bytes()
 
 
-def test_zero_configuration_end_to_end(tmp_path, monkeypatch, capsys):
+def test_zero_configuration_end_to_end(tmp_path, monkeypatch, capsys, candidate_file):
     monkeypatch.chdir(tmp_path)
-    assert main(["pick", "new-task", "--json", "--seed", "42"]) == 0
+    assert main(["pick", "new-task", "--json", "--seed", "42", "--candidates", str(candidate_file)]) == 0
     picked = json.loads(capsys.readouterr().out)
     assert picked["risk_class"] == "standard"
     assert picked["seed"] == 42
@@ -36,7 +37,7 @@ def test_zero_configuration_end_to_end(tmp_path, monkeypatch, capsys):
     assert main(["flush", "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["ids"] == ["first"]
     assert (tmp_path / ".howhard/pending.jsonl").read_bytes() == b""
-    assert main(["summary", "new-task", "--json"]) == 0
+    assert main(["summary", "new-task", "--json", "--candidates", str(candidate_file)]) == 0
     summary = json.loads(capsys.readouterr().out)
     assert "chosen" not in summary and "seed" not in summary
     assert all("sampled_J" not in c for c in summary["cells"])
@@ -58,8 +59,8 @@ def test_zero_config_custom_type_transfer_to_empty_project(tmp_path):
     b = Engine(directory=b_dir)
     b.import_prior(path)
     assert "custom-task" in b.prior.task_types
-    assert b.summary("custom-task")["risk_class"] == "standard"
-    assert b.summary("custom-task")["cells"] == Engine(directory=b_dir).summary("custom-task")["cells"]
+    assert b.summary("custom-task", native_candidates=inventory())["risk_class"] == "standard"
+    assert b.summary("custom-task", native_candidates=inventory())["cells"] == Engine(directory=b_dir).summary("custom-task", native_candidates=inventory())["cells"]
 
 
 def test_journal_override_cannot_alias_tracked_log(project):
@@ -78,28 +79,28 @@ def test_default_taxonomy_transfer_without_config(tmp_path, monkeypatch, capsys)
     assert ".howhard/imported-prior.json" in json.loads(capsys.readouterr().out)["imported"]
 
 
-def test_explicit_config_required_policy_and_unknown_type_risk(tmp_path, capsys):
+def test_explicit_config_required_policy_and_unknown_type_risk(tmp_path, capsys, candidate_file):
     path = tmp_path / "config.toml"
     path.write_text('project = "local"\n')
-    assert main(["pick", "bookkeeping", "--config", str(path)]) == 2
+    assert main(["pick", "bookkeeping", "--config", str(path), "--candidates", str(candidate_file)]) == 2
     assert "on_cap_unmet" in capsys.readouterr().err
     path.write_text('on_cap_unmet = "flag-review"\n')
-    assert main(["pick", "unknown", "--config", str(path)]) == 2
+    assert main(["pick", "unknown", "--config", str(path), "--candidates", str(candidate_file)]) == 2
     assert "--risk" in capsys.readouterr().err
-    assert main(["pick", "unknown", "--risk", "docs", "--config", str(path), "--json"]) == 0
+    assert main(["pick", "unknown", "--risk", "docs", "--config", str(path), "--json", "--candidates", str(candidate_file)]) == 0
     assert json.loads(capsys.readouterr().out)["risk_class"] == "docs"
 
 
-def test_bad_seed_and_malformed_observe_are_diagnostics(tmp_path, monkeypatch, capsys):
+def test_bad_seed_and_malformed_observe_are_diagnostics(tmp_path, monkeypatch, capsys, candidate_file):
     monkeypatch.chdir(tmp_path)
-    assert main(["pick", "bookkeeping", "--seed", "-1"]) == 2
+    assert main(["pick", "bookkeeping", "--seed", "-1", "--candidates", str(candidate_file)]) == 2
     assert "seed" in capsys.readouterr().err
     assert main(["observe", "bookkeeping", "unknown", "high", "clean"]) == 2
     assert "registry" in capsys.readouterr().err
 
 
-def test_module_entrypoint_version_and_pick(tmp_path):
+def test_module_entrypoint_version_and_pick(tmp_path, candidate_file):
     version = subprocess.run([sys.executable, "-m", "howhard", "--version"], cwd=tmp_path, capture_output=True, text=True, check=True)
     assert version.stdout.strip() == f"howhard {__version__}"
-    picked = subprocess.run([sys.executable, "-m", "howhard", "pick", "bookkeeping", "--json", "--seed", "12"], cwd=tmp_path, capture_output=True, text=True, check=True)
+    picked = subprocess.run([sys.executable, "-m", "howhard", "pick", "bookkeeping", "--json", "--seed", "12", "--candidates", str(candidate_file)], cwd=tmp_path, capture_output=True, text=True, check=True)
     assert json.loads(picked.stdout)["seed"] == 12

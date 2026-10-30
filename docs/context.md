@@ -77,7 +77,7 @@ are gathered automatically. No coverage value is guessed from the existence of t
 ## Record the decision-time context
 
 ```sh
-howhard pick specified-implementation --text "Make transaction rollback safe" --json
+howhard pick specified-implementation --candidates /tmp/host-candidates.json --text "Make transaction rollback safe" --json
 # Copy decision_id from the result, then execute the task using its chosen cell.
 howhard observe DECISION_ID clean --tokens 12000 --seconds 45
 ```
@@ -92,10 +92,13 @@ form also accepts that file path. Explicit four-argument observe supports `--dec
 or `--decision PATH` and refuses conflicting task/cell/context arguments.
 
 ```python
+import json
+from pathlib import Path
 from howhard import Engine
 
+inventory = json.loads(Path("/tmp/host-candidates.json").read_text())
 engine = Engine()
-choice = engine.pick("specified-implementation", "Make transaction rollback safe", seed=42)
+choice = engine.pick("specified-implementation", "Make transaction rollback safe", native_candidates=inventory, seed=42)
 # The repository can change while the delegated task runs.
 engine.observe_decision(choice["decision_id"], "clean", tokens=12000, seconds=45)
 ```
@@ -106,33 +109,32 @@ at observation time. Use a receipt when the task changed project state. A receip
 also be passed to `Engine.observe(..., decision=...)`. Amendments always retain the
 original run's text, project snapshot and usage measurements.
 
-## Compatibility, cache and transfer
+## Current records, cache and transfer
 
-Old rows remain readable. Their absent context contributes zero feature values and is
-never filled from today's project. New rows store `task_text`, `project_context` and
-`context_encoder` together, plus a `decision_id` when a receipt was used. Validation
+Original rows require `task_text`, `project_context` and `context_encoder` together,
+plus `observed_at` and a `decision_id` when a receipt was used. Empty task text and null
+project context explicitly record unknown inputs; absent fields are refused. Validation
 refuses unknown fields, malformed snapshots and unsupported encoder versions.
 
 Full-log cache hashes include the recorded context and encoder assumptions. Query
 memoization keys also include the actual task text and current snapshot, so two
 requests with the same type cannot reuse different contextual predictions. Cache format
-v2 safely invalidates v1 files. Identical posterior, text, snapshot and seed reproduce
+v2 rejects any other cache format. Identical posterior, text, snapshot and seed reproduce
 the same result and receipt ID across processes.
 
 Contextual prior exports use `howhard-prior-v2`, with an exact feature vocabulary and
 encoder ID. They export shared context slopes and covariance, including family and
 effort slopes, and omit raw text, snapshots, revisions, fingerprints, paths, filenames,
 receipts and project-specific terms. The coefficients still represent learned evidence;
-this is not a formal differential-privacy guarantee. Legacy v1 imports remain supported;
-their missing context slopes use the packaged defaults. Imports reject incompatible
-encoder IDs or feature vocabularies. Configurations with only legacy evidence can still
-export the legacy format until contextual terms are learned or imported.
+this is not a formal differential-privacy guarantee. Exports always use the current
+contextual format, even before any evidence is recorded. Imports reject other prior
+formats, incompatible encoder IDs or feature vocabularies.
 
 ## Worktree context and shared state
 
 Project capture uses the current checkout even when a durable store is shared. Fresh
-Git worktrees automatically use the repository common directory's howhard store; valid
-legacy and explicit state remain in place. `paths --json` exposes capture/state roots
+Git worktrees automatically use the repository common directory's howhard store.
+Explicit configuration owns its declared paths. `paths --json` exposes capture/state roots
 and `--state-dir` selects an intentional store without changing the source capture root.
 Prepared requests are worktree-bound, preventing sibling checkouts from satisfying
 retrieval against another checkout's saved source. Frozen receipts remain valid for

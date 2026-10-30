@@ -38,53 +38,20 @@ C_silent = 10.0
 lambda_per_hour = 10.0
 epsilon = 0.20
 
-# A fixed planning mix, dominated by cached context, rather than live billing.
-[token_mix]
-input = 0.04
-output = 0.01
-cache_write_5m = 0.01
-cache_write_1h = 0.0
-cache_read = 0.94
-
-# Registry and list prices checked against Anthropic's docs, 2026-10-29.
-# Haiku uses the conservative >100K prompt rate; no API calls are made.
-[families.haiku]
-tier = 1
-current = "claude-haiku-5-5"
-selectable = true
-[families.sonnet]
-tier = 2
-current = "claude-sonnet-5-5"
-selectable = true
-[families.opus]
-tier = 3
-current = "claude-opus-5-5"
-selectable = true
-[families.fable]
-tier = 4
-current = "claude-fable-5-1"
-selectable = true
+# Known identity mappings calibrate priors; the host supplies candidates and prices.
 [models.claude-haiku-5-5]
 family = "haiku"
-default_effort = "medium"
 efforts = ["low", "medium", "high", "xhigh", "max"]
 weight = 1.0
-prices = {input = 0.5, output = 2.5, cache_write_5m = 0.625, cache_write_1h = 1.0, cache_read = 0.05}
 [models.claude-sonnet-5-5]
 family = "sonnet"
-default_effort = "high"
 efforts = ["low", "medium", "high", "xhigh", "max"]
 weight = 1.0
-prices = {input = 2.0, output = 10.0, cache_write_5m = 2.5, cache_write_1h = 4.0, cache_read = 0.1}
 [models.claude-opus-5-5]
 family = "opus"
-default_effort = "medium"
 efforts = ["low", "medium", "high", "xhigh", "max"]
 weight = 1.0
-prices = {input = 4.0, output = 20.0, cache_write_5m = 5.0, cache_write_1h = 8.0, cache_read = 0.2}
 [models.claude-fable-5-1]
 family = "fable"
-default_effort = "high"
 efforts = ["low", "medium", "high", "xhigh", "max"]
 weight = 1.0
-prices = {input = 10.0, output = 50.0, cache_write_5m = 12.5, cache_write_1h = 20.0, cache_read = 0.25}

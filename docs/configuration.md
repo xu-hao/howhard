@@ -31,33 +31,23 @@ can be reassigned with `task_types`. Class names are critical, contract, standar
 and routine. The first log belongs to the current project and is the flush destination;
 additional logs can name other projects.
 
-The packaged registry is overlaid by `[families.NAME]` and `[models."concrete-id"]`:
+Known model mappings can be overlaid by `[models."concrete-id"]`:
 
 ```toml
-[families.opus]
-tier = 3
-current = "claude-opus-5-5"
-selectable = true
-
 [models.claude-opus-5-5]
 family = "opus"
-default_effort = "medium"
 efforts = ["low", "medium", "high", "xhigh", "max"]
 weight = 1.0
-usd_per_mtok = 0.638
 ```
 
-A new concrete id inherits its family's learned effects. Evidence from another provider
-can map to an equivalent family with a lower positive `weight`. A model entry requires
-family, supported efforts and default effort. A missing weight means 1.0. Only current,
-selectable family ids are candidates; older ids can remain registered for historical
-rows. Set `selectable = false` to remove a family from recommendations.
-
-Instead of `usd_per_mtok`, supply
-`prices = {input=..., output=..., cache_write_5m=..., cache_write_1h=..., cache_read=...}`.
-The project-level `[token_mix]` has exactly those five keys, nonnegative shares summing
-to one within `1e-6`. A model can have only one price form. Specifying a blended price
-for a shipped id replaces its component prices.
+An explicitly mapped concrete ID inherits that family's learned effects. A model entry
+requires a known family and supported efforts; omitted evidence weight means 1.0.
+Unknown native IDs need no configuration: the backend assigns distinct neutral families.
+Every `pick`, `summary` and `context` request supplies its actual inventory through
+`--candidates FILE` (Python: `native_candidates`). Registry entries do not activate
+candidates. Supply known host worker prices as optional `usd_per_mtok` in that inventory;
+unknown prices remain omitted/null. Family selection flags, model default efforts,
+component API prices and token-mix configuration are not accepted.
 
 Maintainers can supply an entire strictly validated prior with `[prior] path = "prior.toml"`
 or recursively replace individual assumptions under `[prior.overrides]`. For example,
@@ -72,7 +62,6 @@ there. `[transfer] variance_inflation = 2.0` overrides the exported covariance m
 
 Native host use does not require this configuration. The skill supplies discovered
 model/control cells through `--candidates`, and the backend owns their minimal historical
-metadata and neutral defaults. Native price omission means unknown, not the packaged API
-price. `--state-dir` redirects standard `.howhard/` data paths while honoring custom
+metadata and neutral defaults. Native price omission means unknown. `--state-dir` redirects standard `.howhard/` data paths while honoring custom
 configured paths, and keeps current project capture separate. Explicit configuration
 without that override retains its existing data locations and prior settings.

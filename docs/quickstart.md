@@ -45,9 +45,14 @@ Choose the intended scope before running those commands. Reopen the agent if nec
 All three load the same `skills/howhard/SKILL.md`: common Agent Skills content with thin,
 host-specific plugin metadata, not three copies or a howhard installer.
 
-In Codex invoke `$howhard` or select it in `/skills`; in Claude Code use
-`/howhard:howhard`; in Antigravity use `/howhard` or ask for the skill by name.
-Give it your real task:
+In Codex, the installed skill can activate automatically when a task matches its
+model-selection or feedback-learning description. Explicit invocation is optional:
+use `$howhard` or `/skills` in Codex, `/howhard:howhard` in Claude Code, or `/howhard`
+in Antigravity to request it directly. [Codex skill activation](https://learn.chatgpt.com/docs/build-skills)
+is based on the task; starting a subagent alone does not guarantee activation.
+The coordinating agent uses howhard **before** spawning a worker so it can choose that
+worker's model and effort. The plugin supplies instructions, with no subagent-start hook.
+To request the complete workflow explicitly, give it your real task:
 
 > Use howhard for this task: repair transaction rollback and verify its failure
 > boundary. Read the current project context, obtain an independent baseline, consult
@@ -73,16 +78,12 @@ The JSON decision includes `chosen.model`, `chosen.effort`, `decision_id`, `cap_
 `needs_review` and the native `cost_policy`. A recommendation does not execute the task.
 Honor required review and check the actual host execution against the chosen cell.
 Fresh Git worktrees automatically share repository state while capturing the current
-checkout; existing valid stores are retained, and plain folders use local `.howhard`.
+checkout; plain folders use local `.howhard`, and explicit store selection is available.
 Inspect the resolved roots with:
 
 ```sh
 howhard paths --llm off --json
 ```
-
-For a legacy registry-only statistical planning check without model calls, run
-`howhard pick task --text "Repair transaction rollback" --llm off --json`. Native host
-selection instead uses the inventory supplied by the skill; you do not configure it.
 
 Only after execution, replace `DECISION_ID` with the returned receipt ID, `EXECUTION_ID`
 with a stable ID for that actual invocation, and `OUTCOME` with `clean`, `loud` or `silent`:
@@ -116,8 +117,7 @@ credit. Retry learning for the same effective event, and append changed feedback
 
 The default provider adapter can also reuse an authenticated Claude CLI; explicit
 `--llm off` keeps commands statistical and disables provider-backed writing. The
-[skill guide](skills.md) covers native lifecycle commands, older Codex's built-in
-skill installer, native feedback/mismatch handling, local/pinned sources and migration from the retired 0.4 copier.
+[skill guide](skills.md) covers native lifecycle commands, native feedback/mismatch handling and local/pinned sources.
 A third-party cross-agent `npx skills` route is optional, not a prerequisite.
 Python backend upgrades and skill updates are separate.
 

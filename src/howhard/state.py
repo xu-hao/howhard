@@ -6,7 +6,6 @@ from contextlib import contextmanager
 import re
 import secrets
 from pathlib import Path
-import sqlite3
 import subprocess
 
 from .validation import HowHardError
@@ -21,9 +20,9 @@ def git_path(root, option):
         return None
 
 
-def legacy_store(path):
+def validate_store(path):
     if not path.exists():
-        return False
+        return
     if not path.is_dir():
         raise HowHardError(f"state: expected a directory at {path}")
     names = {entry.name for entry in path.iterdir()}
@@ -33,18 +32,7 @@ def legacy_store(path):
     if names and not names & known:
         raise HowHardError(f"state: refusing unrelated existing directory {path}")
     if "memory.sqlite3" in names and "store.json" not in names:
-        try:
-            database = sqlite3.connect((path / "memory.sqlite3").resolve().as_uri() + "?mode=ro", uri=True)
-            try:
-                version = database.execute("PRAGMA user_version").fetchone()[0]
-                tables = {row[0] for row in database.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-                if version != 1 or not {"memories", "versions", "events", "learned"} <= tables:
-                    raise HowHardError(f"state: unrecognized legacy memory database at {path}")
-            finally:
-                database.close()
-        except sqlite3.Error as exc:
-            raise HowHardError(f"state: invalid legacy memory database at {path}") from exc
-    return bool(names)
+        raise HowHardError(f"state: refusing unclaimed memory database at {path}")
 
 
 def read_identity(path):
@@ -72,19 +60,12 @@ def roots(project, *, explicit=False, state_directory=None):
     elif explicit:
         store = project / ".howhard"
     else:
-        local = project / ".howhard"
-        main_legacy = common.parent / ".howhard" if common and common.name == ".git" else local
-        if legacy_store(local):
-            store = local
-        elif main_legacy != local and legacy_store(main_legacy):
-            store = main_legacy
-        else:
-            store = common / "howhard" if common else local
+        store = common / "howhard" if common else project / ".howhard"
     store = store.resolve()
     if project.is_relative_to(store):
         raise HowHardError("state: directory must not equal or contain the project capture root")
     if (not explicit or state_directory is not None) and store.exists():
-        legacy_store(store)
+        validate_store(store)
     return project, store, identity_path, read_identity(identity_path)
 
 

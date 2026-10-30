@@ -15,11 +15,11 @@ J = C_run + P_loud * C_loud + P_silent * C_silent + lambda_per_hour * T
 Native callers supply a validated inventory of actual model/control cells before any
 forecast. `pick`/`context` accept `--candidates FILE`; Python uses `native_candidates`.
 Each cell has `model`, `effort` and optional `usd_per_mtok`. Native pricing is unknown
-when omitted/null, even for a model with a packaged API price. If any candidate is
+when omitted/null, including for a known model identity. If any candidate is
 unpriced, the worker monetary term is omitted for **every** candidate. `cost_policy`
 labels this partial comparison; unknown `C_run` is null and known `C_run` remains visible,
 while `J` contains risk and time only. Fully priced inventories use the full objective.
-The legacy registry-only path retains its original strict pricing behavior.
+Every routing request requires an explicit native inventory.
 
 Costs are USD, and `T` is hours. Families and efforts are categorical axes. The selector
 uses 4,000 joint posterior draws with a fixed internal seed for deterministic means and
@@ -84,13 +84,9 @@ TOML. Conditional expected measurements are `exp(mu + noise_sd**2/2)`;
 posterior draws also account for coefficient uncertainty. Tokens include all cached and
 uncached input and output. `cost_usd` is retained for reporting and never fitted.
 
-Model prices and the token mix are data. A blended USD-per-million price or five component
-prices plus shares summing to one are accepted. Missing prices are refused on selection.
-The built-in planning snapshot uses a cache-heavy mix and conservative long-prompt Haiku
-pricing. Its model ids, effort support and prices were checked on 2026-10-29 against
-[Anthropic's model registry](https://platform.claude.com/docs/en/models/overview),
-[effort documentation](https://platform.claude.com/docs/en/build-with-claude/effort) and
-[pricing](https://platform.claude.com/docs/en/about-claude/pricing).
+Worker prices are optional per-inventory `usd_per_mtok` values supplied by the host.
+Configured model entries contain known family/effort mappings and evidence weights,
+not candidate activation or API pricing. Unknown worker prices stay unknown.
 
 ## Records and amendments
 
@@ -104,8 +100,8 @@ Every JSONL row requires these base keys:
 | `task_type` | Known task name; zero-config also accepts new names as standard |
 | `risk_class` | Recorded risk class; fitting uses the current mapping |
 | `model` | Concrete id from the registry |
-| `effort` | low, medium, high, xhigh, max, or model_default |
-| `default_effort` | Historical resolved effort for model_default, otherwise null |
+| `effort` | Exact registered effort/control identity |
+| `observed_at` | ISO timestamp with timezone |
 | `outcome` | clean, loud or silent |
 | `cause` | Null for clean; depth, capability or unrecorded otherwise |
 | `tokens` | Nonnegative integer or null |
@@ -115,20 +111,17 @@ Every JSONL row requires these base keys:
 
 Types, enums, missing keys and extra keys are strict. `observe --id` matching retries
 return the original row without appending. Automatically derived context, timestamp/date,
-risk and default resolution retain their first historical values; explicitly changed
+and risk class retain their first historical values; explicitly changed
 inputs conflict. Equality never bypasses field/type validation. Raw `observe --native`
 can admit a verified actual model/control without a receipt or retrospective forecast;
 all feedback/ID validation precedes identity metadata persistence under the project lock.
 Disk duplicate rows remain errors. Errors name the file, line and key.
-Contextual rows additionally store `task_text`, `project_context` and `context_encoder`
-together, with optional `decision_id`. New observations also record `observed_at`, an
-ISO timestamp with timezone identifying when feedback became available. Legacy rows
-keep their missing context and timestamp.
-Amendments are new rows with `amends` set to an earlier row ID and null measurement
-and cost fields. Since 0.3.1, they may correct an outcome to `clean`, `loud` or `silent`;
-earlier versions accepted only `silent` amendments and cannot read the expanded cases.
-The row keys and cache/prior formats are unchanged. The usual cause rule still applies:
-null for clean, and depth, capability or unrecorded for loud/silent.
+Original rows require `task_text`, `project_context` and `context_encoder` together,
+with optional `decision_id`. Empty task text or null project context represents an
+explicitly unknown input; missing fields are refused. Every row requires `observed_at`.
+Amendments carry null measurements/cost and correct an outcome to clean, loud or silent,
+with the usual cause rule. Superseded rows without timestamps/context and unresolved
+`model_default` efforts are refused; no context or control is inferred retrospectively.
 Chains replace the original run's effective outcome and cause, counting that run once
 and retaining its original ID, decision, cell, task text, project snapshot, project,
 weight and measurements. Raw rows remain intact. Amendments cannot override historical
@@ -149,18 +142,20 @@ the already-flushed journal entries after comparing their ids with the log.
 The current project capture root is independent of the durable state root. `paths --json`
 reports both; `--state-dir PATH` and `Engine(state_directory=...)` support intentional
 store selection. Fresh zero-config Git worktrees share `howhard` below the repository's
-common Git directory, with current context from the current checkout. Valid existing
-checkout/main-worktree `.howhard` stores take precedence, with no automatic migration,
-deletion or overwrite. Explicit configuration retains its declared paths and prior
-settings; plain directories keep local `.howhard`. A stable random project identity lives
+common Git directory, with current context from the current checkout. Checkout-local
+`.howhard` directories do not override this shared default and are left untouched.
+Explicit configuration retains its declared paths and prior settings; plain directories
+keep local `.howhard`. A stable random project identity lives
 in `howhard-project.json` in the Git common directory, or `.howhard/project.json` for a
 plain folder, independently of a custom store. Moving the project with its metadata
 preserves identity. A claimed store refuses another project's use before cache, registry
-or memory writes. New receipts carry that identity too; legacy receipts retain their
-project-label validation. The resolved state subtree is excluded from capture and
+or memory writes. All receipts require that identity and their native inventory/cost
+policy. The resolved state subtree is excluded from capture and
 `project.read`, including symlink aliases; a state root equal to or containing the capture
 root is refused. Prepared calling-agent requests bind the worktree and reject sibling
-retrieve/decide; old pending requests without that binding must be prepared again.
+retrieve/decide. Requests use `howhard-agent-request-v2` and receipts use
+`howhard-decision-v3`, with optional semantic forecasts in the same receipt format.
+Earlier formats are refused; prepare a fresh request and decision.
 Frozen-receipt observations and learning share the store across that project's worktrees.
 
 ## Cache and transfer
@@ -177,14 +172,14 @@ A changed prior, invalid cache or missing cache starts a full fit. Cache deletio
 reproduces the posterior. `fit.kind` and `fit.iterations` describe the current call.
 An `Engine` is a snapshot: call `refresh()` after external writes.
 
-Legacy exports use `howhard-prior-v1`; contextual exports use `howhard-prior-v2` with
-encoder and feature vocabulary validation. Both contain labeled means, full shared covariances and
+Exports and imports use only `howhard-prior-v2`, with encoder and feature vocabulary
+validation, including on an empty store. They contain labeled means, full shared covariances and
 the fixed noise sds. Covariances are multiplied by `transfer.variance_inflation`, default
 2.0. Project terms are excluded by label. Imports validate all keys, names, numerical
 shapes, symmetry and positive definiteness before replacing the destination atomically.
 Native identity-specific family/control terms are excluded from generic prior exports;
-no concrete native identity mapping is transferred. Export vocabularies and existing
-prior formats remain compatible. Shared terms absent from the file use hand-set priors. New-project terms always use
+no concrete native identity mapping is transferred. The v1 prior format is refused.
+Shared terms absent from the file use hand-set priors. New-project terms always use
 their independent hand-set priors. With explicit configuration, register custom task
 types before importing them. Zero-config imports accept custom type names with standard
 local policy, retaining their transferred distributions.
@@ -192,12 +187,15 @@ local policy, retaining their transferred distributions.
 ## Python API
 
 ```python
+import json
+from pathlib import Path
 from howhard import Engine
 
+inventory = json.loads(Path("host-candidates.json").read_text())
 engine = Engine()  # optional config path or directory=...
 description = "Make transaction rollback safe"
-choice = engine.pick("specified-implementation", description, seed=42)
-table = engine.summary("specified-implementation", description)
+choice = engine.pick("specified-implementation", description, native_candidates=inventory, seed=42)
+table = engine.summary("specified-implementation", description, native_candidates=inventory)
 engine.observe_decision(choice["decision_id"], "clean")
 engine.flush()
 engine.export_prior("shared-prior.json")

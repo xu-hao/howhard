@@ -4,6 +4,7 @@ import pytest
 
 from howhard import load_config
 from howhard.storage import effective_rows
+from howhard.context import FORMAT
 
 
 @pytest.fixture(autouse=True)
@@ -38,7 +39,9 @@ def row(i, *, task="X", family="opus", effort="high", outcome="clean", **kwargs)
     return {"id": f"run-{i}", "date": "2026-10-29", "ticket": None, "task_type": task,
             "risk_class": "critical" if task in ("X", "Z") else "routine" if task == "cheap" else "standard",
             "model": {"haiku": "claude-haiku-5-5", "sonnet": "claude-sonnet-5-5", "opus": "claude-opus-5-5", "fable": "claude-fable-5-1"}[family],
-            "effort": effort, "default_effort": None, "outcome": outcome,
+            "effort": effort, "outcome": outcome,
+            "observed_at": "2026-10-29T12:00:00+00:00", "task_text": "",
+            "project_context": None, "context_encoder": FORMAT,
             "cause": None if outcome == "clean" else "unrecorded", "tokens": None,
             "seconds": None, "cost_usd": None, "note": "", "amends": None, **kwargs}
 
@@ -53,4 +56,24 @@ def cell(summary, family, effort):
 
 def frequency(engine, task, target, candidates):
     return sum((p["chosen"]["family"], p["chosen"]["effort"]) == target
-               for p in (engine.pick(task, seed=s, candidates=candidates) for s in range(200))) / 200
+               for p in (engine.pick(task, seed=s, native_candidates=inventory(candidates)) for s in range(200))) / 200
+
+
+# Synthetic host inventory and prices; these are fixture inputs, not provider claims.
+MODELS = {"haiku": "claude-haiku-5-5", "sonnet": "claude-sonnet-5-5",
+          "opus": "claude-opus-5-5", "fable": "claude-fable-5-1"}
+
+
+def inventory(cells=None):
+    cells = cells if cells is not None else [(family, effort) for family in MODELS
+              for effort in ("low", "medium", "high", "xhigh", "max")]
+    prices = {"haiku": .1, "sonnet": .4, "opus": .6, "fable": 1.5}
+    return [{"model": MODELS[family], "effort": effort, "usd_per_mtok": prices[family]}
+            for family, effort in cells]
+
+
+@pytest.fixture
+def candidate_file(tmp_path_factory):
+    path = tmp_path_factory.mktemp("host-inventory") / "candidates.json"
+    path.write_text(json.dumps(inventory()))
+    return path
