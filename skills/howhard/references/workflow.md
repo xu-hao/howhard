@@ -86,15 +86,26 @@ inventories include worker money. `needs_review` still requires independent revi
 semantic memory cannot clear the statistical silent-failure guard by itself.
 
 Delegate through the host's actual tool with supported controls and the authorized
-scope. Retain a stable ID for the actual invocation, requested cell, actual resolved
-identity/control and measured usage. A recommendation itself is not execution evidence.
+scope. Retain a stable ID for the actual invocation, requested cell, any reported actual
+identity/control and measured usage. On a host whose native spawn API applies explicit
+model and effort overrides, an accepted override followed by completed task execution
+is sufficient attribution to the requested cell unless the host reports launch failure,
+ignored controls, substitution or contradictory execution metadata. If no separate
+resolved identity is returned, record accepted host overrides and completed execution
+in the observation note. This is host-API provenance, not backend or provider
+attestation. A recommendation, planned call or unexecuted request is not execution
+evidence. Use the matched decision receipt for this accepted-override case so feedback
+scores its prospective forecast. Otherwise, match only when reported actual model and
+control exactly match the chosen cell; record a different known actual cell with raw
+feedback, and leave it unscored only when its identity/control is unknown.
 
 ## Record the actual execution and reconcile retries
 
-After actual execution and assessment, record the matched receipt:
+After actual execution and assessment, record the matched receipt when an accepted
+explicit override or reported actual identity/control establishes an exact match:
 
 ```sh
-howhard observe DECISION_ID OUTCOME --id EXECUTION_ID --llm off --json
+howhard observe DECISION_ID OUTCOME --id EXECUTION_ID --note 'Native host accepted explicit model/effort overrides; task execution completed.' --llm off --json
 howhard evidence EXECUTION_ID --raw --llm off --json
 ```
 
@@ -122,8 +133,12 @@ task_text=choice["context"]["task_text"], project_context=choice["context"]["pro
 id=execution_id, note=provenance)` with the verified actual model/control and outcome.
 Do not pass `decision` or `decision_id`. Full feedback/ID conflict validation precedes
 identity admission. Invalid/conflicting feedback leaves historical metadata unchanged.
-Unknown actual identities or controls remain unscored and reported; do not register a
-guess. No separate project ledger or adapter is needed.
+When neither accepted explicit controls nor an exact reported actual cell establishes a
+match, unknown identities or controls remain unscored and reported; do not register a
+guess. A host-reported launch failure, ignored control, substitution or contradictory
+execution metadata also prevents matched attribution; record a known actual cell through
+the raw path above, or leave it unscored when the actual cell is unknown. No separate
+project ledger or adapter is needed.
 
 ## Corrections and learning
 
