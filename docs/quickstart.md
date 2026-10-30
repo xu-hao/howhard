@@ -60,6 +60,11 @@ To request the complete workflow explicitly, give it your real task:
 > work with that cell, then record the actual result and measured usage under a stable
 > execution ID and update memory. Report any unsupported controls or identity mismatch.
 
+For persistent use before worker delegation, copy the
+[coordinating-agent instruction](skills.md#require-howhard-before-delegation)
+into your agent's project instructions (`AGENTS.md` in Codex). The skill guide explains
+the instruction's scope and the host enforcement needed for a hard guarantee.
+
 The skill discovers the host's executable model/control inventory, creates temporary
 protocol inputs, obtains an independent baseline and uses memory-conditioned forecasts.
 It calls the native howhard CLI/API directly. You do not write a project bridge, add a
