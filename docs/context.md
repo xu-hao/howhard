@@ -82,7 +82,8 @@ howhard pick specified-implementation --text "Make transaction rollback safe" --
 howhard observe DECISION_ID clean --tokens 12000 --seconds 45
 ```
 
-Every pick saves a content-addressed receipt under `.howhard/decisions/`. Its ID is
+Every pick saves a content-addressed receipt under `decisions/` in the backend state
+root reported by `howhard paths` (local `.howhard` for plain folders). Its ID is
 printed in text and JSON output. The receipt includes the chosen cell, task description,
 project snapshot, seed and risk class. A later observation resolves the receipt and
 copies that original context into the append-only row. It does not rescan the newer
@@ -126,3 +127,16 @@ this is not a formal differential-privacy guarantee. Legacy v1 imports remain su
 their missing context slopes use the packaged defaults. Imports reject incompatible
 encoder IDs or feature vocabularies. Configurations with only legacy evidence can still
 export the legacy format until contextual terms are learned or imported.
+
+## Worktree context and shared state
+
+Project capture uses the current checkout even when a durable store is shared. Fresh
+Git worktrees automatically use the repository common directory's howhard store; valid
+legacy and explicit state remain in place. `paths --json` exposes capture/state roots
+and `--state-dir` selects an intentional store without changing the source capture root.
+Prepared requests are worktree-bound, preventing sibling checkouts from satisfying
+retrieval against another checkout's saved source. Frozen receipts remain valid for
+feedback from another worktree in the same project. Stable backend-owned identity markers
+move with the project; new receipts reject other repositories even with the same project
+label. The resolved store subtree, including aliases, is excluded from source capture and
+retrieval. State cannot equal or contain the capture root. See the [state contract](reference.md).

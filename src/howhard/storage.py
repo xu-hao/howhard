@@ -8,7 +8,6 @@ import os
 from pathlib import Path
 import secrets
 
-from .config import EFFORTS
 from .validation import HowHardError, keys, number, text
 from .context import FORMAT as CONTEXT_FORMAT, capture_project, validate_row_context
 
@@ -18,14 +17,17 @@ ROW_KEYS = ("id", "date", "ticket", "task_type", "risk_class", "model", "effort"
 
 @contextmanager
 def locked(config):
-    path = config.path(config.data["journal"]).with_suffix(".lock")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a+b") as handle:
-        fcntl.flock(handle, fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(handle, fcntl.LOCK_UN)
+    from .state import identity_locked, check
+    with identity_locked(config):
+        path = config.path(config.data["journal"]).with_suffix(".lock")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a+b") as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            try:
+                check(config)
+                yield
+            finally:
+                fcntl.flock(handle, fcntl.LOCK_UN)
 
 
 def read_bytes(path):
@@ -69,9 +71,9 @@ def validate_row(row, config, where):
     if model is None:
         raise HowHardError(f"{where}.model: unknown model id {row['model']!r}; add it to the model registry")
     if row["effort"] == "model_default":
-        if row["default_effort"] not in EFFORTS:
+        if model.get("native") or row["default_effort"] not in config.efforts:
             raise HowHardError(f"{where}.default_effort: required for model_default")
-    elif row["effort"] not in EFFORTS or row["default_effort"] is not None:
+    elif row["effort"] not in config.efforts or row["default_effort"] is not None:
         raise HowHardError(f"{where}.effort/default_effort: invalid effort or unexpected default_effort")
     resolved = row["default_effort"] if row["effort"] == "model_default" else row["effort"]
     if resolved not in model["efforts"]:
@@ -182,32 +184,69 @@ def append_bytes(path, blob):
         os.fsync(handle.fileno())
 
 
-def observe(config, task_type, model, effort, outcome, **options):
+def observe(config, task_type, model, effort, outcome, *, _automatic_context=(), native=False, **options):
     allowed = {"cause", "tokens", "seconds", "cost_usd", "ticket", "note", "amends", "date", "id", "task_text", "project_context", "decision_id", "risk_class"}
     unknown = options.keys() - allowed
     if unknown:
         raise HowHardError(f"observe: unknown keys {sorted(unknown)}")
-    registry = config.data["models"].get(model)
-    if registry is None:
-        raise HowHardError(f"model: unknown model id {model!r}; add it to the model registry")
-    row = dict(id=options.get("id", secrets.token_hex(6)), date=options.get("date", date.today().isoformat()),
-               observed_at=datetime.now(timezone.utc).isoformat(),
-               ticket=options.get("ticket"), task_type=task_type, risk_class=options.get("risk_class", config.task_types.get(task_type, "standard")),
-               model=model, effort=effort, default_effort=registry["default_effort"] if effort == "model_default" else None,
-               outcome=outcome, cause=options.get("cause", None if outcome == "clean" else "unrecorded"),
-               tokens=options.get("tokens"), seconds=options.get("seconds"), cost_usd=options.get("cost_usd"),
-               note=options.get("note", ""), amends=options.get("amends"))
-    if "task_text" in options or "project_context" in options:
-        row.update(task_text=options.get("task_text", ""), project_context=capture_project(config, options.get("project_context")), context_encoder=CONTEXT_FORMAT)
-    if "decision_id" in options:
-        row["decision_id"] = options["decision_id"]
+    if native and (options.get("amends") is not None or options.get("decision_id") is not None):
+        raise HowHardError("native: actual identity admission is only for original raw feedback without a decision")
     with locked(config):
-        _, blobs = snapshot(config)
+        from . import native as native_registry
+        from .state import check
+        from copy import deepcopy
+        check(config)
+        native_registry.apply(config, native_registry.read(config))
+        current_rows, blobs = snapshot(config)
+        validation_config = config
+        if native:
+            old_models, updated = native_registry.plan(config, [{"model": model, "effort": effort}])
+            validation_config = deepcopy(config)
+            native_registry.apply(validation_config, updated)
+        registry = validation_config.data["models"].get(model)
+        if registry is None:
+            raise HowHardError(f"model: unknown model id {model!r}; add it to the registry or use native actual feedback")
+        row = dict(id=options.get("id", secrets.token_hex(6)), date=options.get("date", date.today().isoformat()),
+                   observed_at=datetime.now(timezone.utc).isoformat(),
+                   ticket=options.get("ticket"), task_type=task_type, risk_class=options.get("risk_class", config.task_types.get(task_type, "standard")),
+                   model=model, effort=effort, default_effort=registry["default_effort"] if effort == "model_default" else None,
+                   outcome=outcome, cause=options.get("cause", None if outcome == "clean" else "unrecorded"),
+                   tokens=options.get("tokens"), seconds=options.get("seconds"), cost_usd=options.get("cost_usd"),
+                   note=options.get("note", ""), amends=options.get("amends"))
+        if "task_text" in options or "project_context" in options:
+            row.update(task_text=options.get("task_text", ""), project_context=capture_project(config, options.get("project_context")), context_encoder=CONTEXT_FORMAT)
+        if "decision_id" in options:
+            row["decision_id"] = options["decision_id"]
         path, project, pending = blobs[-1]
         line = len(pending.splitlines()) + 1
-        validate_row(row, config, f"{path}: line {line}")
+        validate_row(row, validation_config, f"{path}: line {line}")
+        existing = next((r for r in current_rows if r["id"] == row["id"]), None)
+        if existing is not None:
+            if existing["project"] != project:
+                raise HowHardError(f"observe.id: conflicting project for {row['id']!r}")
+            recorded = {k: v for k, v in existing.items() if k != "project"}
+            comparable = dict(row)
+            for field in _automatic_context:
+                if field in recorded:
+                    comparable[field] = recorded[field]
+                else:
+                    comparable.pop(field, None)
+            comparable["observed_at"] = recorded.get("observed_at")
+            if "observed_at" not in recorded:
+                comparable.pop("observed_at", None)
+            if "date" not in options:
+                comparable["date"] = recorded["date"]
+            if "risk_class" not in options:
+                comparable["risk_class"] = recorded["risk_class"]
+            if effort == "model_default":
+                comparable["default_effort"] = recorded["default_effort"]
+            if comparable != recorded:
+                raise HowHardError(f"observe.id: conflicting feedback for {row['id']!r}")
+            return recorded
         blob = (json.dumps(row, allow_nan=False) + "\n").encode()
-        parse_rows([*blobs[:-1], (path, project, pending + (b"\n" if pending and not pending.endswith(b"\n") else b"") + blob)], config)
+        parse_rows([*blobs[:-1], (path, project, pending + (b"\n" if pending and not pending.endswith(b"\n") else b"") + blob)], validation_config)
+        if native:
+            native_registry.persist(config, old_models, updated)
         append_bytes(path, blob)
     return row
 

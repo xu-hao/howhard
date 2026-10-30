@@ -21,7 +21,7 @@ class Prior:
 
 def build_prior(config, rows=(), *, extra_types=None, imported=None, contextual=None):
     p = config.prior
-    families, efforts = p["families"], p["efforts"]
+    families, efforts = config.families, config.efforts
     tasks = {**config.task_types, **(extra_types or {})}
     for row in rows:
         tasks.setdefault(row["task_type"], "standard")
@@ -43,9 +43,9 @@ def build_prior(config, rows=(), *, extra_types=None, imported=None, contextual=
                 specs = p["outcome"][kind]
                 add(f"{kind}.a", specs["a"])
                 for i, m in enumerate(families):
-                    add(f"{kind}.b.{m}", specs["b"], specs["b"]["means"][i])
+                    add(f"{kind}.b.{m}", specs["b"], specs["b"]["means"][i] if i < len(specs["b"]["means"]) else 0.0)
                 for i, e in enumerate(efforts):
-                    add(f"{kind}.c.{e}", specs["c"], specs["c"]["means"][i])
+                    add(f"{kind}.c.{e}", specs["c"], specs["c"]["means"][i] if i < len(specs["c"]["means"]) else 0.0)
                 for m in families:
                     for e in efforts:
                         add(f"{kind}.d.{m}.{e}", specs["d"])
@@ -64,9 +64,9 @@ def build_prior(config, rows=(), *, extra_types=None, imported=None, contextual=
             for t, cls in tasks.items():
                 add(f"{block}.task.{t}", specs["task"], specs["task"]["means"][cls])
             for i, m in enumerate(families):
-                add(f"{block}.family.{m}", specs["family"], specs["family"]["means"][i])
+                add(f"{block}.family.{m}", specs["family"], specs["family"]["means"][i] if i < len(specs["family"]["means"]) else 0.0)
             for i, e in enumerate(efforts):
-                add(f"{block}.effort.{e}", specs["effort"], specs["effort"]["means"][i])
+                add(f"{block}.effort.{e}", specs["effort"], specs["effort"]["means"][i] if i < len(specs["effort"]["means"]) else 0.0)
             for project in projects:
                 add(f"{block}.project.{project}", specs["project"])
         if contextual:

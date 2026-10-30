@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.6.0 — 2026-10-30
+
+- Accept actual native model/control inventories before forecasts, with distinct neutral
+  families for new identities, persistent historical metadata and exact categorical efforts.
+  The portable skill calls native CLI/API primitives without project bridges or tuning.
+- Label unknown worker pricing explicitly and omit worker money uniformly when any native
+  candidate is unpriced; preserve known costs and null unknowns without API-price assumptions.
+- Separate current project capture from durable state, share fresh Git worktree state,
+  retain valid legacy/explicit stores and refuse cross-project store reuse. Expose paths
+  and intentional state selection; preserve identity on project moves, exclude resolved
+  state from source capture/retrieval, and bind prepared requests to their originating worktree.
+- Add direct evidence lookup, matching stable-ID feedback retries and validated raw native
+  execution admission without retrospective forecasts. Include all correction notes in
+  writer context while retaining amendment scoring and learning-event idempotence.
+- Existing logs, receipts and prior formats remain readable. Native metadata/efforts and
+  new receipts with project identity/native cost-policy fields require 0.6.0 or later;
+  old unbound pending requests must be prepared again. No old state is migrated
+  or deleted automatically, and generic prior exports exclude native identity-specific terms.
+
 ## 0.5.0 — 2026-10-30
 
 - Move the canonical skill to standard `skills/howhard` discovery, with thin portable,
