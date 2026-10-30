@@ -1,0 +1,11 @@
+{
+  "name": "howhard",
+  "plugins": [
+    {
+      "name": "howhard",
+      "source": {"source": "local", "path": "./"},
+      "policy": {"installation": "AVAILABLE", "authentication": "ON_INSTALL"},
+      "category": "Productivity"
+    }
+  ]
+}
