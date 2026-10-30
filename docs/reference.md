@@ -12,6 +12,15 @@ For task type `t`, family `m`, effort `e` and risk class `r`, minimize
 J = C_run + P_loud * C_loud + P_silent * C_silent + lambda_per_hour * T
 ```
 
+Native callers supply a validated inventory of actual model/control cells before any
+forecast. `pick`/`context` accept `--candidates FILE`; Python uses `native_candidates`.
+Each cell has `model`, `effort` and optional `usd_per_mtok`. Native pricing is unknown
+when omitted/null, even for a model with a packaged API price. If any candidate is
+unpriced, the worker monetary term is omitted for **every** candidate. `cost_policy`
+labels this partial comparison; unknown `C_run` is null and known `C_run` remains visible,
+while `J` contains risk and time only. Fully priced inventories use the full objective.
+The legacy registry-only path retains its original strict pricing behavior.
+
 Costs are USD, and `T` is hours. Families and efforts are categorical axes. The selector
 uses 4,000 joint posterior draws with a fixed internal seed for deterministic means and
 95% intervals. It uses the 97.5th percentile of `P_silent` for admissibility. One fresh
@@ -49,6 +58,17 @@ log-posterior Hessian at the mode. Full covariance imports are supported. Canoni
 aggregation makes the result independent of row order. Every run's evidence weight comes
 from its concrete model's registry entry. Project and project/task departures are fitted
 but never transferred.
+
+Unregistered native identities receive distinct backend-generated family labels with
+zero-mean family effects, ordinary unit evidence weight and the existing packaged
+uncertainties. New effort/control categories have zero-mean categorical effects; they
+are not ordered or translated to known efforts. Identity/effort metadata persists in
+`native-models.json` in the project store for later receipts/feedback, without making
+historical candidates active. Known configured identities retain their original mapping;
+ambiguous configured family/effort collisions are refused. The native input requires
+1–32 distinct bounded cells; no-effort/null and `model_default` are unsupported native
+controls. The skill discovers actual host capabilities; users supply no model priors,
+family mappings or statistical tuning.
 
 ## Cost and time
 
@@ -93,7 +113,13 @@ Every JSONL row requires these base keys:
 | `note` | String, possibly empty |
 | `amends` | Earlier row id or null |
 
-Types, enums, missing keys and extra keys are strict. Errors name the file, line and key.
+Types, enums, missing keys and extra keys are strict. `observe --id` matching retries
+return the original row without appending. Automatically derived context, timestamp/date,
+risk and default resolution retain their first historical values; explicitly changed
+inputs conflict. Equality never bypasses field/type validation. Raw `observe --native`
+can admit a verified actual model/control without a receipt or retrospective forecast;
+all feedback/ID validation precedes identity metadata persistence under the project lock.
+Disk duplicate rows remain errors. Errors name the file, line and key.
 Contextual rows additionally store `task_text`, `project_context` and `context_encoder`
 together, with optional `decision_id`. New observations also record `observed_at`, an
 ISO timestamp with timezone identifying when feedback became available. Legacy rows
@@ -118,6 +144,25 @@ between append and truncate can leave duplicate rows, which are refused on the n
 there is no claim of an atomic transaction across two files. Preserve a copy and remove
 the already-flushed journal entries after comparing their ids with the log.
 
+## Capture root and durable state
+
+The current project capture root is independent of the durable state root. `paths --json`
+reports both; `--state-dir PATH` and `Engine(state_directory=...)` support intentional
+store selection. Fresh zero-config Git worktrees share `howhard` below the repository's
+common Git directory, with current context from the current checkout. Valid existing
+checkout/main-worktree `.howhard` stores take precedence, with no automatic migration,
+deletion or overwrite. Explicit configuration retains its declared paths and prior
+settings; plain directories keep local `.howhard`. A stable random project identity lives
+in `howhard-project.json` in the Git common directory, or `.howhard/project.json` for a
+plain folder, independently of a custom store. Moving the project with its metadata
+preserves identity. A claimed store refuses another project's use before cache, registry
+or memory writes. New receipts carry that identity too; legacy receipts retain their
+project-label validation. The resolved state subtree is excluded from capture and
+`project.read`, including symlink aliases; a state root equal to or containing the capture
+root is refused. Prepared calling-agent requests bind the worktree and reject sibling
+retrieve/decide; old pending requests without that binding must be prepared again.
+Frozen-receipt observations and learning share the store across that project's worktrees.
+
 ## Cache and transfer
 
 The atomic NPZ cache stores labels, distributions, hashes, format and fit statistics.
@@ -137,7 +182,9 @@ encoder and feature vocabulary validation. Both contain labeled means, full shar
 the fixed noise sds. Covariances are multiplied by `transfer.variance_inflation`, default
 2.0. Project terms are excluded by label. Imports validate all keys, names, numerical
 shapes, symmetry and positive definiteness before replacing the destination atomically.
-Shared terms absent from the file use hand-set priors. New-project terms always use
+Native identity-specific family/control terms are excluded from generic prior exports;
+no concrete native identity mapping is transferred. Export vocabularies and existing
+prior formats remain compatible. Shared terms absent from the file use hand-set priors. New-project terms always use
 their independent hand-set priors. With explicit configuration, register custom task
 types before importing them. Zero-config imports accept custom type names with standard
 local policy, retaining their transferred distributions.

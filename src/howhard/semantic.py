@@ -120,9 +120,11 @@ def tool(engine, request, *, allow_project=True, project_snapshot=None):
     if name == "project.read" and allow_project:
         keys(request, ["tool", "path"], where="LLM retrieval")
         relative = Path(text(request["path"], "retrieval.path"))
-        path = engine.config.base / relative
+        path = engine.config.project_root / relative
         resolved = path.resolve()
-        if relative.is_absolute() or not resolved.is_relative_to(engine.config.base) or any(p in IGNORED or p.startswith(".venv") for p in relative.parts):
+        if resolved.is_relative_to(engine.config.state_root.resolve()):
+            raise HowHardError("retrieval.path: outside project or excluded backend state")
+        if relative.is_absolute() or not resolved.is_relative_to(engine.config.project_root) or any(p in IGNORED or p.startswith(".venv") for p in relative.parts):
             raise HowHardError("retrieval.path: outside project or excluded state")
         if not (resolved.suffix.lower() in SOURCE_SUFFIXES | {".md", ".rst", ".txt"} or resolved.name in MANIFESTS):
             raise HowHardError("retrieval.path: only project source, documentation and manifests may be read")
@@ -158,11 +160,15 @@ def request(engine, prepared):
                             "memory_forecasts": "Array of {id, version, forecasts}: predictions conditional on each relevant supplied/read ACTIVE memory. Rows may override a subset of baseline forecasts. No invented memories.",
                             "reason": "Brief explanation grounded in task/project semantics and actual evidence.",
                             "request_more": "Instead of forecasts, optionally return ONLY {request_more: [{tool, query/id/path}]} to retrieve more evidence. At most 3 requests per round."}}
+    if "cost_policy" in result:
+        payload["cost_policy"] = deepcopy(result["cost_policy"])
     return payload, snapshot
 
 
 def baseline_request(payload):
     clean = {k: deepcopy(payload[k]) for k in ("kind", "prompt_version", "task_type", "context", "risk_class", "constants")}
+    if "cost_policy" in payload:
+        clean["cost_policy"] = deepcopy(payload["cost_policy"])
     clean.update(phase="baseline", cells=[{k: c[k] for k in ("family", "effort", "model")} for c in payload["cells"]],
                  contract="Return {forecasts: [{family,effort,clean,loud,silent,tokens,seconds}], reason: string}. Forecast EVERY supplied cell; probabilities sum to 1. No memory, evidence or retrieval is available in this independent call.")
     return clean
@@ -241,7 +247,7 @@ def call(engine, payload):
     record = {"request_hash": digest(payload), "at_utc": datetime.now(timezone.utc).isoformat(), "kind": payload["kind"], "phase": payload.get("phase"),
               "status": "failed" if error else "completed", "backend": str(getattr(engine.llm, "identity", type(engine.llm).__name__)), **usage}
     with locked(engine.config):
-        append_bytes(engine.config.base / ".howhard" / "inference.jsonl", canonical(record) + b"\n")
+        append_bytes(engine.config.state_root / "inference.jsonl", canonical(record) + b"\n")
     engine.last_inference_usage = record
     if error is not None:
         raise LLMError(f"LLM inference failed ({type(error).__name__}): {str(error)[:300]}") from error
@@ -256,14 +262,14 @@ def external_submission(engine, payload):
               "backend": "calling-agent", "external": True, "seconds": None,
               "cost_usd": None, "tokens": None, "models": []}
     with locked(engine.config):
-        append_bytes(engine.config.base / ".howhard/inference.jsonl", canonical(record) + b"\n")
+        append_bytes(engine.config.state_root / "inference.jsonl", canonical(record) + b"\n")
     return record
 
 
 def complete(engine, payload, snapshot):
     identity = str(getattr(engine.llm, "identity", type(engine.llm).__name__))
     cache_key = digest({"format": FORMAT, "backend": identity, "settings": SETTINGS, "request": payload})
-    path = engine.config.base / ".howhard" / "llm-cache" / f"{cache_key}.json"
+    path = engine.config.state_root / "llm-cache" / f"{cache_key}.json"
     if path.is_file():
         try:
             cached = json.loads(path.read_bytes())
@@ -331,9 +337,8 @@ def augment(engine, prepared, response, payload, snapshot, usage):
     result, cells, marginals = deepcopy(prepared[0]), prepared[1], prepared[2]
     baseline = statistical_panel(result)
     for row in baseline:
-        price = engine.config.price(engine.config.data["families"][row["family"]]["current"])
         index = next(i for i, c in enumerate(cells) if (c["family"], c["effort"]) == (row["family"], row["effort"]))
-        row["tokens"] = (next(c["C_run"] for c in result["cells"] if (c["family"], c["effort"]) == (row["family"], row["effort"])) / price * 1e6 if price else float(np.exp(marginals["tokens"][0][index] + (marginals["tokens"][1][index, index] + engine.prior.noise["tokens"] ** 2) / 2)))
+        row["tokens"] = float(np.exp(marginals["tokens"][0][index] + (marginals["tokens"][1][index, index] + engine.prior.noise["tokens"] ** 2) / 2))
     worlds = {"statistical": baseline, "llm": deepcopy(response["forecasts"])}
     entries = {(m["id"], m["version"]): m for m in snapshot["memories"]}
     exposures = {}
@@ -367,12 +372,13 @@ def augment(engine, prepared, response, payload, snapshot, usage):
             row[f"P_{outcome}"]["upper"] = max(row[f"P_{outcome}"]["upper"], quantile(.975), row[f"P_{outcome}"]["mean"])
         tokens = sum(weights[k] * indexed[k][pair]["tokens"] for k in weights)
         seconds = sum(weights[k] * indexed[k][pair]["seconds"] for k in weights)
-        row["C_run"] = tokens / 1e6 * engine.config.price(row["model"])
+        cell = next(c for c in cells if (c["family"], c["effort"]) == pair)
+        row["C_run"] = tokens / 1e6 * cell["price"] if cell["price"] is not None else None
         row["T"] = seconds / 3600
         c = result["constants"]
-        row["J"] = row["C_run"] + c["C_loud"] * row["P_loud"]["mean"] + c["C_silent"] * row["P_silent"]["mean"] + c["lambda_per_hour"] * row["T"]
+        row["J"] = tokens / 1e6 * cell["comparison_price"] + c["C_loud"] * row["P_loud"]["mean"] + c["C_silent"] * row["P_silent"]["mean"] + c["lambda_per_hour"] * row["T"]
         row["admissible"] = row["P_silent"]["upper"] <= c["epsilon"]
-    result["cells"].sort(key=lambda row: (row["C_run"], row["family"], row["effort"]))
+    result["cells"].sort(key=lambda row: (row["C_run"] if row["C_run"] is not None else float("inf"), row["family"], row["effort"]))
     result["semantic"] = {"format": FORMAT, "prompt_version": SETTINGS["prompt_version"], "backend": usage["backend"],
                           "memory_revision": snapshot["revision"], "memories": deepcopy(snapshot["memories"]),
                           "worlds": worlds, "exposures": exposures, "beliefs": state, "reason": response["reason"], "retrieval": payload["retrieval"],
@@ -399,7 +405,7 @@ def sample(prepared, seed, noise):
     for i, cell in enumerate(cells):
         row = panel[cell["family"], cell["effort"]]
         p = rng.dirichlet(np.maximum([row[k] for k in OUTCOMES], SETTINGS["belief"]["probability_floor"]) * SETTINGS["belief"]["sample_concentration"])
-        parts["run"][0, i] = row["tokens"] / 1e6 * cell["price"]
+        parts["run"][0, i] = row["tokens"] / 1e6 * cell["comparison_price"]
         parts["loud"][0, i] = p[1] * c["C_loud"]
         parts["silent"][0, i] = p[2] * c["C_silent"]
         parts["time"][0, i] = row["seconds"] / 3600 * c["lambda_per_hour"]
@@ -510,6 +516,12 @@ def learning_request(engine, evidence_id):
                "decision": receipt, "memory_revision": snapshot["revision"], "memories": snapshot["memories"],
                "beliefs": beliefs(engine), "evidence": evidence_search(engine, row.get("task_text", "")),
                "contract": "Return ONLY {operations: [...], reason: string}. Operations: add(title,body,scope?,evidence_ids?); edit(id,title?/body?/scope?/evidence_ids?,expected_version?); remove(id); restore(id); merge(ids,title,body); split(id,parts:[{title,body}]). Every item includes op. Use actual evidence IDs. Hypotheses are provisional; evidence that inspired a new memory does not validate its forecasts. Prefer targeted useful changes; an empty list is valid. Never delete raw run evidence."}
+    roots, history = {}, []
+    for raw in engine.raw_rows:
+        roots[raw["id"]] = roots[raw["amends"]] if raw["amends"] else raw["id"]
+        if roots[raw["id"]] == row["id"]:
+            history.append(deepcopy(raw))
+    request["outcome_history"] = history
     return request, event_key
 
 

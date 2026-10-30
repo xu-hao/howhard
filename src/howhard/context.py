@@ -96,7 +96,8 @@ def capture_project(config, overrides=None, *, required_path=None):
         if "format" in overrides:
             return json.loads(canonical(validate_project(overrides)))
         validate_parameters(overrides)
-    root = config.base
+    root = config.project_root
+    state_root = config.state_root.resolve()
     excluded = {config.path(s["path"]).resolve() for s in config.data["logs"]}
     excluded.update(config.path(config.data[k]).resolve() for k in ("journal", "cache"))
     listing = git(root, "ls-files", "--cached", "--others", "--exclude-standard", "-z")
@@ -107,7 +108,7 @@ def capture_project(config, overrides=None, *, required_path=None):
                 yield Path(name), root / name
         else:
             for current, dirs, files in os.walk(root, followlinks=False):
-                dirs[:] = sorted(d for d in dirs if d not in IGNORED and not d.startswith(".venv") and not d.endswith(".egg-info") and not (Path(current) / d).is_symlink())
+                dirs[:] = sorted(d for d in dirs if d not in IGNORED and not d.startswith(".venv") and not d.endswith(".egg-info") and not (Path(current) / d).is_symlink() and not (Path(current) / d).resolve().is_relative_to(state_root))
                 for name in sorted(files):
                     path = Path(current) / name
                     yield path.relative_to(root), path
@@ -116,7 +117,7 @@ def capture_project(config, overrides=None, *, required_path=None):
     for relative, path in candidates():
         if any(part in IGNORED or part.startswith(".venv") or part.endswith(".egg-info") for part in relative.parts):
             continue
-        if path.is_symlink() or path.resolve() in excluded or not path.resolve().is_relative_to(root):
+        if path.is_symlink() or path.resolve() in excluded or path.resolve().is_relative_to(state_root) or not path.resolve().is_relative_to(root):
             continue
         paths.append((relative, path))
         if len(paths) >= SETTINGS["file_limit"]:
@@ -166,7 +167,7 @@ def capture_project(config, overrides=None, *, required_path=None):
         staged = git(root, "diff", "--cached", "--name-only", "-z", "--no-renames")
         if staged is not None:
             changed_paths.update(os.fsdecode(p) for p in staged.split(b"\0") if p)
-        changed_paths = {p for p in changed_paths if (root / p).resolve() not in excluded and
+        changed_paths = {p for p in changed_paths if (root / p).resolve() not in excluded and not (root / p).resolve().is_relative_to(state_root) and
                          not any(part in IGNORED or part.startswith(".venv") or part.endswith(".egg-info") for part in Path(p).parts)}
         params["changed_files"] = len(changed_paths)
     revision = git(root, "rev-parse", "--verify", "HEAD")
