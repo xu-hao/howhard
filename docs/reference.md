@@ -127,15 +127,30 @@ keep their missing context and timestamp.
 Amendments are new rows with `amends` set to an earlier row ID and null measurement
 and cost fields. Since 0.3.1, they may correct an outcome to `clean`, `loud` or `silent`;
 earlier versions accepted only `silent` amendments and cannot read the expanded cases.
-The row keys and cache/prior formats are unchanged. The usual cause rule still applies:
+The required row keys and cache/prior formats are unchanged. The usual cause rule still applies:
 null for clean, and depth, capability or unrecorded for loud/silent.
 Chains replace the original run's effective outcome and cause, counting that run once
 and retaining its original ID, decision, cell, task text, project snapshot, project,
-weight and measurements. Raw rows remain intact. Amendments cannot override historical
-context through the observation API. Targets within a file must precede their amendments.
+weight and uncorrected measurements. Raw rows remain intact. Amendments cannot override
+historical context through the observation API. Targets within a file must precede their amendments.
 Across files, targets must exist, have dates no later than their amendments, and form an
 acyclic dependency graph. Dependency ordering keeps amendments valid when flushing moves
 them into the first log ahead of a target in an additional log.
+
+Since 0.6.1 an amendment may additionally carry `measurement_corrections`, a nonempty
+object with only `tokens`, `seconds` and/or `cost_usd`. Values follow the corresponding
+base-field types and ranges; null explicitly clears a value to unknown. Original rows
+refuse this field, and ordinary amendment `tokens`, `seconds` and `cost_usd` must still
+be null. For example, `engine.observe(..., amends="run-id",
+measurement_corrections={"tokens": 100, "cost_usd": None})` replaces only those effective
+values. Unlisted measurements retain their current effective values across a chain.
+Supply the intended current outcome/cause as usual, including when only usage changes.
+No forecast is created retrospectively. Regressions, worker-cost totals and predictive
+memory evidence use the corrected original once. Writer `observation` contains current
+effective usage; `outcome_history` preserves the raw original and correction maps as an
+audit trail, never extra runs or additive usage. Matching correction-ID retries remain
+idempotent and different maps conflict. This additive row-semantics expansion leaves
+existing 0.6 data readable; older readers refuse rows containing the new field.
 
 `flush` validates all files before writing. Duplicate refusals list every duplicate and
 leave log and journal unchanged. It appends, fsyncs the log, then truncates and fsyncs the

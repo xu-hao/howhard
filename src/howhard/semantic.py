@@ -522,6 +522,7 @@ def learning_request(engine, evidence_id):
         if roots[raw["id"]] == row["id"]:
             history.append(deepcopy(raw))
     request["outcome_history"] = history
+    request["contract"] += " Use observation for current effective outcome and usage. outcome_history is an audit trail: measurement_corrections replace values, never add runs or usage."
     return request, event_key
 
 
