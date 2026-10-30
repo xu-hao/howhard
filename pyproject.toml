@@ -11,8 +11,9 @@ requires-python = ">=3.11"
 dependencies = ["numpy>=1.24"]
 
 [project.optional-dependencies]
-test = ["pytest>=8", "build"]
+test = ["pytest>=8", "build", "pytest-probability==0.3.0"]
 docs = ["sphinx>=8", "myst-parser>=4", "furo"]
+bench = ["pytest-probability==0.3.0", "fastembed==0.9.1"]
 
 [project.scripts]
 howhard = "howhard.cli:main"

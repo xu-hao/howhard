@@ -78,6 +78,8 @@ experience. It can request bounded additional `memory.search`, `memory.read`,
 `evidence.search`, `evidence.read` and `project.read` operations. Search is a lightweight
 text index/shortlist; the LLM judges relevance and can reformulate queries. This first
 version does not claim a learned semantic retriever or guaranteed retrieval recall.
+The opt-in [rule retrieval benchmark](rule-benchmark.md) compares alternative
+representations and reranking without changing this production retrieval contract.
 
 `project.read` is limited to regular project source/documentation/manifest files inside
 the project and the bounded snapshot's file set. Ignored/excluded files cannot be read.

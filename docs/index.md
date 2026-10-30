@@ -9,6 +9,8 @@
   adapters, memory operations, feedback weights and agent tools.
 - [Reusable skill and host installation](skills.md) — Codex, Claude Code and Antigravity
   discovery, first-party plugin installation and honest execution capabilities.
+- [Rule retrieval benchmark](rule-benchmark.md) — opt-in representation/reranking diagnostics
+  with pytest-probability, separate from field routing-quality evidence.
 - [Real-project evaluation](evaluation.md) — chronological field trials and genuine
   observed outcomes, with implementation fixtures kept separate.
 - [Advanced configuration](configuration.md) — optional registry, policies and data locations.
@@ -26,6 +28,7 @@ context
 semantic-memory
 skills
 evaluation
+rule-benchmark
 configuration
 contributing
 releasing
