@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Clarify portable skill feedback attribution when native host APIs accept explicit
+  model/effort overrides: completed execution can match the requested decision receipt
+  without provider attestation; known mismatches use raw feedback and unknown cells
+  remain unscored.
 - Allow append-only measured-usage corrections with a validated amendment-only
   `measurement_corrections` map and CLI JSON input. Explicit replacements or null clears
   update effective regressions, worker costs and learning once while preserving raw history.
