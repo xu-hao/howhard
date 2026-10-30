@@ -135,8 +135,24 @@ howhard observe TASK MODEL EFFORT clean --amends CORRECTION_ID --id NEXT_CORRECT
 howhard memory learn-context NEXT_CORRECTION_ID --llm off --json
 ```
 
+For erroneous measured usage, append an amendment with the intended current outcome
+and cause, plus `--measurement-corrections /tmp/measurement-corrections.json`. The host
+writes a task-owned temporary JSON map, for example:
+
+```json
+{"tokens": 100, "seconds": null}
+```
+
+This replaces effective tokens and clears seconds to unknown, leaving cost unchanged.
+Only tokens, seconds and cost_usd are permitted; omit untouched keys. Values must be
+nonnegative measurements with integer tokens; null means unknown, not zero. The raw
+original remains intact and ordinary amendment measurement fields stay null. Reuse the
+same amendment ID/input to retry, and inspect `evidence ID` for effective values or
+`evidence ID --raw` for audit rows. Use writer `observation` for current effective usage;
+`outcome_history` correction maps replace usage rather than adding runs or measurements.
+
 Use actual historical identities. Amendments accept clean/loud/silent with null
-measurement/cost fields, retaining the original context, weight and measurements.
+measurement/cost fields, retaining the original context, weight and uncorrected measurements.
 They replace effective evidence and score one original forecast once. Direct `evidence`
 returns the current effective root; `--raw` returns the queried original/amendment row.
 
