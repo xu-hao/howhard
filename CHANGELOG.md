@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.0 — 2026-10-30
+
+- Package one reusable howhard skill with progressive references for actual task/context
+  reasoning, host-compatible delegation, outcome corrections and writable memory.
+- Add offline `skills install` for Codex, Claude Code and Antigravity, with explicit
+  project/user scopes, deduplicated discovery paths, identical-install reuse and
+  preflight conflict refusal. Installation leaves model/provider settings unchanged.
+- Document source and pinned Git installation, host capability gaps and optional
+  project adapters; verify skill installation from a clean wheel.
+
 ## 0.3.1 — 2026-10-30
 
 - Allow append-only outcome amendments to clean, loud or silent, retaining the original

@@ -7,6 +7,8 @@
   snapshots, contextual models and decision receipts.
 - [LLM reasoning and writable semantic memory](semantic-memory.md) — reader/writer
   adapters, memory operations, feedback weights and agent tools.
+- [Reusable skill and host installation](skills.md) — Codex, Claude Code and Antigravity
+  discovery, offline installation and honest execution capabilities.
 - [Real-project evaluation](evaluation.md) — chronological field trials and genuine
   observed outcomes, with implementation fixtures kept separate.
 - [Advanced configuration](configuration.md) — optional registry, policies and data locations.
@@ -22,6 +24,7 @@ quickstart
 reference
 context
 semantic-memory
+skills
 evaluation
 configuration
 contributing

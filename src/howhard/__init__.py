@@ -1,6 +1,6 @@
 """Bayesian model and effort selection, with a zero-configuration starting point."""
 
-__version__ = "0.3.1"
+__version__ = "0.4.0"
 
 from .config import load_config
 from .engine import Engine

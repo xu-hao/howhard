@@ -29,7 +29,7 @@ version = {attr = "howhard.__version__"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-howhard = ["data/*.toml"]
+howhard = ["data/*.toml", "skills/howhard/SKILL.md", "skills/howhard/references/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
