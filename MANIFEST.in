@@ -3,4 +3,5 @@ include .readthedocs.yaml
 recursive-include docs *.md *.py *.txt
 recursive-exclude docs/_build *
 recursive-include scripts *
+recursive-include skills *.md
 recursive-include tests *.py

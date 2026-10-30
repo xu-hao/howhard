@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.0 — 2026-10-30
+
+- Move the canonical skill to standard `skills/howhard` discovery and use the established
+  `npx skills` CLI for installation, managed agent links, updates and removal.
+- Retire the bespoke 0.4 `howhard skills install` command and `howhard.skill_install`
+  API before 1.0. The source distribution retains the skill; the Python wheel supplies
+  the backend without another skill copy. Preserve edited old copies before migration.
+- Complete the existing Quickstart with prerequisites, source backend installation,
+  standard skill installation/invocation, actual feedback and memory learning.
+- Add an explicit disposable-project integration smoke against the real standard CLI;
+  keep npm downloads out of the ordinary Python/package/docs gate.
+
 ## 0.4.0 — 2026-10-30
 
 - Package one reusable howhard skill with progressive references for actual task/context

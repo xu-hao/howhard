@@ -1,81 +1,98 @@
-# Start without configuration
+# Quickstart
 
-Install from a checkout with Python 3.11 or later:
-
-```sh
-python -m pip install .
-howhard pick specified-implementation --text "Make transaction rollback safe"
-```
-
-The result names a concrete model and effort, prints its seed, and explains the expected
-cost and uncertainty of the alternatives. Run the delegated task with that choice, then
-record what happened:
+You need Python 3.11+, Git, Node.js 22.20.0+ with npm/npx, and a compatible coding
+agent (Codex, Claude Code or Antigravity). No statistical configuration or tuning is
+required. From the project where you want to use howhard, install the Python backend
+from source and the skill with the standard [skills CLI](https://github.com/vercel-labs/skills):
 
 ```sh
-howhard observe DECISION_ID clean
-howhard pick specified-implementation --text "Repair a failing fixture"
-howhard summary specified-implementation
-howhard flush
+python3 -m venv .venv-howhard
+. .venv-howhard/bin/activate
+python -m pip install "git+https://github.com/xu-hao/howhard.git"
+npx --yes skills@1.7.4 add xu-hao/howhard --skill howhard --agent codex claude-code antigravity antigravity-cli --yes
+howhard --version
+npx --yes skills@1.7.4 list --agent codex claude-code antigravity antigravity-cli
 ```
 
-Replace `DECISION_ID` with the receipt ID printed by `pick`. It preserves the task text,
-chosen model/effort and project snapshot while the task changes the repository. `clean` means no
-defect was found. `loud` means a gate or review caught a defect before release or live use.
-`silent` means a defect escaped. Optional `--tokens` and `--seconds` measurements help it
-learn running cost and waiting time too. Without measurements it still learns outcomes.
+Expect `howhard 0.5.0` (or later) and an installed `howhard` skill. This is a source
+installation, not a PyPI release claim. The command installs into the current project;
+keep only the agent IDs you use, or add `--global` to the `skills add` command for
+user-wide installation. Antigravity App/IDE and CLI have separate agent IDs. The standard
+installer manages its central skill, agent links and lock metadata; do not copy files
+by hand. Reopen your coding agent if the new skill is not visible.
 
-Each directory starts from the packaged defaults and learns locally. Unknown task names
-start with the standard risk policy and learn their own effects as outcomes arrive.
-The shipped taxonomy includes `contract-change`, `sensitive-change`,
-`specified-implementation`, `integration-recovery`, `guarded-landing`,
-`docs-recording-rulings`, `docs-settled-rules`, `probe-or-measurement`, `read-only-survey`,
-`live-operation-prep`, `live-checklist-run`, `release-qualification`, `preserving-rollout`,
-`environment-setup`, `bookkeeping` and `worktree-cleanup`. Their definitions and default
-classes are in the packaged `data/default_prior.toml`.
+In Codex invoke `$howhard` (or select it in `/skills`); in Claude Code use `/howhard`;
+in Antigravity use `/howhard` or ask for the skill by name. Give it your real task:
 
-The statistical workflow needs no initialization, credentials, network access or model
-training; select it with `--llm off`. The default LLM path reuses an installed,
-authenticated Claude CLI; explicit LLM requests require model access. howhard recommends
-a choice; the caller executes the task. It stores the pending journal, outcome
-log, posterior cache, optional imported prior and a file lock in `.howhard/` in the working
-directory. `observe` appends only to the journal. `flush` appends pending rows to the log
-and empties the journal. Both refit using all evidence.
+> Use howhard for this task: repair transaction rollback and verify its failure
+> boundary. Read the current project context, obtain an independent baseline, consult
+> memory, and recommend a model and effort supported by this host. Execute the authorized
+> work with that cell, then record the actual result and measured usage under a stable
+> execution ID and update memory. Report any unsupported controls or identity mismatch.
 
-When no candidate meets the silent-failure cap, the default policy marks the recommendation
-as needing independent review before release. JSON consumers must check `cap_met` and
-`needs_review`; a successful command can still return a recommendation requiring review.
+The calling-agent workflow uses your host's existing LLM; it needs no extra API key.
+The skill explains the `context` / `retrieve` / `decide` and memory-writer protocol.
+A genuinely independent baseline requires a fresh model context without memory/history;
+if unavailable, the agent reports that limit and uses the labeled statistical path.
+Installing a skill does not add model access or enforce execution controls. The shipped
+registry contains Anthropic IDs: if those do not match actual host-supported controls,
+report the capability gap instead of silently relabeling a different provider's model.
+A project can declare an optional host adapter in its own instructions.
 
-Reproduce a choice with `--seed N`. For automation use `--json`:
+To inspect a first statistical planning recommendation without any model call:
 
 ```sh
-howhard pick bookkeeping --seed 42 --json
-howhard export-prior --out shared-prior.json
-# From another project directory:
-howhard import-prior /path/to/shared-prior.json
+howhard pick task --text "Repair transaction rollback and verify its failure boundary" --llm off --seed 42 --json
 ```
 
-Transfer contains shared statistical terms and generic names, with uncertainty inflated
-for a new project. It excludes run records, notes, tickets, concrete model ids and project
-effects. Review names of custom task types before sharing: they are part of the vocabulary.
-Without configuration, imported custom types use the standard class for local policy.
+The JSON includes `chosen.model`, `chosen.effort`, `decision_id`, `cap_met` and
+`needs_review`. It preserves the task and current project snapshot in a receipt under
+`.howhard/`. This command recommends; it does not execute the task. Honor any required
+review, verify the host can run the chosen cell, then execute and assess the actual work.
 
-See [task text and project context](context.md) for `--text-file`, receipt files,
-optional project parameters and the encoder's lexical limits. The project is re-inspected
-for every decision, and historical training rows retain their captured snapshots.
-
-The built-in registry is a dated planning snapshot, not a live quote. All defaults are
-maintained by the package; users do not need to tune statistical parameters.
-Advanced integrations can use the [optional configuration](configuration.md).
-
-After observations, the LLM writer may add or revise provisional semantic memories:
+Only after execution, replace `DECISION_ID` with the returned receipt ID, `EXECUTION_ID`
+with a stable ID for that actual run, and `OUTCOME` with `clean`, `loud` or `silent`:
 
 ```sh
-howhard memory list
-howhard memory beliefs
-howhard memory remove MEMORY_ID
-howhard memory restore MEMORY_ID
-howhard report --json
+howhard observe DECISION_ID OUTCOME --id EXECUTION_ID --llm off --json
+howhard memory learn-context EXECUTION_ID --llm off --json
+howhard memory list --llm off --json
+howhard report --llm off --json
 ```
 
-See [semantic memory](semantic-memory.md) for complete memory management and provider
-options, and [real-project evaluation](evaluation.md) for measuring useful learning.
+`clean` means no observed defect; `loud` means a gate/review caught a failure; `silent`
+means a failure escaped and was discovered later. Supply `--tokens`, `--seconds` and
+`--cost-usd` only when measured; unknown usage stays null. Never record an unrun action
+or attach a different executed cell to the selected receipt. The skill uses the returned
+learning context to revise mutable memory. After the host prepares `writer-response.json`
+with `operations` and `reason` grounded in that result, apply it using `N` and `EVENT_KEY`
+from `memory learn-context`:
+
+```sh
+howhard memory learn EXECUTION_ID --file writer-response.json --expected-revision N --event-key EVENT_KEY --llm off --json
+```
+
+An empty operations list is valid. New lessons receive no retrospective predictive
+credit. Retry learning for the same effective event, and append changed feedback with
+`--amends` instead of creating another original run.
+
+The default provider adapter can also reuse an authenticated Claude CLI; explicit
+`--llm off` keeps commands statistical and disables provider-backed writing. For standard
+skill maintenance in this project:
+
+```sh
+npx --yes skills@1.7.4 check
+npx --yes skills@1.7.4 update howhard --project --yes
+npx --yes skills@1.7.4 remove howhard --yes
+```
+
+The [skill guide](skills.md) covers pinned/local sources, global scope and migration
+from the retired 0.4 copier. Python backend upgrades and skill updates are separate.
+
+The [semantic-memory guide](semantic-memory.md) describes complete reader/writer schemas,
+mutable memory operations and provider options. The [context contract](context.md)
+explains frozen task/project snapshots. Learning stays local to `.howhard/` by default;
+new task names use the standard risk policy, and no parameter tuning is required.
+Use `howhard flush --llm off` to move pending journal rows into the outcome log.
+See [real-project evaluation](evaluation.md) for evaluating useful learning; mechanical
+fixtures and observed-action reports cannot establish routing superiority.
