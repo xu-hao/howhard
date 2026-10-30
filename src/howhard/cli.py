@@ -89,13 +89,6 @@ def parser():
             command.add_argument("--file", help="apply a calling-agent writer response")
             command.add_argument("--expected-revision", type=int)
             command.add_argument("--event-key")
-    skills = commands.add_parser("skills", help="install the packaged reusable howhard skill")
-    skill_commands = skills.add_subparsers(dest="skills_command", required=True)
-    install = skill_commands.add_parser("install", help="copy the skill into host discovery locations")
-    install.add_argument("--host", choices=("codex", "claude-code", "antigravity", "all"), required=True)
-    install.add_argument("--scope", choices=("project", "user"), default="project")
-    install.add_argument("--directory", metavar="PATH", help="existing project directory; defaults to the current directory")
-    install.add_argument("--json", action="store_true")
     return root
 
 
@@ -186,11 +179,6 @@ def memory_command(engine, args):
 def main(argv=None):
     args = parser().parse_args(argv)
     try:
-        if args.command == "skills":
-            from .skill_install import install_skills
-            result = install_skills(args.host, scope=args.scope, directory=args.directory)
-            print(json.dumps(result, sort_keys=True) if args.json else render(result))
-            return 0
         engine = Engine(args.config, cache_path=args.cache, journal_path=args.journal, llm=args.llm)
         context_options = {}
         if args.command in ("pick", "summary", "observe", "context"):

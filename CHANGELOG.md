@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.0 — 2026-10-30
+
+- Move the canonical skill to standard `skills/howhard` discovery, with thin portable,
+  Codex marketplace, Claude Code and Antigravity manifests for first-party installation.
+- Retire the bespoke 0.4 `howhard skills install` command and `howhard.skill_install`
+  API before 1.0. The source distribution retains the skill; the Python wheel supplies
+  the backend without another skill copy. Preserve edited old copies before migration.
+- Complete the existing Quickstart with source backend installation, native plugin
+  setup/invocation, backend executable visibility, actual feedback and memory learning.
+- Add explicit native validation and an optional third-party `skills` CLI smoke;
+  keep native installations and npm downloads out of the ordinary Python gate.
+
 ## 0.4.0 — 2026-10-30
 
 - Package one reusable howhard skill with progressive references for actual task/context

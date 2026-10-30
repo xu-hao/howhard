@@ -16,8 +16,7 @@ with zipfile.ZipFile(wheel) as archive:
     names = archive.namelist()
     for resource in ("default_prior.toml", "default_config.toml", "context.toml", "semantic.toml"):
         assert f"howhard/data/{resource}" in names, resource
-    skill_names = ["SKILL.md", "references/hosts.md", "references/workflow.md"]
-    skill_bundle = {name: archive.read(f"howhard/skills/howhard/{name}") for name in skill_names}
+    assert not any(name.startswith("howhard/skills/") for name in names)
     metadata = archive.read(f"howhard-{expected}.dist-info/METADATA").decode()
     assert f"Version: {expected}\n" in metadata
     entrypoints = archive.read(f"howhard-{expected}.dist-info/entry_points.txt").decode()
@@ -25,6 +24,15 @@ with zipfile.ZipFile(wheel) as archive:
 sdist = Path("dist") / f"howhard-{expected}.tar.gz"
 with tarfile.open(sdist) as archive:
     assert f"howhard-{expected}/tests/conftest.py" in archive.getnames()
+    for name in ("SKILL.md", "references/hosts.md", "references/workflow.md"):
+        assert f"howhard-{expected}/skills/howhard/{name}" in archive.getnames()
+    for name in ("plugin.json", ".claude-plugin/plugin.json", ".antigravity-plugin/plugin.json"):
+        manifest = json.load(archive.extractfile(f"howhard-{expected}/{name}"))
+        assert manifest["name"] == "howhard" and manifest["version"] == expected
+    for name in (".agents/plugins/marketplace.json", ".claude-plugin/marketplace.json"):
+        marketplace = json.load(archive.extractfile(f"howhard-{expected}/{name}"))
+        assert marketplace["name"] == "howhard"
+        assert [plugin["name"] for plugin in marketplace["plugins"]] == ["howhard"]
 
 # Exercise an installed wheel outside the source checkout. No editable install or
 # inherited PYTHONPATH can supply its resources or entry point.
@@ -50,32 +58,4 @@ with tempfile.TemporaryDirectory(prefix="howhard-wheel-") as directory:
     entry = json.loads(subprocess.check_output([str(command), "memory", "add", "--title", "Installed memory", "--body", "An editable semantic memory", "--json"], cwd=root, env=environment, text=True))
     removed = json.loads(subprocess.check_output([str(command), "memory", "remove", entry["id"], "--json"], cwd=root, env=environment, text=True))
     assert removed["active"] is False
-    project = root / "skill-project"
-    project.mkdir()
-    (project / "howhard.toml").write_text("invalid config")
-    install_environment = {**environment, "HOWHARD_LLM": "unavailable-backend"}
-    installed = json.loads(subprocess.check_output(
-        [str(command), "skills", "install", "--host", "all", "--directory", str(project), "--json"],
-        cwd=root, env=install_environment, text=True))
-    assert installed["version"] == expected and len(installed["locations"]) == 2
-    for location in installed["locations"]:
-        assert location["status"] == "installed"
-        target = Path(location["path"])
-        for name, data in skill_bundle.items():
-            assert (target / name).read_bytes() == data
-    repeated = json.loads(subprocess.check_output(
-        [str(command), "skills", "install", "--host", "all", "--directory", str(project), "--json"],
-        cwd=root, env=install_environment, text=True))
-    assert all(location["status"] == "unchanged" for location in repeated["locations"])
-    assert not (project / ".howhard").exists()
-    # Inject a temporary home in-process: never touch the user's host installations.
-    home = root / "skill-home"
-    home.mkdir()
-    user_code = 'from pathlib import Path; import sys; from howhard.cli import main; Path.home = classmethod(lambda cls: Path(sys.argv[1])); raise SystemExit(main(["skills", "install", "--host", "all", "--scope", "user", "--json"]))'
-    user_install = json.loads(subprocess.check_output([str(python), "-c", user_code, str(home)],
-                                                    cwd=root, env=install_environment, text=True))
-    assert len(user_install["locations"]) == 4
-    for location in user_install["locations"]:
-        assert Path(location["path"]).is_relative_to(home)
-        assert (Path(location["path"]) / "SKILL.md").read_bytes() == skill_bundle["SKILL.md"]
 print(f"Verified howhard {expected} source distribution and clean installed wheel")
