@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.6.1 — 2026-10-30
+
+- Allow append-only measured-usage corrections with a validated amendment-only
+  `measurement_corrections` map and `observe --measurement-corrections FILE`. Explicit
+  replacements or null clears update effective regressions, worker costs and learning
+  once while preserving the raw original, context and receipt identity.
+- Preserve existing 0.6 persistence/API behavior. This additive row-semantics expansion
+  leaves existing data readable; older readers refuse rows containing the new field.
+- Link the live Read the Docs site from the README and release guide.
+
 ## 0.6.0 — 2026-10-30
 
 - Accept actual native model/control inventories before forecasts, with distinct neutral

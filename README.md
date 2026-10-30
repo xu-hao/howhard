@@ -2,6 +2,8 @@
 
 *How hard should the agent think?*
 
+[Read the documentation](https://howhard.readthedocs.io/en/latest/).
+
 `howhard` chooses the model and the reasoning effort for a task delegated to an AI
 agent. An LLM can read task descriptions, current project context and writable semantic
 memory. Recorded outcomes update predictive weights, while a statistical model learns
@@ -29,11 +31,11 @@ required by howhard. From your project directory, install the Python backend fro
 ```sh
 python3 -m venv .venv-howhard
 . .venv-howhard/bin/activate
-python -m pip install "git+https://github.com/xu-hao/howhard.git"
+python -m pip install "git+https://github.com/xu-hao/howhard.git@release/0.6"
 howhard --version
 ```
 
-Expect `howhard 0.6.0` (or later). This is a source installation, not a PyPI release
+Expect `howhard 0.6.1` (or later). This is a source installation, not a PyPI release
 claim. Keep this environment active and start your coding agent from the same shell so
 it can find `howhard`. Install the skill through **your agent's native plugin manager**;
 choose the matching block below.
