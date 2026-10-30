@@ -37,8 +37,15 @@ def read_bytes(path):
         return b""
 
 
+def validate_measurement(value, key, where):
+    if value is not None:
+        number(value, f"{where}.{key}", nonnegative=True)
+        if key == "tokens" and type(value) is not int:
+            raise HowHardError(f"{where}.{key}: expected integer or null")
+
+
 def validate_row(row, config, where):
-    keys(row, ROW_KEYS, ["task_text", "project_context", "context_encoder", "decision_id"], where=where)
+    keys(row, ROW_KEYS, ["task_text", "project_context", "context_encoder", "decision_id", "measurement_corrections"], where=where)
     try:
         if not isinstance(row["observed_at"], str) or datetime.fromisoformat(row["observed_at"]).utcoffset() is None:
             raise ValueError
@@ -79,10 +86,17 @@ def validate_row(row, config, where):
     elif row["cause"] not in ("depth", "capability", "unrecorded"):
         raise HowHardError(f"{where}.cause: expected depth, capability or unrecorded")
     for key in ("tokens", "seconds", "cost_usd"):
-        if row[key] is not None:
-            number(row[key], f"{where}.{key}", nonnegative=True)
-            if key == "tokens" and type(row[key]) is not int:
-                raise HowHardError(f"{where}.tokens: expected integer or null")
+        validate_measurement(row[key], key, where)
+    if "measurement_corrections" in row:
+        corrections = row["measurement_corrections"]
+        location = f"{where}.measurement_corrections"
+        if row["amends"] is None:
+            raise HowHardError(f"{location}: only permitted on amendments")
+        keys(corrections, [], ["tokens", "seconds", "cost_usd"], where=location)
+        if not corrections:
+            raise HowHardError(f"{location}: expected at least one corrected measurement")
+        for key, value in corrections.items():
+            validate_measurement(value, key, location)
     if row["amends"] is not None:
         if any(row[k] is not None for k in ("tokens", "seconds", "cost_usd")):
             raise HowHardError(f"{where}.amends: amendments require null tokens, seconds and cost_usd")
@@ -161,6 +175,7 @@ def effective_rows(config, rows):
             roots[row["id"]] = root
             originals[root]["outcome"] = row["outcome"]
             originals[root]["cause"] = row["cause"]
+            originals[root].update(row.get("measurement_corrections", {}))
     return [originals[key] for key in sorted(originals)]
 
 
@@ -178,7 +193,7 @@ def append_bytes(path, blob):
 
 
 def observe(config, task_type, model, effort, outcome, *, _automatic_context=(), native=False, **options):
-    allowed = {"cause", "tokens", "seconds", "cost_usd", "ticket", "note", "amends", "date", "id", "task_text", "project_context", "decision_id", "risk_class"}
+    allowed = {"cause", "tokens", "seconds", "cost_usd", "ticket", "note", "amends", "date", "id", "task_text", "project_context", "decision_id", "risk_class", "measurement_corrections"}
     unknown = options.keys() - allowed
     if unknown:
         raise HowHardError(f"observe: unknown keys {sorted(unknown)}")
@@ -206,6 +221,8 @@ def observe(config, task_type, model, effort, outcome, *, _automatic_context=(),
                    outcome=outcome, cause=options.get("cause", None if outcome == "clean" else "unrecorded"),
                    tokens=options.get("tokens"), seconds=options.get("seconds"), cost_usd=options.get("cost_usd"),
                    note=options.get("note", ""), amends=options.get("amends"))
+        if "measurement_corrections" in options:
+            row["measurement_corrections"] = deepcopy(options["measurement_corrections"])
         if row["amends"] is None:
             row.update(task_text=options.get("task_text", ""), project_context=capture_project(config, options.get("project_context")), context_encoder=CONTEXT_FORMAT)
         if "decision_id" in options:
