@@ -2,6 +2,8 @@
 
 *How hard should the agent think?*
 
+[Read the documentation](https://howhard.readthedocs.io/en/latest/).
+
 `howhard` chooses the model and the reasoning effort for a task delegated to an AI
 agent. An LLM can read task descriptions, current project context and writable semantic
 memory. Recorded outcomes update predictive weights, while a statistical model learns
