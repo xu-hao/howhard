@@ -49,6 +49,7 @@ def parser():
             command.add_argument("outcome", nargs="?", choices=("clean", "loud", "silent"))
             command.add_argument("--decision", metavar="ID_OR_PATH", help="use the original task text and project snapshot")
             command.add_argument("--cause", choices=("depth", "capability", "unrecorded"))
+            command.add_argument("--measurement-corrections", metavar="FILE", help="amendment-only JSON map of tokens/seconds/cost_usd replacements; null clears to unknown")
             for option, kind in (("tokens", int), ("seconds", float), ("cost-usd", float), ("ticket", str), ("note", str), ("amends", str), ("date", str), ("id", str)):
                 command.add_argument(f"--{option}", type=kind)
         if name == "export-prior":
@@ -227,6 +228,8 @@ def main(argv=None):
             result = report(engine)
         elif args.command == "observe":
             options = {key: getattr(args, key) for key in ("cause", "tokens", "seconds", "cost_usd", "ticket", "note", "amends", "date", "id") if getattr(args, key) is not None}
+            if args.measurement_corrections is not None:
+                options["measurement_corrections"] = read_json(args.measurement_corrections)
             if args.effort is None and args.outcome is None:
                 if args.model not in ("clean", "loud", "silent") or args.decision is not None or context_options:
                     raise HowHardError("observe: expected DECISION_ID OUTCOME, or TASK_TYPE MODEL EFFORT OUTCOME")
