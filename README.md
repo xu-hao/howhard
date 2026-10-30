@@ -3,8 +3,9 @@
 *How hard should the agent think?*
 
 `howhard` chooses the model and the reasoning effort for a task delegated to an AI
-agent. It uses task descriptions and snapshots of the changing project alongside task
-types. From recorded runs it learns how often each (model, effort) cell
+agent. An LLM can read task descriptions, current project context and writable semantic
+memory. Recorded outcomes update predictive weights, while a statistical model learns
+how often each (model, effort) cell
 finishes cleanly, fails loudly (the failure is caught before release by a test gate, a
 refusal or a review) or fails silently (the failure escapes and is found later, or never),
 and what a run costs in tokens and wall time. It then picks the cell with the lowest expected
@@ -27,6 +28,8 @@ python -m pip install .
 howhard pick specified-implementation --text "Make transaction rollback safe"
 # Execute the task with the chosen cell, then use the printed decision ID:
 howhard observe DECISION_ID clean
+howhard memory list
+howhard report
 howhard summary specified-implementation
 howhard flush
 ```
@@ -37,8 +40,14 @@ prices, task taxonomy, risk policies and priors. Learning is local to `.howhard/
 working directory. New task names start with the standard policy. If the silent-failure
 cap cannot be met, the default recommendation requires independent review before release.
 
-Use `--json` for automation and `--seed N` to reproduce a pick. There are six commands:
-`pick`, `summary`, `observe`, `flush`, `export-prior` and `import-prior`.
+The default LLM adapter reuses an authenticated Claude CLI when available. `--llm off`
+keeps the statistical workflow. Automatic fallback is labeled, and an explicit LLM
+request fails clearly. The [semantic-memory guide](docs/semantic-memory.md) covers all
+memory operations, custom/calling-agent adapters and approximation limits.
+
+Use `--json` for automation and `--seed N` to reproduce selection from recorded forecasts.
+Commands include `pick`, `summary`, `observe`, `flush`, prior import/export, `memory`,
+`report`, and the calling-agent `context` / `retrieve` / `decide` workflow.
 
 ```python
 from howhard import Engine
@@ -50,7 +59,9 @@ choice = engine.pick("specified-implementation", "Make transaction rollback safe
 See the [quickstart](docs/quickstart.md), [documentation index](docs/index.md),
 [model and storage contracts](docs/reference.md), and [changelog](CHANGELOG.md).
 The [context architecture](docs/context.md) explains text features, changing project
-snapshots, receipts and the local lexical encoder's limits.
+snapshots and receipts in the statistical baseline. Evaluate routing quality with the
+[real-project protocol](docs/evaluation.md); unit fixtures establish implementation
+behavior rather than product-quality evidence.
 Python 3.11+ and a POSIX platform are required. Run tests with
 `python -m pip install -e '.[test]'` followed by `python -m pytest`;
 contributors use [AGCoord and isolated worktrees](docs/contributing.md).
