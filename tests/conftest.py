@@ -6,6 +6,12 @@ from howhard import load_config
 from howhard.storage import effective_rows
 
 
+@pytest.fixture(autouse=True)
+def offline_llm_by_default(monkeypatch):
+    # Ordinary tests never spend tokens or depend on a machine's login/runtime.
+    monkeypatch.setenv("HOWHARD_LLM", "off")
+
+
 @pytest.fixture
 def project(tmp_path):
     count = 0

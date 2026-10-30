@@ -76,14 +76,18 @@ def summarize(posterior, config, task, risk=None, context=None):
     return result, cells, marginals
 
 
-def choose(prepared, posterior, config, seed=None, candidates=None):
+def choose(prepared, posterior, config, seed=None, candidates=None, sample_parts=None):
     result, cells, marginals = prepared
     result = deepcopy(result)
     if seed is None:
         seed = secrets.randbits(64)
     if type(seed) is not int or seed < 0:
         raise HowHardError("seed: expected a non-negative integer")
-    _, _, _, j, parts = components(marginals, cells, posterior.prior.noise, result["constants"], np.random.default_rng(seed), 1)
+    if sample_parts is None:
+        _, _, _, j, parts = components(marginals, cells, posterior.prior.noise, result["constants"], np.random.default_rng(seed), 1)
+    else:
+        parts = sample_parts
+        j = sum(parts.values())
     indices = {(cell["family"], cell["effort"]): i for i, cell in enumerate(cells)}
     for row in result["cells"]:
         row["sampled_J"] = float(j[0, indices[row["family"], row["effort"]]])

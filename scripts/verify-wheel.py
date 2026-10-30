@@ -14,7 +14,7 @@ expected = version("howhard")
 wheel = Path("dist") / f"howhard-{expected}-py3-none-any.whl"
 with zipfile.ZipFile(wheel) as archive:
     names = archive.namelist()
-    for resource in ("default_prior.toml", "default_config.toml", "context.toml"):
+    for resource in ("default_prior.toml", "default_config.toml", "context.toml", "semantic.toml"):
         assert f"howhard/data/{resource}" in names, resource
     metadata = archive.read(f"howhard-{expected}.dist-info/METADATA").decode()
     assert f"Version: {expected}\n" in metadata
@@ -30,6 +30,7 @@ with tempfile.TemporaryDirectory(prefix="howhard-wheel-") as directory:
     root = Path(directory)
     environment = os.environ.copy()
     environment.pop("PYTHONPATH", None)
+    environment["HOWHARD_LLM"] = "off"  # Packaging checks never spend inference tokens.
     subprocess.run([sys.executable, "-m", "venv", str(root / "venv")], check=True)
     python = root / "venv/bin/python"
     subprocess.run([str(python), "-m", "pip", "install", "--quiet", str(wheel.resolve())],
@@ -44,4 +45,7 @@ with tempfile.TemporaryDirectory(prefix="howhard-wheel-") as directory:
     observed = json.loads(subprocess.check_output([str(command), "observe", picked["decision_id"], "clean", "--json"], cwd=root, env=environment, text=True))
     assert observed["observed"]["task_text"] == "repair spelling"
     assert observed["observed"]["project_context"] == picked["context"]["project_context"]
+    entry = json.loads(subprocess.check_output([str(command), "memory", "add", "--title", "Installed memory", "--body", "An editable semantic memory", "--json"], cwd=root, env=environment, text=True))
+    removed = json.loads(subprocess.check_output([str(command), "memory", "remove", entry["id"], "--json"], cwd=root, env=environment, text=True))
+    assert removed["active"] is False
 print(f"Verified howhard {expected} source distribution and clean installed wheel")
