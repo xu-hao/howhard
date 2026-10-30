@@ -1,0 +1,12 @@
+{
+  "name": "howhard",
+  "description": "The howhard skill for task-aware model and effort recommendations with feedback and writable memory.",
+  "owner": {"name": "howhard contributors"},
+  "plugins": [
+    {
+      "name": "howhard",
+      "source": "./",
+      "description": "Task-aware model and effort recommendations with feedback and writable memory."
+    }
+  ]
+}
