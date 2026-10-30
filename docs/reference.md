@@ -115,6 +115,17 @@ and risk class retain their first historical values; explicitly changed
 inputs conflict. Equality never bypasses field/type validation. Raw `observe --native`
 can admit a verified actual model/control without a receipt or retrospective forecast;
 all feedback/ID validation precedes identity metadata persistence under the project lock.
+For native worker feedback, an accepted explicit model/effort override followed by
+completed execution is sufficient to match the requested cell when the host API applies
+those controls and reports no launch failure, ignored controls, substitution or
+contradictory execution metadata. Use the decision receipt so this feedback scores its
+prospective forecast; record accepted override and completion in `note` if the host
+does not return a separate resolved identity. This is host-API provenance, not backend
+or provider attestation. Without accepted explicit controls, match only when reported
+actual model/control exactly matches the receipt. A different known actual cell uses raw
+native feedback without the unexecuted receipt. When neither accepted overrides nor an
+exact reported actual cell establishes attribution, unknown actual identity/control
+remains unscored. Recommendations and accepted but unexecuted requests are not evidence.
 Disk duplicate rows remain errors. Errors name the file, line and key.
 Original rows require `task_text`, `project_context` and `context_encoder` together,
 with optional `decision_id`. Empty task text or null project context represents an

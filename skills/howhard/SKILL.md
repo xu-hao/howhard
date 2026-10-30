@@ -36,15 +36,23 @@ the host's actual tools execute the task.
    follow-up retrieve/decide commands do not repeat or replace that inventory.
 5. Inspect the chosen native ID/control, cost policy and cap/review status. Delegate
    through the actual host tool within the authorized scope, using only supported
-   controls. Retain the execution ID, requested cell, actual resolved identity/control
-   and measured usage. A recommendation is not proof that it executed. Honor review
-   requirements and report unsupported controls or identity mismatches.
+   controls. On a host whose native spawn API applies explicit model and effort
+   overrides, accepted controls plus completed task execution attribute feedback to
+   the requested cell unless the host reports launch failure, ignored controls,
+   substitution or contradictory metadata. If no resolved identity is returned, record
+   acceptance and completion in the observation note as host-API provenance, not backend
+   or provider attestation. A recommendation or unexecuted request is not execution
+   evidence. Honor review requirements and report unsupported controls or mismatches.
 6. Record real feedback with a stable per-execution `--id`; never observe an unrun
-   action. Matching retries return the original row; explicit conflicts are refused.
-   Use `evidence ID --raw` to reconcile ambiguous writes. If a different known cell ran,
+   action. Use the matched receipt for the accepted-override case above, or when
+   reported actual model and control exactly match the chosen cell, so feedback scores
+   its prospective forecast.
+   Matching retries return the original row; explicit conflicts are refused. Use
+   `evidence ID --raw` to reconcile ambiguous writes. If a different known cell ran,
    record raw actual feedback with `--native`, the original frozen task/context and a
-   provenance note, without attaching the unexecuted decision. Unknown actual identity
-   or control remains unscored and is reported; do not fabricate a registration.
+   provenance note, without attaching the unexecuted decision. If neither accepted
+   controls nor exact reported identity establishes a match and the actual cell is
+   unknown, leave it unscored and report that; do not fabricate a registration.
 7. Append changed feedback to clean/loud/silent with `amends`, preserving original
    context and measurements. Use `memory learn-context` and its full `outcome_history`
    to consider original and correction notes. Apply the writer response with the exact
