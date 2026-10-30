@@ -35,7 +35,7 @@ def parser():
             command.add_argument("--project-context", metavar="PATH", help="JSON snapshot or project parameter overrides")
         if name in ("pick", "summary", "context"):
             command.add_argument("--risk", help="optional risk policy override")
-            command.add_argument("--candidates", metavar="FILE", help="JSON native model/effort inventory, with optional usd_per_mtok")
+            command.add_argument("--candidates", required=True, metavar="FILE", help="JSON native model/effort inventory, with optional usd_per_mtok")
         if name == "evidence":
             command.add_argument("id")
             command.add_argument("--raw", action="store_true", help="return the exact recorded row rather than current effective evidence")
@@ -108,7 +108,7 @@ def render(result):
     if "semantic" in result:
         lines.append(result["semantic"]["reason"])
         lines.append("Intervals: statistical safety guard plus approximate weighted semantic envelope")
-    if not result.get("cost_policy", {}).get("worker_money_included", True):
+    if not result["cost_policy"]["worker_money_included"]:
         lines.append("Worker monetary cost is unknown for at least one candidate and omitted uniformly from comparison; J includes risk and time only.")
     if "chosen" in result:
         chosen = result["chosen"]
@@ -189,7 +189,7 @@ def main(argv=None):
     try:
         config = load_config(args.config, directory=Path.cwd(), state_directory=args.state_dir)
         native_candidates = None
-        if args.command in ("pick", "summary", "context") and args.candidates is not None:
+        if args.command in ("pick", "summary", "context"):
             from .native import preflight
             native_candidates = preflight(config, read_json(args.candidates))
         engine = Engine(config, cache_path=args.cache, journal_path=args.journal, llm=args.llm)

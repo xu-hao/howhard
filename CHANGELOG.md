@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+- Remove registry-only routing and the Python family/effort candidate filter. Every
+  routing request now requires the host's native inventory; prices come only from that
+  inventory. Remove packaged API prices, token mixes, family activation flags and
+  unresolved default-effort handling.
+- Remove checkout-local Git store discovery and old SQLite adoption inspection. Git
+  worktrees use the common Git directory's store; explicit configuration/store selection
+  and plain-folder state remain supported. Existing checkout data is left untouched.
+- Require timestamped contextual original records, identity/inventory/cost-bound v3
+  decision receipts and worktree-bound v2 agent requests. Only contextual v2 priors are
+  imported/exported, including empty-store exports. Superseded records, receipts,
+  requests and priors are refused rather than upgraded or read through compatibility paths.
+- Explain automatic task-based Codex skill activation and optional explicit invocation.
+  The coordinating agent selects a worker before spawning; subagent startup does not
+  itself guarantee skill activation. Remove retired installation guidance.
+
 ## 0.6.0 — 2026-10-30
 
 - Accept actual native model/control inventories before forecasts, with distinct neutral

@@ -18,7 +18,7 @@ Before release:
    The gate builds the wheel and source distribution, checks the version and packaged
    defaults, runs the complete behavioral suite and builds the canonical docs.
 3. Install the built wheel into a clean environment outside the checkout. Check
-   `howhard --version`, `howhard pick bookkeeping --seed 42 --json`, and package data
+   `howhard --version`, `howhard pick bookkeeping --candidates /tmp/host-candidates.json --seed 42 --json`, and package data
    through `importlib.resources`. Check the source distribution can also build a wheel.
 4. Tag the verified commit `vX.Y.Z` and create a GitHub release only when requested.
    Attach the verified distributions and their SHA-256 checksums.

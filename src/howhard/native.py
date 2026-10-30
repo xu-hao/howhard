@@ -58,11 +58,8 @@ def apply(config, models):
         if model in config.data["models"] and not config.data["models"][model].get("native"):
             raise HowHardError(f"native registry: conflicts with configured model {model}")
         family = "native-" + hashlib.sha256(model.encode()).hexdigest()
-        if family in config.data["families"] and not config.data["models"].get(model, {}).get("native"):
-            raise HowHardError("native registry: family identity conflict")
-        config.data["families"][family] = {"current": model, "selectable": False, "tier": 0}
         config.data["models"][model] = {"family": family, "efforts": spec["efforts"],
-                                        "default_effort": spec["efforts"][0], "weight": 1.0, "native": True}
+                                        "weight": 1.0, "native": True}
 
 
 def preflight(config, candidates):

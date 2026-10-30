@@ -9,8 +9,9 @@ import pytest
 from howhard import Engine
 from howhard.outcomes import fit
 from howhard.prior import build_prior
+from howhard.context import FORMAT as ENCODER
 from howhard.transfer import FORMAT, allowed_labels, shared
-from conftest import cell, fitted_rows, frequency, row
+from conftest import inventory, cell, fitted_rows, frequency, row
 
 
 def test_effort_sensitive_type_prefers_higher_effort_same_model(project):
@@ -24,7 +25,7 @@ def test_effort_sensitive_type_prefers_higher_effort_same_model(project):
     assert mean("loud.u.X") > prior.mean[prior.index("loud.u.X")]
     assert abs(mean("loud.w.X.fable")) <= .3
     assert mean("loud.v.X.high") > 0
-    summary = engine.summary("X")
+    summary = engine.summary("X", native_candidates=inventory())
     assert cell(summary, "opus", "xhigh")["J"] < cell(summary, "fable", "high")["J"]
     candidates = [("opus", "xhigh"), ("fable", "high")]
     assert frequency(engine, "X", candidates[0], candidates) >= .8
@@ -34,7 +35,7 @@ def test_interaction_lower_model_at_higher_effort_can_win(project):
     rows = [row(i, task="Y", family="sonnet", effort="xhigh") for i in range(10)]
     rows += [row(i + 10, task="Y", effort="medium", outcome="loud") for i in range(10)]
     engine = Engine(project(rows=rows))
-    summary = engine.summary("Y")
+    summary = engine.summary("Y", native_candidates=inventory())
     a, b = cell(summary, "sonnet", "xhigh"), cell(summary, "opus", "medium")
     assert a["J"] < b["J"]
     assert a["P_clean"]["mean"] > b["P_clean"]["mean"]
@@ -46,17 +47,17 @@ def test_silent_cap_excludes_a_cell(project):
     rows = [row(i, task="Z", family="haiku", outcome="silent" if i < 3 else "clean") for i in range(10)]
     config = project(rows=rows)
     engine = Engine(config)
-    assert not cell(engine.summary("Z"), "haiku", "high")["admissible"]
+    assert not cell(engine.summary("Z", native_candidates=inventory()), "haiku", "high")["admissible"]
     # Add evidence in batches until the other cell satisfies the cap.
     log = config.path(config.data["logs"][0]["path"])
     for n in (20, 50, 100, 200):
         amended = rows + [row(i + 10, task="Z") for i in range(n)]
         log.write_text("".join(json.dumps(r) + "\n" for r in amended))
         engine.refresh()
-        if cell(engine.summary("Z"), "opus", "high")["admissible"]:
+        if cell(engine.summary("Z", native_candidates=inventory()), "opus", "high")["admissible"]:
             break
-    assert cell(engine.summary("Z"), "opus", "high")["admissible"]
-    assert not cell(engine.summary("Z"), "haiku", "high")["admissible"]
+    assert cell(engine.summary("Z", native_candidates=inventory()), "opus", "high")["admissible"]
+    assert not cell(engine.summary("Z", native_candidates=inventory()), "haiku", "high")["admissible"]
     candidates = [("haiku", "high"), ("opus", "high")]
     assert frequency(engine, "Z", candidates[1], candidates) == 1
 
@@ -64,32 +65,32 @@ def test_silent_cap_excludes_a_cell(project):
 def test_a_cheap_cell_wins_when_adequate(project):
     rows = [row(i, task="cheap", family="haiku", effort="low") for i in range(30)]
     engine = Engine(project(rows=rows))
-    assert min(engine.summary("cheap")["cells"], key=lambda c: c["J"])["family"] == "haiku"
-    assert min(engine.summary("cheap")["cells"], key=lambda c: c["J"])["effort"] == "low"
-    picks = [engine.pick("cheap", seed=s)["chosen"] for s in range(200)]
+    assert min(engine.summary("cheap", native_candidates=inventory())["cells"], key=lambda c: c["J"])["family"] == "haiku"
+    assert min(engine.summary("cheap", native_candidates=inventory())["cells"], key=lambda c: c["J"])["effort"] == "low"
+    picks = [engine.pick("cheap", seed=s, native_candidates=inventory())["chosen"] for s in range(200)]
     assert sum((p["family"], p["effort"]) == ("haiku", "low") for p in picks) > 100
 
 
 def test_the_posterior_updates(project):
     engine = Engine(project())
-    before = cell(engine.summary("X"), "opus", "high")["P_loud"]["mean"]
+    before = cell(engine.summary("X", native_candidates=inventory()), "opus", "high")["P_loud"]["mean"]
     for i in range(4):
         engine.observe("X", "claude-opus-5-5", "high", "loud", id=f"loud-{i}")
-    loud = cell(engine.summary("X"), "opus", "high")["P_loud"]["mean"]
+    loud = cell(engine.summary("X", native_candidates=inventory()), "opus", "high")["P_loud"]["mean"]
     assert loud > before
     for i in range(8):
         engine.observe("X", "claude-opus-5-5", "high", "clean", id=f"clean-{i}")
-    assert cell(engine.summary("X"), "opus", "high")["P_loud"]["mean"] < loud
+    assert cell(engine.summary("X", native_candidates=inventory()), "opus", "high")["P_loud"]["mean"] < loud
 
 
 def test_thompson_draws_reproducible_under_seed(project):
     engine = Engine(project())
-    assert engine.pick("Y", seed=37) == engine.pick("Y", seed=37)
+    assert engine.pick("Y", seed=37, native_candidates=inventory()) == engine.pick("Y", seed=37, native_candidates=inventory())
     picks = {(p["chosen"]["family"], p["chosen"]["effort"])
-             for p in (engine.pick("Y", seed=s) for s in range(100))}
+             for p in (engine.pick("Y", seed=s, native_candidates=inventory()) for s in range(100))}
     assert len(picks) > 1
-    fresh = engine.pick("Y")
-    assert engine.pick("Y", seed=fresh["seed"]) == fresh
+    fresh = engine.pick("Y", native_candidates=inventory())
+    assert engine.pick("Y", seed=fresh["seed"], native_candidates=inventory()) == fresh
 
 
 def test_transfer_from_synthetic_project_a_to_b(project, tmp_path):
@@ -99,10 +100,10 @@ def test_transfer_from_synthetic_project_a_to_b(project, tmp_path):
     path = tmp_path / "export.json"
     a.export_prior(path)
     b = Engine(project(settings='project = "project-b"\n[[logs]]\npath = "runs.jsonl"\nproject = "project-b"\n'))
-    before = b.summary("X")
+    before = b.summary("X", native_candidates=inventory())
     assert cell(before, "sonnet", "high")["P_loud"]["mean"] > cell(before, "opus", "high")["P_loud"]["mean"]
     b.import_prior(path)
-    after = b.summary("X")
+    after = b.summary("X", native_candidates=inventory())
     assert cell(after, "sonnet", "high")["P_loud"]["mean"] < cell(after, "opus", "high")["P_loud"]["mean"]
     candidates = [("sonnet", "high"), ("opus", "high")]
     assert frequency(b, "X", candidates[0], candidates) >= .8
@@ -119,7 +120,7 @@ def test_export_contains_generic_labels_and_numbers_only(project, tmp_path):
     path = tmp_path / "export.json"
     exported = engine.export_prior(path)
     labels = allowed_labels(exported["vocabularies"])
-    allowed = {FORMAT, "format", "vocabularies", "blocks", "noise_sds", "families", "efforts", "task_types", "labels", "mean", "covariance", "outcome", "tokens", "time"}
+    allowed = {FORMAT, ENCODER, "features", "context_encoder", "format", "vocabularies", "blocks", "noise_sds", "families", "efforts", "task_types", "labels", "mean", "covariance", "outcome", "tokens", "time"}
     allowed.update(v for names in exported["vocabularies"].values() for v in names)
     allowed.update(label for group in labels.values() for label in group)
     def walk(value):
@@ -149,7 +150,7 @@ def test_cache_zero_fitting_warm_equivalence_and_prior_invalidation(project, mon
         pytest.fail("a cache hit fitted the outcome model")
     monkeypatch.setattr(module, "fit", forbidden)
     cached = Engine(config)
-    cached.pick("X", seed=42)
+    cached.pick("X", seed=42, native_candidates=inventory())
     assert cached.posterior.statistics == {"kind": "cached", "iterations": 0, "final_step": 0.0}
     monkeypatch.setattr(module, "fit", original)
     cached.observe("X", "claude-opus-5-5", "high", "clean")

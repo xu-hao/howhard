@@ -29,8 +29,7 @@ Native worker pricing is unknown unless intentionally supplied for that executio
 surface. A subscription or bundled allowance is not an observed zero price or an API
 list-price quote. Omit it when unknown. The backend then excludes worker money uniformly
 from the entire candidate comparison, keeps unknown `C_run` null and labels the partial
-objective. It still records actual measured costs/resources when supplied. Calling the
-legacy registry-only path without an inventory preserves its packaged planning prices.
+objective. It still records actual measured costs/resources when supplied.
 
 Delegate using the chosen exact native controls, then compare requested and actual
 execution identity. If another known cell actually ran, raw `observe --native` records

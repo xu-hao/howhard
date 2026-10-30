@@ -12,7 +12,7 @@ hash vector as its semantic representation.
 ## Start without statistical configuration
 
 ```sh
-howhard pick specified-implementation --text "Make transaction rollback safe"
+howhard pick specified-implementation --candidates /tmp/host-candidates.json --text "Make transaction rollback safe"
 # Execute using the selected model and effort, then record the printed receipt ID:
 howhard observe DECISION_ID clean --tokens 12000 --seconds 45
 howhard memory list
@@ -150,8 +150,9 @@ including a chain that returns to the result the writer originally saw.
 
 Routing seeds reproduce selection given recorded forecasts. They do not make fresh
 LLM calls deterministic. Cached forecasts and content-addressed receipts support replay;
-operational timing/cache metadata may differ between invocations. Existing logs,
-v1 receipts and generic prior formats remain readable. Semantic receipts use v2.
+operational timing/cache metadata may differ between invocations.
+Receipts use `howhard-decision-v3` for both statistical and semantic decisions.
+Only contextual `howhard-prior-v2` imports/exports are supported.
 
 Native host selection supplies `--candidates FILE` to `context` or `pick` before any
 baseline/reader forecasts. The inventory is generated from actual host controls, not a
@@ -168,7 +169,7 @@ current project capture kept separate; inspect `paths` for the resolved roots.
 An agent that already has an LLM can use howhard as a stateful tool backend:
 
 ```sh
-howhard context specified-implementation --text-file task.txt --json
+howhard context specified-implementation --text-file task.txt --candidates /tmp/host-candidates.json --json
 howhard retrieve REQUEST_ID --file retrieval-queries.json --json
 howhard decide REQUEST_ID --file forecasts.json --seed 42 --json
 howhard memory learn-context RUN_ID --json

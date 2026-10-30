@@ -28,7 +28,7 @@ def build_prior(config, rows=(), *, extra_types=None, imported=None, contextual=
     tasks = dict(sorted(tasks.items()))
     projects = tuple(sorted({config.data["project"], *(log["project"] for log in config.data["logs"])}))
     if contextual is None:
-        contextual = any("context_encoder" in row for row in rows) or bool(imported and "context_encoder" in imported)
+        contextual = any(row["task_text"] or row["project_context"] is not None for row in rows) or imported is not None
     blocks = {}
     for block in ("outcome", "tokens", "time"):
         labels, means, variances = [], [], []
