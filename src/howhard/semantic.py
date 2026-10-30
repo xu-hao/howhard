@@ -12,7 +12,7 @@ import numpy as np
 
 from .context import canonical, digest, SOURCE_SUFFIXES, MANIFESTS, IGNORED
 from .llm import LLMError, SETTINGS
-from .transfer import atomic_write
+from .files import atomic_write
 from .validation import HowHardError, keys, number, text
 
 FORMAT = SETTINGS["format"]
@@ -24,12 +24,6 @@ def memory_key(entry):
     return f"memory:{entry['id']}:{entry['version']}"
 
 
-def statistical_panel(result):
-    return [{"family": c["family"], "effort": c["effort"],
-             **{k: c[f"P_{k}"]["mean"] for k in OUTCOMES},
-             "tokens": None, "seconds": c["T"] * 3600} for c in result["cells"]]
-
-
 def panel_lookup(panel):
     return {(c["family"], c["effort"]): c for c in panel}
 
@@ -39,7 +33,7 @@ def beliefs(engine, snapshot=None):
     from .decisions import load, receipt_path
     snapshot = engine.memory.snapshot() if snapshot is None else snapshot
     priors = SETTINGS["belief"]
-    entries = {"statistical": priors["statistical_prior"], "llm": priors["llm_prior"],
+    entries = {"llm": priors["llm_prior"],
                **{memory_key(m): priors["memory_prior"] for m in snapshot["memories"]}}
     evidence = {key: [] for key in entries}
     unscored = 0
@@ -55,14 +49,15 @@ def beliefs(engine, snapshot=None):
         if not receipt_path(engine.config, decision_id).is_file():
             unscored += 1
             continue
-        receipt = load(engine.config, decision_id)
-        state = receipt.get("semantic")
-        if state is None:
+        receipt = load(engine.config, decision_id, for_scoring=True)
+        if receipt is None:
+            unscored += 1
             continue
+        state = receipt["semantic"]
         if (receipt["task_type"], receipt["chosen"]["family"], receipt["chosen"]["effort"]) != (row["task_type"], row["family"], row["resolved_effort"]):
             raise HowHardError(f"semantic evidence: receipt mismatch for {row['id']}")
         cell = row["family"], row["resolved_effort"]
-        baseline = panel_lookup(state["worlds"]["statistical"])[cell][row["outcome"]]
+        baseline = panel_lookup(state["worlds"]["llm"])[cell][row["outcome"]]
         floor = priors["probability_floor"]
         for key, panel in state["worlds"].items():
             if key in entries:
@@ -70,7 +65,7 @@ def beliefs(engine, snapshot=None):
                     continue
                 p = panel_lookup(panel)[cell][row["outcome"]]
                 score = math.log(max(floor, p)) - math.log(max(floor, baseline))
-                reference = panel_lookup(state["worlds"]["statistical"])[cell]
+                reference = panel_lookup(state["worlds"]["llm"])[cell]
                 candidate = panel_lookup(panel)[cell]
                 for field, measurement in (("tokens", row["tokens"]), ("seconds", row["seconds"])):
                     if measurement is not None:
@@ -285,7 +280,7 @@ def complete(engine, payload, snapshot):
     seconds, cost, cost_known = 0.0, 0.0, True
     calls = []
     # A genuine no-memory forecast must be a separate stateless call, without
-    # historical evidence, beliefs or learned statistical probability tables.
+    # historical evidence or beliefs.
     baseline_response, usage = call(engine, baseline_request(payload))
     keys(baseline_response, ["forecasts", "reason"], ["memory_forecasts"], "LLM baseline")
     if baseline_response.get("memory_forecasts"):
@@ -334,12 +329,9 @@ def complete(engine, payload, snapshot):
 
 
 def augment(engine, prepared, response, payload, snapshot, usage):
-    result, cells, marginals = deepcopy(prepared[0]), prepared[1], prepared[2]
-    baseline = statistical_panel(result)
-    for row in baseline:
-        index = next(i for i, c in enumerate(cells) if (c["family"], c["effort"]) == (row["family"], row["effort"]))
-        row["tokens"] = float(np.exp(marginals["tokens"][0][index] + (marginals["tokens"][1][index, index] + engine.prior.noise["tokens"] ** 2) / 2))
-    worlds = {"statistical": baseline, "llm": deepcopy(response["forecasts"])}
+    result, cells = deepcopy(prepared[0]), prepared[1]
+    baseline = deepcopy(response["forecasts"])
+    worlds = {"llm": baseline}
     entries = {(m["id"], m["version"]): m for m in snapshot["memories"]}
     exposures = {}
     llm_indexed = panel_lookup(response["forecasts"])
@@ -352,10 +344,10 @@ def augment(engine, prepared, response, payload, snapshot, usage):
         exposures[key] = [[c["family"], c["effort"]] for c in changed]
     state = payload["beliefs"]
     weights = {e["key"]: e["weight"] for e in state["experts"]}
-    # Unretrieved memories are sleeping experts: retain their mass on the statistical
+    # Unretrieved memories are sleeping experts: retain their mass on the independent LLM
     # baseline, and do not award them evidence for forecasts they never made.
     indexed = {key: panel_lookup(panel) for key, panel in worlds.items()}
-    indexed.update({key: indexed["statistical"] for key in weights if key not in indexed})
+    indexed.update({key: indexed["llm"] for key in weights if key not in indexed})
     for row in result["cells"]:
         pair = row["family"], row["effort"]
         for outcome in OUTCOMES:
@@ -367,9 +359,10 @@ def augment(engine, prepared, response, payload, snapshot, usage):
                     if total >= fraction:
                         return value
                 return values[-1][0]
+            row[f"P_{outcome}"] = {}
             row[f"P_{outcome}"]["mean"] = sum(weights[k] * indexed[k][pair][outcome] for k in weights)
-            row[f"P_{outcome}"]["lower"] = min(row[f"P_{outcome}"]["lower"], quantile(.025), row[f"P_{outcome}"]["mean"])
-            row[f"P_{outcome}"]["upper"] = max(row[f"P_{outcome}"]["upper"], quantile(.975), row[f"P_{outcome}"]["mean"])
+            row[f"P_{outcome}"]["lower"] = min(quantile(.025), row[f"P_{outcome}"]["mean"])
+            row[f"P_{outcome}"]["upper"] = max(quantile(.975), row[f"P_{outcome}"]["mean"])
         tokens = sum(weights[k] * indexed[k][pair]["tokens"] for k in weights)
         seconds = sum(weights[k] * indexed[k][pair]["seconds"] for k in weights)
         cell = next(c for c in cells if (c["family"], c["effort"]) == pair)
@@ -383,23 +376,20 @@ def augment(engine, prepared, response, payload, snapshot, usage):
                           "memory_revision": snapshot["revision"], "memories": deepcopy(snapshot["memories"]),
                           "worlds": worlds, "exposures": exposures, "beliefs": state, "reason": response["reason"], "retrieval": payload["retrieval"],
                           "evidence": deepcopy(payload["evidence"]),
-                          "reader_usage": {k: usage[k] for k in ("backend", "seconds", "cost_usd", "calls")}, "interval_kind": "statistical-guard-plus-weighted-envelope"}
+                          "reader_usage": {k: usage[k] for k in ("backend", "seconds", "cost_usd", "calls")}, "interval_kind": "weighted-forecast-envelope"}
     result["backend"] = {"mode": "semantic", "name": usage["backend"], "inference_cached": usage["cached"]}
     result["routing_overhead"] = {"seconds": usage["call_seconds"], "cost_usd": usage["call_cost_usd"]}
-    return result, cells, marginals
+    return result, cells
 
 
-def sample(prepared, seed, noise):
-    from .selector import components
-    result, cells, marginals = prepared
+def sample(prepared, seed):
+    result, cells = prepared
     state = result["semantic"]
     experts = state["beliefs"]["experts"]
     rng = np.random.default_rng(seed)
     chosen = str(rng.choice([e["key"] for e in experts], p=[e["weight"] for e in experts]))
     state["sampled_expert"] = chosen
-    if chosen == "statistical" or chosen not in state["worlds"]:
-        return components(marginals, cells, noise, result["constants"], rng, 1)[4]
-    panel = panel_lookup(state["worlds"][chosen])
+    panel = panel_lookup(state["worlds"].get(chosen, state["worlds"]["llm"]))
     c = result["constants"]
     parts = {k: np.zeros((1, len(cells))) for k in ("run", "loud", "silent", "time")}
     for i, cell in enumerate(cells):
@@ -419,15 +409,17 @@ def validate_receipt(state):
         raise HowHardError("decision.semantic: unsupported forecast format or prompt version")
     if type(state["memory_revision"]) is not int or state["memory_revision"] < 0:
         raise HowHardError("decision.semantic.memory_revision: expected non-negative integer")
+    if state["interval_kind"] != "weighted-forecast-envelope":
+        raise HowHardError("decision.semantic.interval_kind: unsupported forecast envelope")
     text(state["backend"], "decision.semantic.backend")
     text(state["reason"], "decision.semantic.reason")
-    if not isinstance(state["worlds"], dict) or not {"statistical", "llm"} <= state["worlds"].keys():
-        raise HowHardError("decision.semantic.worlds: statistical and llm panels are required")
-    stat = state["worlds"]["statistical"]
-    if not isinstance(stat, list) or not stat:
+    if not isinstance(state["worlds"], dict) or not {"llm"} <= state["worlds"].keys():
+        raise HowHardError("decision.semantic.worlds: the llm panel is required")
+    baseline = state["worlds"]["llm"]
+    if not isinstance(baseline, list) or not baseline:
         raise HowHardError("decision.semantic.worlds: nonempty panels required")
     allowed = set()
-    for row in stat:
+    for row in baseline:
         keys(row, FIELDS, where="decision.semantic.forecast")
         text(row["family"], "forecast.family")
         text(row["effort"], "forecast.effort")
@@ -446,7 +438,7 @@ def validate_receipt(state):
             raise HowHardError("decision.semantic.memory: duplicate memory version")
         memory_keys.add(key)
     for key, panel in state["worlds"].items():
-        if key not in {"statistical", "llm"} | memory_keys:
+        if key not in {"llm"} | memory_keys:
             raise HowHardError("decision.semantic.worlds: unknown memory version")
         validate_panel(panel, allowed)
     if not isinstance(state["exposures"], dict):
@@ -465,14 +457,14 @@ def validate_receipt(state):
     for expert in belief["experts"]:
         keys(expert, ["key", "weight", "log_score", "evidence_count"], where="decision.semantic.expert")
         key = text(expert["key"], "decision.semantic.expert.key")
-        if key in seen or key not in {"statistical", "llm"} | memory_keys:
+        if key in seen or key not in {"llm"} | memory_keys:
             raise HowHardError("decision.semantic.expert: duplicate or unknown expert")
         seen.add(key)
         mass += number(expert["weight"], "expert.weight", nonnegative=True)
         number(expert["log_score"], "expert.log_score")
         if type(expert["evidence_count"]) is not int or expert["evidence_count"] < 0:
             raise HowHardError("decision.semantic.expert.evidence_count: expected non-negative integer")
-    if not {"statistical", "llm"} <= seen or abs(mass - 1) > 1e-6 or set(state["worlds"]) - seen:
+    if not {"llm"} <= seen or abs(mass - 1) > 1e-6 or set(state["worlds"]) - seen:
         raise HowHardError("decision.semantic.beliefs: expert weights must cover forecasts and sum to one")
     if "sampled_expert" in state and state["sampled_expert"] not in seen:
         raise HowHardError("decision.semantic.sampled_expert: unknown expert")
@@ -511,7 +503,7 @@ def learning_request(engine, evidence_id):
     if row.get("decision_id"):
         from .decisions import load, receipt_path
         if receipt_path(engine.config, row["decision_id"]).is_file():
-            receipt = load(engine.config, row["decision_id"])
+            receipt = load(engine.config, row["decision_id"], for_scoring=True)
     request = {"kind": "learn", "prompt_version": SETTINGS["writer_version"], "observation": row,
                "decision": receipt, "memory_revision": snapshot["revision"], "memories": snapshot["memories"],
                "beliefs": beliefs(engine), "evidence": evidence_search(engine, row.get("task_text", "")),
@@ -549,7 +541,7 @@ def apply_learning(engine, evidence_id, response, *, expected_revision, event_ke
 
 def learn(engine, evidence_id):
     if engine.llm is None:
-        return {"status": "disabled", "backend": deepcopy(engine.backend)}
+        return {"status": "pending", "evidence_id": evidence_id, "reason": "Supply a calling-agent writer response or run memory learn."}
     request, event_key = learning_request(engine, evidence_id)
     if engine.memory.learned(event_key):
         return {"status": "already-learned", "evidence_id": request["observation"]["id"]}

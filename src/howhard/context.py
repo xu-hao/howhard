@@ -1,18 +1,14 @@
-"""Versioned local features and immutable snapshots of changing project state."""
+"""Immutable snapshots of changing project state."""
 
-from collections import Counter
 import hashlib
 import json
-import math
 import os
 from pathlib import Path
 import re
 import subprocess
 import tomllib
-import unicodedata
 from stat import S_ISREG
 
-import numpy as np
 
 from .config import packaged
 from .validation import HowHardError, keys, number
@@ -20,13 +16,10 @@ from .validation import HowHardError, keys, number
 SETTINGS = tomllib.loads(packaged("context.toml").decode())
 FORMAT = SETTINGS["format"]
 PROJECT_FORMAT = "howhard-project-v1"
-DECISION_FORMAT = "howhard-decision-v3"
+DECISION_FORMAT = "howhard-decision-v4"
 COUNTS = ("files", "source_bytes", "languages", "test_files", "manifests", "changed_files")
 FLAGS = ("has_ci", "has_lockfile", "has_typing")
 PARAMETERS = (*COUNTS, *FLAGS, "coverage")
-FEATURE_NAMES = tuple([f"task-text-{i:02d}" for i in range(SETTINGS["task_buckets"])] +
-                      [f"project-text-{i:02d}" for i in range(SETTINGS["project_buckets"])] +
-                      ["task_length", "task_lines", *COUNTS, *FLAGS, "coverage", "coverage_known", "project_known"])
 IGNORED = {".git", ".howhard", "venv", "env", ".env", "node_modules", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", "dist", "build", "_build", "htmlcov", "vendor", "target"}
 SOURCE_SUFFIXES = {".py", ".js", ".jsx", ".ts", ".tsx", ".go", ".rs", ".c", ".h", ".cpp", ".hpp", ".java", ".kt", ".swift", ".rb", ".php", ".cs", ".sh", ".sql", ".ex", ".exs", ".scala", ".vue", ".svelte"}
 MANIFESTS = {"pyproject.toml", "package.json", "Cargo.toml", "go.mod", "Gemfile", "pom.xml", "build.gradle", "composer.json"}
@@ -89,7 +82,7 @@ def git(directory, *args):
 
 
 def capture_project(config, overrides=None, *, required_path=None):
-    """Read the current working tree; never revisit it when fitting historical rows."""
+    """Read the current working tree; never revisit it when reading historical rows."""
     if overrides is not None:
         if not isinstance(overrides, dict):
             raise HowHardError("project_context: expected snapshot or parameter object")
@@ -99,7 +92,7 @@ def capture_project(config, overrides=None, *, required_path=None):
     root = config.project_root
     state_root = config.state_root.resolve()
     excluded = {config.path(s["path"]).resolve() for s in config.data["logs"]}
-    excluded.update(config.path(config.data[k]).resolve() for k in ("journal", "cache"))
+    excluded.add(config.path(config.data["journal"]).resolve())
     listing = git(root, "ls-files", "--cached", "--others", "--exclude-standard", "-z")
     included = {os.fsdecode(p) for p in listing.split(b"\0") if p} if listing is not None else None
     def candidates():
@@ -187,47 +180,6 @@ def capture_project(config, overrides=None, *, required_path=None):
     value = {"format": PROJECT_FORMAT, "parameters": params, "text": text, "revision": revision,
              "fingerprint": digest([params, text, revision, stamps, sorted(changed_paths)]), "truncated": truncated}
     return validate_project(value)
-
-
-def lexical(value, buckets):
-    value = unicodedata.normalize("NFKC", value[:SETTINGS["text_limit"]]).casefold()
-    words = re.findall(r"\w+", value)[:SETTINGS["word_limit"]]
-    terms = Counter([f"u:{w}" for w in words] + [f"b:{a} {b}" for a, b in zip(words, words[1:])])
-    result = np.zeros(buckets)
-    for term, count in sorted(terms.items()):
-        hashed = hashlib.blake2b(term.encode(), digest_size=8, person=b"howhard-text-v1").digest()
-        result[int.from_bytes(hashed[:4], "big") % buckets] += (1 if hashed[4] & 1 else -1) * math.log1p(count)
-    norm = np.linalg.norm(result)
-    return result / norm if norm else result
-
-
-def scaled(value, scale):
-    if value >= scale:
-        return 1.0
-    return min(1.0, math.log1p(value) / math.log1p(scale))
-
-
-def encode(task_text, project_context):
-    validate_text(task_text)
-    project_text = "" if project_context is None else validate_project(project_context)["text"]
-    result = dict(zip(FEATURE_NAMES, np.zeros(len(FEATURE_NAMES))))
-    for prefix, value, buckets in (("task-text", task_text, SETTINGS["task_buckets"]), ("project-text", project_text, SETTINGS["project_buckets"])):
-        result.update({f"{prefix}-{i:02d}": float(x) for i, x in enumerate(lexical(value, buckets))})
-    result["task_length"] = scaled(len(task_text), SETTINGS["scales"]["task_length"])
-    result["task_lines"] = scaled(task_text.count("\n") + bool(task_text), SETTINGS["scales"]["task_lines"])
-    if project_context is not None:
-        params = project_context["parameters"]
-        for key in COUNTS:
-            result[key] = scaled(params[key], SETTINGS["scales"][key])
-        result.update({key: float(params[key]) for key in FLAGS})
-        result["coverage_known"] = float(params["coverage"] is not None)
-        result["coverage"] = params["coverage"] or 0.0
-        result["project_known"] = 1.0
-    return result
-
-
-def row_context(row):
-    return encode(row["task_text"], row["project_context"])
 
 
 def validate_row_context(row, where):

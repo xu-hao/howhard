@@ -1,92 +1,57 @@
 # Model and storage contracts
 
-These are the statistical baseline contracts. The optional [LLM semantic-memory layer](semantic-memory.md)
-adds original-text reasoning, mutable memory and approximate predictive weights, with
-its conservative interval policy reported separately.
+Routing uses LLM forecasts and writable semantic memories. See the [reader/writer
+contract](semantic-memory.md) for retrieval, isolated forecasts and predictive weights.
+There is no fitted outcome regression, token/time regression, lexical predictor,
+statistical safety floor or generic prior transfer.
 
 ## Selection
 
-For task type `t`, family `m`, effort `e` and risk class `r`, minimize
+For each supplied native model and effort/control cell, minimize
 
 ```text
 J = C_run + P_loud * C_loud + P_silent * C_silent + lambda_per_hour * T
 ```
 
-Native callers supply a validated inventory of actual model/control cells before any
-forecast. `pick`/`context` accept `--candidates FILE`; Python uses `native_candidates`.
-Each cell has `model`, `effort` and optional `usd_per_mtok`. Native pricing is unknown
-when omitted/null, including for a known model identity. If any candidate is
-unpriced, the worker monetary term is omitted for **every** candidate. `cost_policy`
-labels this partial comparison; unknown `C_run` is null and known `C_run` remains visible,
-while `J` contains risk and time only. Fully priced inventories use the full objective.
-Every routing request requires an explicit native inventory.
+The host supplies 1–32 distinct actual cells through `--candidates FILE` or Python
+`native_candidates`. Each has `model`, `effort` and optional `usd_per_mtok`. No-effort,
+null and `model_default` controls are refused. Unknown identities receive distinct
+opaque family labels for protocol bookkeeping, without model assumptions or effects.
+Configured identities retain their declared labels and evidence weights. Historical
+identity metadata does not activate candidates in a later request.
 
-Costs are USD, and `T` is hours. Families and efforts are categorical axes. The selector
-uses 4,000 joint posterior draws with a fixed internal seed for deterministic means and
-95% intervals. It uses the 97.5th percentile of `P_silent` for admissibility. One fresh
-joint posterior draw chooses the admissible cell with the smallest sampled `J`.
-`explore_within`, when supplied, limits eligible cells by expected `J`.
+An independent stateless LLM forecasts every cell using the task and project alone.
+The reader supplies conditional overrides for memories it has seen; omitted cells and
+unretrieved memories use the independent LLM forecast. No learned probability table
+or synthetic forecast is supplied to either call. Provider absence, invalid forecasts
+and provider failures are explicit errors; none produces a routing recommendation.
 
-The `flag-review` fallback samples among all cells and sets `needs_review` when no cell is
-admissible. `lowest-bound` instead selects the lowest upper bound. The result includes the
-seed, chosen concrete id, family, effort, class constants, cap status, every candidate's
-probabilities, expected running cost, time, total cost, sampled cost, and explanations for
-cheaper cells. Explanation components are signed differences and sum to the sampled cost
-difference. Policy filters are explained separately. `summary` performs no Thompson draw.
+Probability means are weighted by predictive expert support. Lower/upper bounds use
+the weighted 2.5%/97.5% forecast quantiles expanded to include the mean. This is a
+heuristic forecast envelope, not a Bayesian credible interval or calibrated guarantee.
+Admissibility compares the silent-failure upper envelope to the risk class epsilon.
+There is no additional statistical risk floor.
 
-## Outcome posterior
+`pick` samples one expert by its weight, samples outcome probabilities around that
+expert's forecast using the packaged Dirichlet concentration, and chooses the admissible
+cell with the smallest sampled cost. Tokens and time come directly from the forecast.
+`summary` returns the same means and envelope without sampling a selection. A fixed
+seed reproduces selection given frozen forecasts; it does not make inference deterministic.
 
-For each of `loud` and `silent`, the linear predictor is
+When no cell meets the cap, `flag-review` selects by sampled cost and requires review;
+`lowest-bound` selects the lowest silent upper envelope. `explore_within`, if supplied,
+limits eligible cells by expected total cost. Cheaper alternatives include signed cost
+component explanations or the policy that excluded them.
 
-```text
-a + b[m] + c[e] + d[m,e] + u[t] + w[t,m] + v[t,e] + pi[p] + pi_task[p,t]
-```
+## Prices and measurements
 
-Softmax with the clean reference gives the three outcome probabilities. Normal priors
-come entirely from the packaged TOML, optionally overridden by an advanced project.
-At the prior mode, contract work at opus/high is 60% clean, 35% loud and 5% silent;
-probability means differ because the prior is uncertain.
-
-Contextual runs add shared, family-specific and effort-specific slopes on task-text
-and project-snapshot features. The cost and time regressions add shared context slopes.
-See the [context contract](context.md) for the complete encoding and historical semantics.
-
-`fit(prior, rows, start=None)` uses weighted multinomial likelihood, exact gradients and
-Hessians, Newton steps with step halving, and an absolute maximum Newton step below
-`1e-9`. It refuses after 100 iterations. The joint covariance is the inverse negative
-log-posterior Hessian at the mode. Full covariance imports are supported. Canonical cell
-aggregation makes the result independent of row order. Every run's evidence weight comes
-from its concrete model's registry entry. Project and project/task departures are fitted
-but never transferred.
-
-Unregistered native identities receive distinct backend-generated family labels with
-zero-mean family effects, ordinary unit evidence weight and the existing packaged
-uncertainties. New effort/control categories have zero-mean categorical effects; they
-are not ordered or translated to known efforts. Identity/effort metadata persists in
-`native-models.json` in the project store for later receipts/feedback, without making
-historical candidates active. Known configured identities retain their original mapping;
-ambiguous configured family/effort collisions are refused. The native input requires
-1–32 distinct bounded cells; no-effort/null and `model_default` are unsupported native
-controls. The skill discovers actual host capabilities; users supply no model priors,
-family mappings or statistical tuning.
-
-## Cost and time
-
-Two independent exact conjugate normal regressions model log total tokens and log seconds:
-
-```text
-task[t] + family[m] + effort[e] + project[p] + normal noise
-```
-
-Only non-null measurements enter the corresponding regression. Zero measurements use
-a one-token or one-second floor before taking a logarithm. The fixed noise sds are in
-TOML. Conditional expected measurements are `exp(mu + noise_sd**2/2)`;
-posterior draws also account for coefficient uncertainty. Tokens include all cached and
-uncached input and output. `cost_usd` is retained for reporting and never fitted.
-
-Worker prices are optional per-inventory `usd_per_mtok` values supplied by the host.
-Configured model entries contain known family/effort mappings and evidence weights,
-not candidate activation or API pricing. Unknown worker prices stay unknown.
+Prices belong to the host inventory. If any candidate is unpriced, worker money is
+omitted uniformly from every candidate's objective. Known `C_run` remains visible;
+unknown values stay null, and `cost_policy` labels the partial risk/time comparison.
+Fully priced inventories use the full objective. Never substitute provider API prices
+for unknown host charges. Tokens include cached/uncached input and output; T is hours.
+Actual `tokens`, `seconds` and `cost_usd` remain null unless measured. Observations
+update memory predictive evidence, not a separate fitted statistical model.
 
 ## Records and amendments
 
@@ -98,7 +63,7 @@ Every JSONL row requires these base keys:
 | `date` | `YYYY-MM-DD` |
 | `ticket` | String or null |
 | `task_type` | Known task name; zero-config also accepts new names as standard |
-| `risk_class` | Recorded risk class; fitting uses the current mapping |
+| `risk_class` | Recorded risk class |
 | `model` | Concrete id from the registry |
 | `effort` | Exact registered effort/control identity |
 | `observed_at` | ISO timestamp with timezone |
@@ -149,7 +114,7 @@ For example, `Engine.observe(..., amends="run-id", measurement_corrections={"tok
 "cost_usd": None})` replaces only those effective values. Unlisted measurements retain
 their current effective values across a chain. Supply the intended current outcome/cause
 as usual, including when only usage changes. No forecast is created retrospectively.
-Regressions, worker-cost totals and predictive memory evidence use the corrected original
+Worker-cost totals and predictive memory evidence use the corrected original
 once. Writer `observation` contains current effective usage; `outcome_history` preserves
 the raw original and correction maps as an audit trail, never extra runs or additive usage.
 Matching correction-ID retries remain idempotent and different maps conflict. This is
@@ -169,7 +134,7 @@ reports both; `--state-dir PATH` and `Engine(state_directory=...)` support inten
 store selection. Fresh zero-config Git worktrees share `howhard` below the repository's
 common Git directory, with current context from the current checkout. Checkout-local
 `.howhard` directories do not override this shared default and are left untouched.
-Explicit configuration retains its declared paths and prior settings; plain directories
+Explicit configuration retains its declared paths and policies; plain directories
 keep local `.howhard`. A stable random project identity lives
 in `howhard-project.json` in the Git common directory, or `.howhard/project.json` for a
 plain folder, independently of a custom store. Moving the project with its metadata
@@ -178,55 +143,44 @@ or memory writes. All receipts require that identity and their native inventory/
 policy. The resolved state subtree is excluded from capture and
 `project.read`, including symlink aliases; a state root equal to or containing the capture
 root is refused. Prepared calling-agent requests bind the worktree and reject sibling
-retrieve/decide. Requests use `howhard-agent-request-v2` and receipts use
-`howhard-decision-v3`, with optional semantic forecasts in the same receipt format.
+retrieve/decide. Requests use `howhard-agent-request-v3` and receipts use
+`howhard-decision-v4`, with required LLM forecasts.
 Earlier formats are refused; prepare a fresh request and decision.
 Frozen-receipt observations and learning share the store across that project's worktrees.
 
-## Cache and transfer
+## Inference cache and current interfaces
 
-The atomic NPZ cache stores labels, distributions, hashes, format and fit statistics.
-SHA-256 covers the format, prior bytes, imported bytes, effective settings and registry,
-and the bytes of every configured log plus the journal. Configuration is included because
-weights, task mappings and project identities affect the posterior. Length prefixes keep
-file boundaries distinct. Row reordering changes the data hash, but never the fit.
+Validated LLM responses may be cached by complete request, adapter identity, settings,
+evidence and memory revision. Corrupt caches are replaced. Prepared requests bind the
+current worktree, native inventory, effective evidence and memory revision; stale requests
+must be prepared again. Calling-agent submissions are audited with unknown external
+inference costs and latency rather than being counted as free provider calls.
 
-A matching cache performs zero fitting. Changed data with the same prior warm-starts the
-same all-row Newton fit, matching labels and initializing new terms at their prior means.
-A changed prior, invalid cache or missing cache starts a full fit. Cache deletion
-reproduces the posterior. `fit.kind` and `fit.iterations` describe the current call.
-An `Engine` is a snapshot: call `refresh()` after external writes.
-
-Exports and imports use only `howhard-prior-v2`, with encoder and feature vocabulary
-validation, including on an empty store. They contain labeled means, full shared covariances and
-the fixed noise sds. Covariances are multiplied by `transfer.variance_inflation`, default
-2.0. Project terms are excluded by label. Imports validate all keys, names, numerical
-shapes, symmetry and positive definiteness before replacing the destination atomically.
-Native identity-specific family/control terms are excluded from generic prior exports;
-no concrete native identity mapping is transferred. The v1 prior format is refused.
-Shared terms absent from the file use hand-set priors. New-project terms always use
-their independent hand-set priors. With explicit configuration, register custom task
-types before importing them. Zero-config imports accept custom type names with standard
-local policy, retaining their transferred distributions.
+Receipts use `howhard-decision-v4`, requests `howhard-agent-request-v3`, semantic state
+`howhard-semantic-v2`. Older receipts and requests are refused for execution/feedback;
+old receipt forecasts are excluded from replay/report scoring. Existing raw observations
+and semantic memories remain stored. Old posterior/prior artifacts are unused and left
+untouched. Removed interfaces include `--llm`, `HOWHARD_LLM`, `--cache`, `Engine(cache_path=...)`,
+`fit`, posterior/prior attributes, `export-prior`, `import-prior`, and prior/cache/transfer
+configuration. No migration or distribution upload is performed automatically.
 
 ## Python API
 
 ```python
-import json
-from pathlib import Path
 from howhard import Engine
 
-inventory = json.loads(Path("host-candidates.json").read_text())
-engine = Engine()  # optional config path or directory=...
-description = "Make transaction rollback safe"
-choice = engine.pick("specified-implementation", description, native_candidates=inventory, seed=42)
-table = engine.summary("specified-implementation", description, native_candidates=inventory)
-engine.observe_decision(choice["decision_id"], "clean")
-engine.flush()
-engine.export_prior("shared-prior.json")
+engine = Engine()  # State, context, retrieval and feedback need no provider.
+request = engine.prepare("specified-implementation", "Make rollback safe",
+                         native_candidates=[{"model": "actual-host-model", "effort": "high"}])
+# Evaluate baseline_request in an independent model context, then build the response.
+# choice = engine.decide(request["request_id"], response, seed=42)
+# engine.observe_decision(choice["decision_id"], "clean", id="actual-execution")
 ```
 
-Reuse the engine for repeated picks: deterministic summaries are memoized by task text
-and freshly captured project context until refresh. `engine.prior` and `engine.posterior` expose labeled means, covariances and fit
-statistics. The package runs on Python 3.11+ on POSIX systems (the storage lock uses
-`fcntl`). Runtime dependencies are limited to NumPy.
+`Engine(llm=adapter)` accepts an object with `complete(request) -> dict`. Standalone
+`pick` and `summary` lazily resolve `HOWHARD_LLM_COMMAND` or an authenticated Claude CLI.
+Calling-agent `prepare`/`retrieve`/`decide` never invoke a provider. A fresh engine's
+observations return pending learning; apply an external writer response or call
+`memory_learn` explicitly. An engine already holding a provider adapter runs its writer
+after durable observation. `refresh()` reloads external evidence; no fitting occurs.
+Python 3.11+ and POSIX are required; runtime dependencies are limited to NumPy.

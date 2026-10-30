@@ -5,40 +5,37 @@ experience, and reason with persistent semantic memories. Feedback updates predi
 weights and gives an LLM writer an opportunity to add, revise, remove, merge, split or
 restore memories. There is no fixed list of semantic concepts or fixed-size memory bank.
 
-The existing statistical model is retained as a competing predictor and a conservative
-risk guard. The LLM path uses raw task text and available project text, not the lexical
-hash vector as its semantic representation.
+Forecasts come only from the independent no-memory LLM and memory-conditioned overrides.
+No statistical model competes with them or adds a risk floor. Task and project inputs
+remain their original text.
 
-## Start without statistical configuration
+## Provider and calling-agent use
+
+Standalone `pick`/`summary` lazily use an authenticated Claude CLI or the command in
+`HOWHARD_LLM_COMMAND`. Python can supply `Engine(llm=adapter)`. Provider failure or
+absence stops routing explicitly; there is no fallback recommendation and no `--llm`
+mode switch. Commands for state, memory, evidence and the calling-agent protocol need
+no configured provider and do not start nested inference.
 
 ```sh
-howhard pick specified-implementation --candidates /tmp/host-candidates.json --text "Make transaction rollback safe"
-# Execute using the selected model and effort, then record the printed receipt ID:
-howhard observe DECISION_ID clean --tokens 12000 --seconds 45
-howhard memory list
-howhard memory beliefs
-howhard report
+howhard context specified-implementation --candidates /tmp/host-candidates.json --text "Make transaction rollback safe" --json
+# Evaluate baseline_request independently; then supply forecasts and memory overrides:
+howhard decide REQUEST_ID --file /tmp/forecasts.json --json
+howhard observe DECISION_ID clean --id EXECUTION_ID --json
+howhard memory learn-context EXECUTION_ID --json
 ```
 
-The default `auto` backend reuses an installed Claude CLI and its existing authentication.
-The adapter runs in a temporary directory with tools, MCP servers, skills, customizations
-and session persistence disabled. It uses a bounded inference budget. An explicit
-`--llm claude` request fails clearly if unavailable or invalid. `auto` reports a visible
-statistical fallback on provider failure; it never labels that result as LLM reasoning.
-`--llm off` uses the existing statistical workflow without inference calls.
-
-An LLM service still requires access to a model. No statistical tuning or additional
-API key is needed when an authenticated CLI is already present. Standalone use without
-such access can use a command adapter, Python adapter, or the calling-agent protocol
-below. This package does not manufacture credentials or silently invoke a different
-provider.
+An observation made through a fresh engine returns pending learning. Apply the calling
+agent's writer response, or explicitly invoke `memory learn EXECUTION_ID` for provider
+writing. An engine already using a provider adapter also writes automatically after
+observation; failures leave feedback durable and can be retried.
 
 ## Persistent state and real memory operations
 
 Memories live in `memory.sqlite3` within the backend state root reported by `howhard paths`. Each has an ID, content version, title, free-form
 body, project/shared scope, evidence references and parent links. Scope describes intended
 applicability inside this project's store; `shared` does not automatically upload or copy
-memory to other directories. Semantic memory is not included in generic prior exports.
+memory to other directories. Memories remain in this project; there is no generic prior transfer.
 
 ```sh
 howhard memory add --title "Migration boundaries" \
@@ -103,13 +100,13 @@ cache keyed by inputs, model/adapter identity, prompt/settings, evidence and mem
 ## Feedback and approximate belief weights
 
 For the cell actually executed, the system compares each pre-recorded expert forecast
-with the statistical baseline. Log probability ratios for clean/loud/silent outcomes,
+with the independent no-memory LLM forecast. Log probability ratios for clean/loud/silent outcomes,
 plus broad log-normal resource scores when measurements are present, accumulate into
 tempered predictive weights. Older exposures are mildly discounted so weights can adapt.
 All scales and priors ship in `data/semantic.toml`; users do not tune them.
 
 Only explicit, changed memory overrides earn exposure. Unspecified/unretrieved cells
-use the statistical baseline and provide no credit to that memory. A new or edited
+use the independent no-memory LLM forecast and provide no credit to that memory. A new or edited
 memory cannot gain support from a run that preceded its forecast. Feedback on an
 unrelated cell cannot validate a memory-specific claim. Model registry evidence weights
 also scale these updates.
@@ -122,13 +119,12 @@ original run's forecasts against its effective result once, replacing its earlie
 rather than adding another independent run. Original measurements and registry evidence
 weight still apply; an amendment does not create a new forecast exposure.
 
-Selection samples competing predictors and retains the cost objective. Semantic
-intervals use a weighted forecast envelope together with the statistical model's
-uncertainty. The statistical silent-failure upper bound remains a lower floor on the
-cap check: semantic memory can widen it but cannot by itself clear a statistically
-rejected cell. Tiny-weight pessimistic experts do not automatically veto every cell.
-This is an explicit conservative policy heuristic, not a calibrated semantic 97.5%
-posterior guarantee. Results identify the interval method and preserve review fallback.
+Selection samples the LLM and memory experts and retains the cost objective. Intervals
+use the weighted forecast envelope, expanded to contain its weighted mean. The silent
+cap checks this envelope directly, with no fitted statistical floor. Tiny-weight
+pessimistic experts do not automatically veto every cell. This is a heuristic envelope,
+not a calibrated risk guarantee. Results identify the interval method and preserve the
+review-required policy when the cap is unmet.
 
 ## Writer, failures and replay
 
@@ -151,8 +147,9 @@ including a chain that returns to the result the writer originally saw.
 Routing seeds reproduce selection given recorded forecasts. They do not make fresh
 LLM calls deterministic. Cached forecasts and content-addressed receipts support replay;
 operational timing/cache metadata may differ between invocations.
-Receipts use `howhard-decision-v3` for both statistical and semantic decisions.
-Only contextual `howhard-prior-v2` imports/exports are supported.
+Receipts use `howhard-decision-v4` with required LLM forecasts. Requests use
+`howhard-agent-request-v3` and semantic state uses `howhard-semantic-v2`. Old statistical
+receipts cannot be used for new feedback or predictive scoring; raw evidence remains intact.
 
 Native host selection supplies `--candidates FILE` to `context` or `pick` before any
 baseline/reader forecasts. The inventory is generated from actual host controls, not a
@@ -189,7 +186,7 @@ these submissions; they are not included in the package's measured call count.
 Python integrations pass an object with `identity` and `complete(request) -> dict` to
 `Engine(llm=adapter)`. Its calls must be stateless for the isolated baseline. Optional
 `last_usage` reports `seconds`, `cost_usd`, raw `tokens` and resolved `models`.
-`HOWHARD_LLM_COMMAND` may be a JSON argument array; `--llm command` sends
+`HOWHARD_LLM_COMMAND` may be a JSON argument array; the adapter sends
 `{"system": "...", "request": {...}}` to stdin and accepts a JSON object on stdout.
 It can instead return `{"response": {...}, "usage": {...}}`. No shell interpolation is
 used. Timeouts stop the process group. Command identities are hashed so arguments do

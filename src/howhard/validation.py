@@ -5,7 +5,7 @@ import re
 
 
 class HowHardError(ValueError):
-    """Invalid input or an unsuccessful fit, suitable for a CLI diagnostic."""
+    """Invalid input or an unsuccessful operation, suitable for a CLI diagnostic."""
 
 
 def table(value, where):

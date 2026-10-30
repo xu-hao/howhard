@@ -29,8 +29,8 @@ def test_canonical_native_example_preserves_supplied_identity(tmp_path, monkeypa
     workflow = (Path(__file__).resolve().parents[1] / "skills/howhard/references/workflow.md").read_text()
     example = workflow.split("```python\n", 1)[1].split("```", 1)[0]
     exec(compile(example, "canonical-workflow-example", "exec"), {})
-    decision = json.loads(capsys.readouterr().out)
-    assert decision["chosen"]["model"] == "actual-native-model"
-    assert decision["chosen"]["effort"] == "ultra"
-    assert decision["cells"][0]["C_run"] is None
+    request = json.loads(capsys.readouterr().out)
+    assert request["baseline_request"]["cells"][0]["model"] == "actual-native-model"
+    assert request["baseline_request"]["cells"][0]["effort"] == "ultra"
+    assert not request["request"]["cost_policy"]["worker_money_included"]
     assert Engine(directory=tmp_path).raw_rows == []

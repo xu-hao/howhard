@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Remove statistical-only routing, the internal statistical expert/risk floor, lexical
+  features, outcome/resource fitting, posterior caches and generic prior transfer.
+  Routing now requires independent LLM forecasts and semantic memory; missing or failed
+  inference stops explicitly. Remove `--llm`, `HOWHARD_LLM`, `--cache`, prior commands,
+  statistical Python APIs and configuration. State/protocol commands require no provider.
+- Use LLM-reference predictive memory weights and a labeled weighted forecast envelope
+  for risk checks. New receipts/requests use v4/v3 and semantic state v2; old artifacts
+  remain untouched and old forecasts are unscored. Fresh-engine observations leave
+  writer work pending for explicit provider/calling-agent learning.
+
 - Clarify portable skill feedback attribution when native host APIs accept explicit
   model/effort overrides: completed execution can match the requested decision receipt
   without provider attestation; known mismatches use raw feedback and unknown cells

@@ -1,28 +1,26 @@
-"""Public application API: fit once, inspect summaries and make many seeded picks."""
+"""Public application API: prepare LLM requests, retain evidence and select native cells."""
 
 from pathlib import Path
 import secrets
 import time
 from datetime import datetime, timezone
 
-from . import cache, storage
+from . import storage
 from .config import Config, load_config
-from .outcomes import fit
-from .prior import build_prior
-from .regression import fit_regression
-from .selector import choose, summarize
-from .transfer import export_prior, import_prior, read_export
+from .selector import choose, prepare
 from . import decisions
 from .context import FORMAT, canonical, capture_project, validate_text
 from .context import digest
 from .validation import HowHardError
 from .memory import MemoryStore
-from .llm import resolve
+from .llm import LLMError, resolve
 from . import semantic
 
 
 class Engine:
-    def __init__(self, config=None, *, directory=None, state_directory=None, cache_path=None, journal_path=None, llm=None):
+    def __init__(self, config=None, *, directory=None, state_directory=None, journal_path=None, llm=None):
+        if llm is not None and not callable(getattr(llm, "complete", None)):
+            raise LLMError("llm: expected an adapter with complete(request)")
         self.config = config if isinstance(config, Config) else load_config(config, directory=directory, state_directory=state_directory)
         if isinstance(config, Config) and (directory is not None or state_directory is not None):
             from copy import deepcopy
@@ -31,54 +29,34 @@ class Engine:
             project, store, identity_path, identity = roots(directory or config.project_root, explicit=config.explicit,
                                               state_directory=state_directory or config.state_root)
             self.config.project_root, self.config.state_root, self.config.identity_path, self.config.project_identity = project, store, identity_path, identity
-        if cache_path is not None:
-            self.config.data["cache"] = str(Path(cache_path).resolve())
         if journal_path is not None:
             self.config.data["journal"] = str(Path(journal_path).resolve())
         self.config.validate_paths()
-        self.llm, self.backend = resolve(llm)
+        self.llm = llm
+        self.backend = {"mode": "explicit", "backend": str(getattr(llm, "identity", type(llm).__name__))} if llm is not None else {"mode": "calling-agent"}
         self.last_memory_update = {"status": "not-requested"}
         self._summaries = {}
         self.refresh()
         self.memory = MemoryStore(self.config, evidence=lambda: {r["id"] for r in self.raw_rows})
 
-    def refresh(self, *, full=False):
+    def refresh(self):
         config = self.config
         with storage.locked(config):
             from . import native, state
             state.check(config)
             native.apply(config, native.read(config))
-            raw_rows, blobs = storage.snapshot(config)
+            raw_rows, _ = storage.snapshot(config)
             state.claim(config)
         self.raw_rows = raw_rows
         self.rows = storage.effective_rows(config, raw_rows)
-        imported, imported_bytes = None, b""
-        if "import" in config.data["prior"]:
-            path = config.path(config.data["prior"]["import"])
-            if path.exists():
-                imported = read_export(path, config)
-                imported_bytes = path.read_bytes()
-        extra_types = {t: config.task_types.get(t, "standard") for t in imported["vocabularies"]["task_types"]} if imported else None
-        self.prior = build_prior(config, self.rows, extra_types=extra_types, imported=imported)
-        prior_hash, data_hash = cache.hashes(config, blobs, imported_bytes)
-        self.fit_key = [prior_hash, data_hash]
-        path = config.path(config.data["cache"])
-        cached = None if full else cache.load(path, self.prior)
-        start = None
-        if cached is not None and cached[1] == prior_hash:
-            previous = cached[0]
-            exact_labels = all(getattr(previous, b).labels == getattr(self.prior, b).labels for b in ("outcome", "tokens", "time"))
-            if cached[2] == data_hash and exact_labels:
-                previous.outcome.statistics = {"kind": "cached", "iterations": 0, "final_step": 0.0}
-                self.posterior = previous
-                self._summaries.clear()
-                return previous
-            start = previous.outcome
-        self.posterior = cache.Posterior(fit(self.prior, self.rows, start),
-            fit_regression(self.prior, self.rows, "tokens"), fit_regression(self.prior, self.rows, "time"), self.prior)
-        cache.save(path, self.posterior, prior_hash, data_hash)
+        self.evidence_key = digest({"config": config.data, "rows": self.raw_rows,
+                                    "native_models": config.native_models})
         self._summaries.clear()
-        return self.posterior
+
+    def _inference(self):
+        if self.llm is None:
+            self.llm, self.backend = resolve()
+        return self.llm
 
     @property
     def paths(self):
@@ -105,7 +83,7 @@ class Engine:
         context = {"encoder": FORMAT, "task_text": validate_text(task_text), "project_context": capture_project(self.config, project_context)}
         key = task_type, risk, canonical(context), canonical(native_candidates)
         if key not in self._summaries:
-            self._summaries[key] = summarize(self.posterior, self.config, task_type, risk, context, native_candidates=native_candidates)
+            self._summaries[key] = prepare(self.config, task_type, risk, context, native_candidates=native_candidates)
         return self._summaries[key]
 
     def summary(self, task_type, task_text="", *, project_context=None, risk=None, native_candidates=None):
@@ -142,37 +120,18 @@ class Engine:
             raise HowHardError("seed: expected a non-negative integer")
         inventory = self._register(native_candidates)
         prepared = self._semantic_prepared(self._prepared(task_type, risk, task_text, project_context, inventory))
-        parts = None
-        if "semantic" in prepared[0]:
-            seed = secrets.randbits(64) if seed is None else seed
-            if type(seed) is not int or seed < 0:
-                raise HowHardError("seed: expected a non-negative integer")
-            parts = semantic.sample(prepared, seed, self.posterior.prior.noise)
-        result = choose(prepared, self.posterior, self.config, seed, parts)
+        seed = secrets.randbits(64) if seed is None else seed
+        parts = semantic.sample(prepared, seed)
+        result = choose(prepared, self.config, seed, parts)
         result["decision_id"] = decisions.save(self.config, result)
         return result
 
     def _semantic_prepared(self, prepared, response=None, payload=None, snapshot=None):
-        if self.llm is None and response is None:
-            if self.backend["mode"] == "auto":
-                from copy import deepcopy
-                result = deepcopy(prepared[0])
-                result["backend"] = {"mode": "statistical-fallback", "reason": self.backend.get("reason", "No LLM adapter is available")}
-                return result, prepared[1], prepared[2]
-            return prepared
         if payload is None:
             payload, snapshot = semantic.request(self, prepared)
         if response is None:
-            try:
-                response, payload, usage = semantic.complete(self, payload, snapshot)
-            except HowHardError as exc:
-                if self.backend["mode"] != "auto":
-                    raise
-                from copy import deepcopy
-                result = deepcopy(prepared[0])
-                result["backend"] = {"mode": "statistical-fallback", "reason": str(exc)}
-                result["routing_overhead"] = deepcopy(getattr(self, "last_inference_usage", {"cost_usd": None, "seconds": None}))
-                return result, prepared[1], prepared[2]
+            self._inference()
+            response, payload, usage = semantic.complete(self, payload, snapshot)
         else:
             response = semantic.validate_response(response, payload, snapshot)
             semantic.external_submission(self, payload)
@@ -183,6 +142,7 @@ class Engine:
         return semantic.beliefs(self)
 
     def memory_learn(self, evidence_id):
+        self._inference()
         self.last_memory_update = semantic.learn(self, evidence_id)
         return self.last_memory_update
 
@@ -190,18 +150,19 @@ class Engine:
         inventory = self._register(native_candidates)
         prepared = self._prepared(task_type, risk, task_text, project_context, inventory)
         payload, snapshot = semantic.request(self, prepared)
-        bundle = {"format": "howhard-agent-request-v2", "fit_key": self.fit_key, "payload": payload, "snapshot": snapshot}
+        bundle = {"format": "howhard-agent-request-v3", "evidence_key": self.evidence_key, "payload": payload, "snapshot": snapshot}
         bundle["native_candidates"] = inventory
         bundle["project_root"] = str(self.config.project_root)
         return self._save_request(bundle)
 
     def _save_request(self, bundle):
-        from .transfer import atomic_write
+        from .files import atomic_write
         request_id = digest(bundle)
         atomic_write(self.config.state_root / "requests" / f"{request_id}.json", canonical(bundle) + b"\n")
         return {"request_id": request_id, "request": bundle["payload"], "baseline_request": semantic.baseline_request(bundle["payload"])}
 
     def _load_request(self, request_id):
+        self.refresh()
         import json
         import re
         if not isinstance(request_id, str) or not re.fullmatch(r"[0-9a-f]{64}", request_id):
@@ -211,12 +172,12 @@ class Engine:
         except (OSError, ValueError) as exc:
             raise HowHardError("request_id: unavailable or invalid agent request") from exc
         from .validation import keys
-        keys(bundle, ["format", "fit_key", "payload", "snapshot", "native_candidates", "project_root"], where="request")
-        if digest(bundle) != request_id or bundle["format"] != "howhard-agent-request-v2":
+        keys(bundle, ["format", "evidence_key", "payload", "snapshot", "native_candidates", "project_root"], where="request")
+        if digest(bundle) != request_id or bundle["format"] != "howhard-agent-request-v3":
             raise HowHardError("request_id: request integrity or format mismatch")
         if bundle["project_root"] != str(self.config.project_root):
             raise HowHardError("request_id: belongs to another worktree; prepare in the current project")
-        if bundle["fit_key"] != self.fit_key or bundle["snapshot"]["revision"] != self.memory.snapshot()["revision"]:
+        if bundle["evidence_key"] != self.evidence_key or bundle["snapshot"]["revision"] != self.memory.snapshot()["revision"]:
             raise HowHardError("request_id: stale evidence or memory; prepare a new decision")
         return bundle
 
@@ -251,8 +212,8 @@ class Engine:
         seed = secrets.randbits(64) if seed is None else seed
         if type(seed) is not int or seed < 0:
             raise HowHardError("seed: expected non-negative integer")
-        parts = semantic.sample(prepared, seed, self.posterior.prior.noise)
-        result = choose(prepared, self.posterior, self.config, seed, parts)
+        parts = semantic.sample(prepared, seed)
+        result = choose(prepared, self.config, seed, parts)
         result["decision_id"] = decisions.save(self.config, result)
         return result
 
@@ -299,18 +260,10 @@ class Engine:
 
     def save_decision(self, decision, path):
         receipt = decisions.load(self.config, decision)
-        from .transfer import atomic_write
+        from .files import atomic_write
         atomic_write(path, canonical(receipt) + b"\n")
 
     def flush(self):
         ids = storage.flush(self.config)
         self.refresh()
         return ids
-
-    def export_prior(self, path):
-        return export_prior(self.posterior, self.config, path)
-
-    def import_prior(self, path):
-        destination = import_prior(self.config, path)
-        self.refresh()
-        return destination
