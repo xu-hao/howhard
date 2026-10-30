@@ -2,14 +2,10 @@
 project = "local"
 on_cap_unmet = "flag-review"
 journal = ".howhard/pending.jsonl"
-cache = ".howhard/posterior.npz"
 
 [[logs]]
 path = ".howhard/outcomes.jsonl"
 project = "local"
-
-[prior]
-import = ".howhard/imported-prior.json"
 
 # USD costs of rework and escaped defects; waiting is priced per hour.
 [classes.critical]
@@ -38,7 +34,7 @@ C_silent = 10.0
 lambda_per_hour = 10.0
 epsilon = 0.20
 
-# Known identity mappings calibrate priors; the host supplies candidates and prices.
+# Known identity mappings label evidence; the host supplies candidates and prices.
 [models.claude-haiku-5-5]
 family = "haiku"
 efforts = ["low", "medium", "high", "xhigh", "max"]
@@ -55,3 +51,21 @@ weight = 1.0
 family = "fable"
 efforts = ["low", "medium", "high", "xhigh", "max"]
 weight = 1.0
+
+[task_types]
+contract-change = "contract"
+sensitive-change = "critical"
+specified-implementation = "standard"
+integration-recovery = "standard"
+guarded-landing = "standard"
+docs-recording-rulings = "docs"
+docs-settled-rules = "docs"
+probe-or-measurement = "standard"
+read-only-survey = "routine"
+live-operation-prep = "critical"
+live-checklist-run = "critical"
+release-qualification = "critical"
+preserving-rollout = "critical"
+environment-setup = "standard"
+bookkeeping = "routine"
+worktree-cleanup = "routine"

@@ -1,10 +1,10 @@
 # howhard documentation
 
 - [Quickstart](quickstart.md) — install, choose, record an outcome and learn, with no setup.
-- [Model and storage contracts](reference.md) — objective, Bayesian models, strict rows,
-  reproducibility, cache and portable learning.
-- [Task text and changing project context](context.md) — local text encoding, project
-  snapshots, contextual models and decision receipts.
+- [Model and storage contracts](reference.md) — LLM forecasts, cost/risk selection, strict rows,
+  reproducibility and storage.
+- [Task text and changing project context](context.md) — original task/project text, immutable
+  snapshots and decision receipts.
 - [LLM reasoning and writable semantic memory](semantic-memory.md) — reader/writer
   adapters, memory operations, feedback weights and agent tools.
 - [Reusable skill and host installation](skills.md) — Codex, Claude Code and Antigravity

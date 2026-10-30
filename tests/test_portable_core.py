@@ -5,7 +5,6 @@ import json
 from pathlib import Path
 import subprocess
 
-import numpy as np
 import pytest
 
 from conftest import inventory
@@ -20,7 +19,7 @@ def native(model="host-model-a", effort="high", **options):
 
 
 def test_native_candidates_precede_baseline_and_survive_feedback_reload(tmp_path):
-    engine = Engine(directory=tmp_path, llm="off")
+    engine = Engine(directory=tmp_path)
     inventory = [native(), native("host-model-b", "ultra")]
     request = engine.prepare("task", "Repair rollback", native_candidates=inventory)
     cells = request["baseline_request"]["cells"]
@@ -31,7 +30,7 @@ def test_native_candidates_precede_baseline_and_survive_feedback_reload(tmp_path
     response["memory_forecasts"] = []
     choice = engine.decide(request["request_id"], response, seed=3)
     assert choice["chosen"]["model"] in {c["model"] for c in inventory}
-    fresh = Engine(directory=tmp_path, llm="off")
+    fresh = Engine(directory=tmp_path)
     observed = fresh.observe_decision(choice["decision_id"], "loud", id="execution", tokens=100, cost_usd=.2)
     assert observed["model"] == choice["chosen"]["model"]
     assert fresh.evidence("execution")["decision_id"] == choice["decision_id"]
@@ -39,7 +38,7 @@ def test_native_candidates_precede_baseline_and_survive_feedback_reload(tmp_path
 
 
 def test_any_unpriced_candidate_omits_worker_money_for_every_candidate(tmp_path):
-    engine = Engine(directory=tmp_path, llm="off")
+    engine = Engine(directory=tmp_path)
     a = engine.pick("task", native_candidates=[native(usd_per_mtok=1), native("host-model-b")], seed=3)
     b = engine.pick("task", native_candidates=[native(usd_per_mtok=1e9), native("host-model-b")], seed=3)
     assert a["chosen"] == b["chosen"]
@@ -59,8 +58,11 @@ def test_any_unpriced_candidate_omits_worker_money_for_every_candidate(tmp_path)
 
 
 def test_matching_retry_is_idempotent_conflict_is_refused_and_correction_writer_replays(tmp_path):
-    engine = Engine(directory=tmp_path, llm="off")
-    choice = engine.pick("task", "Repair rollback", native_candidates=[native()], seed=3)
+    engine = Engine(directory=tmp_path)
+    request = engine.prepare("task", "Repair rollback", native_candidates=[native()])
+    response = FixtureLLM().complete(request["baseline_request"])
+    response["memory_forecasts"] = []
+    choice = engine.decide(request["request_id"], response, seed=3)
     first = engine.observe_decision(choice["decision_id"], "clean", id="execution", tokens=100)
     snapshot = deepcopy(engine.raw_rows)
     assert engine.observe_decision(choice["decision_id"], "clean", id="execution", tokens=100) == first
@@ -91,7 +93,7 @@ def test_matching_retry_is_idempotent_conflict_is_refused_and_correction_writer_
 
 def test_raw_retry_preserves_first_auto_snapshot_after_project_changes(tmp_path):
     (tmp_path / "README.md").write_text("Before execution")
-    engine = Engine(directory=tmp_path, llm="off")
+    engine = Engine(directory=tmp_path)
     engine.pick("task", native_candidates=[native()], seed=3)
     first = engine.observe("task", "host-model-a", "high", "clean", task_text="Repair rollback", id="execution", tokens=100, note="checked")
     before = deepcopy(engine.raw_rows)
@@ -107,7 +109,7 @@ def test_raw_retry_preserves_first_auto_snapshot_after_project_changes(tmp_path)
 
 
 def test_raw_retry_retains_derived_risk_and_exact_effort(project):
-    engine = Engine(project(), llm="off")
+    engine = Engine(project())
     first = engine.observe("Y", "claude-opus-5-5", "high", "clean", id="execution")
     engine.config.data["task_types"]["Y"] = "critical"
     assert engine.observe("Y", "claude-opus-5-5", "high", "clean", id="execution") == first
@@ -121,13 +123,13 @@ def test_cli_native_input_evidence_and_paths_without_project_adapter(tmp_path, m
     monkeypatch.chdir(tmp_path)
     inventory = tmp_path / "inventory.json"
     inventory.write_text(json.dumps([native()]))
-    assert main(["pick", "task", "--candidates", str(inventory), "--llm", "off", "--json"]) == 0
+    assert main(["pick", "task", "--candidates", str(inventory), "--json"]) == 0
     decision = json.loads(capsys.readouterr().out)
-    assert main(["observe", decision["decision_id"], "clean", "--id", "execution", "--llm", "off", "--json"]) == 0
+    assert main(["observe", decision["decision_id"], "clean", "--id", "execution", "--json"]) == 0
     capsys.readouterr()
-    assert main(["evidence", "execution", "--raw", "--llm", "off", "--json"]) == 0
+    assert main(["evidence", "execution", "--raw", "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["id"] == "execution"
-    assert main(["paths", "--llm", "off", "--json"]) == 0
+    assert main(["paths", "--json"]) == 0
     paths = json.loads(capsys.readouterr().out)
     assert paths["project_root"] == str(tmp_path)
     assert paths["state_root"] == str(tmp_path / ".howhard")
@@ -147,13 +149,13 @@ def test_git_worktrees_share_store_capture_current_tree_and_isolate_repositories
     try:
         for index, tree in enumerate(worktrees):
             git(repo, "worktree", "add", "-qb", f"task-{index}", str(tree))
-        first = Engine(directory=worktrees[0], llm="off")
+        first = Engine(directory=worktrees[0])
         request = first.prepare("task", "Repair rollback", native_candidates=[native()])
         chosen = first.pick("task", "Repair rollback", native_candidates=[native()], seed=3)
         first.observe_decision(chosen["decision_id"], "clean", id="execution")
         first.memory.add("Review", "A provisional lesson")
         (worktrees[1] / "README.md").write_text("Different current worktree")
-        second = Engine(directory=worktrees[1], llm="off")
+        second = Engine(directory=worktrees[1])
         assert second.config.state_root == first.config.state_root
         assert len(second.rows) == 1 and len(second.memory.list()) == 1
         response = FixtureLLM().complete(request["baseline_request"])
@@ -170,7 +172,7 @@ def test_git_worktrees_share_store_capture_current_tree_and_isolate_repositories
         other = tmp_path / "other"
         other.mkdir()
         git(other, "init", "-q")
-        isolated = Engine(directory=other, llm="off")
+        isolated = Engine(directory=other)
         assert isolated.config.state_root != first.config.state_root
         assert isolated.rows == [] and isolated.memory.list() == []
     finally:
@@ -179,22 +181,9 @@ def test_git_worktrees_share_store_capture_current_tree_and_isolate_repositories
                 git(repo, "worktree", "remove", "--force", str(tree))
 
 
-def test_native_models_have_distinct_neutral_family_terms_and_no_identity_transfer(tmp_path):
-    engine = Engine(directory=tmp_path, llm="off")
-    choice = engine.pick("task", native_candidates=[native(), native("host-model-b")], seed=3)
-    families = {c["model"]: c["family"] for c in choice["cells"]}
-    for family in families.values():
-        assert engine.prior.outcome.mean[engine.prior.outcome.index(f"loud.b.{family}")] == 0
-    engine.observe("task", "host-model-a", "high", "loud", id="execution")
-    assert engine.posterior.outcome.mean[engine.posterior.outcome.index(f"loud.b.{families['host-model-a']}")] > 0
-    assert engine.posterior.outcome.mean[engine.posterior.outcome.index(f"loud.b.{families['host-model-b']}")] == 0
-    exported = engine.export_prior(tmp_path / "prior.json")
-    assert not any(family in json.dumps(exported) for family in families.values())
-
-
 @pytest.mark.parametrize("candidate", [native(effort=None), native(effort="model_default"), native(usd_per_mtok=-1)])
 def test_invalid_native_inventory_does_not_register_or_observe(tmp_path, candidate):
-    engine = Engine(directory=tmp_path, llm="off")
+    engine = Engine(directory=tmp_path)
     with pytest.raises(HowHardError):
         engine.prepare("task", native_candidates=[candidate])
     assert not (engine.config.state_root / "native-models.json").exists()
@@ -205,13 +194,13 @@ def test_foreign_store_refusal_preserves_all_contents(tmp_path):
     first_dir, other_dir = tmp_path / "first", tmp_path / "other"
     first_dir.mkdir()
     other_dir.mkdir()
-    first = Engine(directory=first_dir, llm="off")
+    first = Engine(directory=first_dir)
     first.observe("task", "claude-opus-5-5", "high", "clean", id="execution")
     first.memory.add("Review", "Provisional lesson")
     store = first.config.state_root
     before = {p.relative_to(store): p.read_bytes() for p in store.rglob("*") if p.is_file()}
     with pytest.raises(HowHardError, match="another project"):
-        Engine(directory=other_dir, state_directory=store, llm="off")
+        Engine(directory=other_dir, state_directory=store)
     assert before == {p.relative_to(store): p.read_bytes() for p in store.rglob("*") if p.is_file()}
     assert not (other_dir / ".howhard").exists()
 
@@ -226,7 +215,7 @@ def test_unclaimed_foreign_memory_database_is_not_adopted(tmp_path):
         connection.execute("INSERT INTO unrelated VALUES ('keep')")
     before = {p.name: p.read_bytes() for p in store.iterdir()}
     with pytest.raises(HowHardError, match="memory"):
-        Engine(directory=tmp_path, llm="off")
+        Engine(directory=tmp_path)
     assert before == {p.name: p.read_bytes() for p in store.iterdir()}
 
 
@@ -234,7 +223,7 @@ def test_invalid_cli_inventory_does_not_create_state(tmp_path, monkeypatch, caps
     monkeypatch.chdir(tmp_path)
     inventory = tmp_path / "inventory.json"
     inventory.write_text(json.dumps([native(), native("host-b", effort=None)]))
-    assert main(["context", "task", "--candidates", str(inventory), "--llm", "off", "--json"]) == 2
+    assert main(["context", "task", "--candidates", str(inventory), "--json"]) == 2
     assert "effort" in capsys.readouterr().err
     assert not (tmp_path / ".howhard").exists()
 
@@ -242,7 +231,7 @@ def test_invalid_cli_inventory_does_not_create_state(tmp_path, monkeypatch, caps
 def test_native_raw_actual_identity_admission_retry_and_conflict(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "README.md").write_text("Original context")
-    arguments = ["observe", "task", "actual-host-model", "ultra", "loud", "--native", "--id", "execution", "--text", "Repair rollback", "--note", "Actual execution differed from recommendation", "--llm", "off", "--json"]
+    arguments = ["observe", "task", "actual-host-model", "ultra", "loud", "--native", "--id", "execution", "--text", "Repair rollback", "--note", "Actual execution differed from recommendation", "--json"]
     assert main(arguments) == 0
     original = json.loads(capsys.readouterr().out)["observed"]
     assert original["model"] == "actual-host-model" and original["effort"] == "ultra"
@@ -250,7 +239,7 @@ def test_native_raw_actual_identity_admission_retry_and_conflict(tmp_path, monke
     (tmp_path / "README.md").write_text("Later current context")
     assert main(arguments) == 0
     assert json.loads(capsys.readouterr().out)["observed"] == original
-    engine = Engine(directory=tmp_path, llm="off")
+    engine = Engine(directory=tmp_path)
     registry = (engine.config.state_root / "native-models.json").read_bytes()
     rows = deepcopy(engine.raw_rows)
     for change in ({"id": "execution"}, {"id": "bad-measurement", "tokens": -1}):
@@ -258,16 +247,16 @@ def test_native_raw_actual_identity_admission_retry_and_conflict(tmp_path, monke
             engine.observe("task", "different-new-model", "ultra", "loud", native=True, **change)
         assert (engine.config.state_root / "native-models.json").read_bytes() == registry
         assert engine.raw_rows == rows
-    assert Engine(directory=tmp_path, llm="off").evidence("execution")["model"] == "actual-host-model"
+    assert Engine(directory=tmp_path).evidence("execution")["model"] == "actual-host-model"
 
 
 def test_concurrent_native_inventory_admission_preserves_both_identities(tmp_path):
     from concurrent.futures import ThreadPoolExecutor
     def prepare(model):
-        return Engine(directory=tmp_path, llm="off").prepare("task", native_candidates=[native(model)])
+        return Engine(directory=tmp_path).prepare("task", native_candidates=[native(model)])
     with ThreadPoolExecutor(max_workers=2) as pool:
         requests = list(pool.map(prepare, ["host-a", "host-b"]))
-    models = Engine(directory=tmp_path, llm="off").config.native_models
+    models = Engine(directory=tmp_path).config.native_models
     assert set(models) == {"host-a", "host-b"}
     assert all(len(request["baseline_request"]["cells"]) == 1 for request in requests)
 
@@ -286,15 +275,15 @@ def test_git_ignores_old_store_and_preserves_explicit_config(tmp_path):
     (old_store / "outcomes.jsonl").write_bytes(b"")
     try:
         git("worktree", "add", "-qb", "work", str(tree))
-        engine = Engine(directory=tree, llm="off")
+        engine = Engine(directory=tree)
         assert engine.config.state_root == repo / ".git/howhard"
         assert engine.config.project_root == tree
         assert (old_store / "outcomes.jsonl").read_bytes() == b""
         assert (repo / ".git/howhard").exists()
-        (tree / "howhard.toml").write_text('on_cap_unmet = "flag-review"\n[prior.overrides.outcome.loud.a]\nmean = -1.2\nsd = 0.5\n')
-        configured = Engine(directory=tree, llm="off")
+        (tree / "howhard.toml").write_text('on_cap_unmet = "flag-review"\n[classes.standard]\nC_loud = 12.0\n')
+        configured = Engine(directory=tree)
         assert configured.config.state_root == tree / ".howhard"
-        assert configured.config.prior["outcome"]["loud"]["a"]["mean"] == -1.2
+        assert configured.config.data["classes"]["standard"]["C_loud"] == 12.0
         assert engine.config.state_root == repo / ".git/howhard"
     finally:
         if tree.exists():
@@ -303,7 +292,7 @@ def test_git_ignores_old_store_and_preserves_explicit_config(tmp_path):
 
 def test_writer_context_contains_original_and_all_correction_notes(tmp_path):
     from howhard.report import report
-    engine = Engine(directory=tmp_path, llm="off")
+    engine = Engine(directory=tmp_path)
     engine.observe("task", "actual-host-model", "high", "clean", native=True, id="execution",
                    note="Initial assessment", tokens=100, cost_usd=.2)
     original_key = engine.memory_learning_context("execution")["event_key"]
@@ -330,13 +319,13 @@ def test_initialized_project_and_state_survive_directory_move(tmp_path, git_proj
     (project / "README.md").write_text("Project before moving")
     if git_project:
         subprocess.run(["git", "-C", str(project), "init", "-q"], check=True)
-    engine = Engine(directory=project, llm="off")
+    engine = Engine(directory=project)
     decision = engine.pick("task", native_candidates=[native("actual-model")], seed=3)
     engine.observe("task", "actual-model", "high", "clean", native=True, id="execution")
     entry = engine.memory.add("Review", "A real retained provisional lesson")
     moved = tmp_path / "moved"
     project.rename(moved)
-    restored = Engine(directory=moved, llm="off")
+    restored = Engine(directory=moved)
     assert restored.evidence("execution")["model"] == "actual-model"
     assert restored.memory.read(entry["id"])["body"] == entry["body"]
     assert restored.config.project_identity == engine.config.project_identity
@@ -348,7 +337,7 @@ def test_new_receipts_refuse_different_repository_with_same_project_label(tmp_pa
     for project in projects:
         project.mkdir()
         subprocess.run(["git", "-C", str(project), "init", "-q"], check=True)
-    first, other = (Engine(directory=p, llm="off") for p in projects)
+    first, other = (Engine(directory=p) for p in projects)
     choice = first.pick("task", seed=3, native_candidates=inventory())
     path = first.config.state_root / "decisions" / f"{choice['decision_id']}.json"
     assert first.config.data["project"] == other.config.data["project"] == "local"
@@ -363,7 +352,7 @@ def test_state_directory_cannot_replace_or_contain_capture_root(tmp_path, ancest
     project.mkdir()
     (project / "README.md").write_text("Keep this project source")
     with pytest.raises(HowHardError, match="capture root"):
-        Engine(directory=project, state_directory=tmp_path if ancestor else project, llm="off")
+        Engine(directory=project, state_directory=tmp_path if ancestor else project)
     assert sorted(p.name for p in project.iterdir()) == ["README.md"]
 
 
@@ -373,7 +362,7 @@ def test_default_state_symlink_cannot_resolve_to_capture_root(tmp_path):
     (tmp_path / ".howhard").symlink_to(tmp_path, target_is_directory=True)
     before = sorted(p.name for p in tmp_path.iterdir())
     with pytest.raises(HowHardError, match="capture root"):
-        Engine(directory=tmp_path, llm="off")
+        Engine(directory=tmp_path)
     assert sorted(p.name for p in tmp_path.iterdir()) == before
 
 
@@ -381,7 +370,7 @@ def test_custom_nested_state_is_excluded_from_capture_and_retrieval(tmp_path):
     (tmp_path / "README.md").write_text("Current source")
     (tmp_path / "main.py").write_text("def rollback(): pass\n")
     state = tmp_path / "custom-learning-store"
-    engine = Engine(directory=tmp_path, state_directory=state, llm="off")
+    engine = Engine(directory=tmp_path, state_directory=state)
     first = engine.pick("task", native_candidates=[native()], seed=3)
     engine.memory.add("Lesson", "Learning state is not source context")
     (state / "lesson.md").write_text("Private learned notes")

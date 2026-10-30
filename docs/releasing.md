@@ -5,7 +5,7 @@ single source is `src/howhard/__init__.py`; setuptools reads it dynamically, `--
 prints it, and Sphinx uses the same value. Use stable `MAJOR.MINOR.PATCH` versions.
 Increment the patch for compatible fixes, the minor for compatible additions, and the
 major for incompatible public interfaces. While below 1.0, document any incompatible
-change explicitly. Cache and prior format versions are separate compatibility contracts.
+change explicitly. Receipt and request format versions are separate compatibility contracts.
 Keep the version fields in the portable, Claude Code and Antigravity plugin manifests
 in sync with that Python version; distribution validation checks them in the source archive.
 

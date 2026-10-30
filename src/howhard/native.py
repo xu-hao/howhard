@@ -104,7 +104,7 @@ def plan(config, candidates):
 
 
 def persist(config, models, updated):
-    from .transfer import atomic_write
+    from .files import atomic_write
     if updated != models:
         atomic_write(config.state_root / "native-models.json", (json.dumps({"format": FORMAT, "models": updated}, sort_keys=True) + "\n").encode())
     apply(config, updated)

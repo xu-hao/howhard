@@ -17,7 +17,7 @@ agc run --label "howhard tests" --resource cpu=1 -- .venv/bin/python -m pytest
 Use the local AGCoord installation for checks and declare resources. Do not submit nested
 coordinator commands from admitted jobs. Tests use synthetic configs and log files in
 their own temporary directories, exercise public behavior, and own all state they create.
-Statistical tests use fixed seeds. The 1,000-row refit has a two-second performance budget.
+Selection tests use fixed seeds and explicit fixture forecasts; never spend provider tokens in checks.
 Limit BLAS to the granted CPU count when running numerical checks.
 
 Update the affected canonical documents, list new documents in the index, and record

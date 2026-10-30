@@ -1,6 +1,5 @@
 from copy import deepcopy
 import json
-import numpy as np
 import pytest
 
 from howhard import Engine
@@ -81,7 +80,6 @@ def test_amendment_chain_retains_original_cell_project_and_cost(project):
     assert effective["task_type"] == "X" and effective["family"] == "opus"
     assert effective["tokens"] == 10000 and effective["cost_usd"] == .5
     assert effective["project"] == "local"
-    assert not (engine.posterior.tokens.mean == engine.prior.tokens.mean).all()
 
 
 @pytest.mark.parametrize("initial,corrections", [
@@ -106,13 +104,7 @@ def test_outcome_corrections_replace_original_evidence_once(project, initial, co
         expected_config = project(rows=[{**original, "outcome": outcome, "cause": cause}])
         expected_config.data["models"][original["model"]]["weight"] = .4
         expected = Engine(expected_config)
-        for block in ("outcome", "tokens", "time"):
-            actual_fit, expected_fit = getattr(engine.posterior, block), getattr(expected.posterior, block)
-            assert actual_fit.labels == expected_fit.labels
-            np.testing.assert_allclose(actual_fit.mean, expected_fit.mean, atol=1e-6, rtol=0)
-            np.testing.assert_allclose(actual_fit.covariance, expected_fit.covariance, atol=1e-6, rtol=0)
-    engine.flush()
-    assert Engine(config).rows == engine.rows
+        assert engine.rows[0]["outcome"] == expected.rows[0]["outcome"]
 
 
 def test_journal_amendment_can_target_an_existing_log_row(project):

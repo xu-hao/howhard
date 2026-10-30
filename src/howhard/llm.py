@@ -121,27 +121,18 @@ class ClaudeCLI:
         return value
 
 
-def resolve(value=None):
-    value = os.environ.get("HOWHARD_LLM", "auto") if value is None else value
-    if hasattr(value, "complete"):
-        return value, {"mode": "explicit", "backend": str(getattr(value, "identity", type(value).__name__))}
-    if value == "off":
-        return None, {"mode": "off", "backend": "statistical", "reason": "LLM inference disabled"}
-    if value not in ("auto", "claude", "command"):
-        raise LLMError("llm: expected auto, off, claude, command, or an adapter with complete(request)")
+def resolve():
+    if "HOWHARD_LLM" in os.environ:
+        raise LLMError("HOWHARD_LLM modes were removed; supply an adapter or use the calling-agent protocol")
     command = os.environ.get("HOWHARD_LLM_COMMAND")
-    if command and value in ("auto", "command"):
+    if command:
         try:
             adapter = CommandLLM(json.loads(command))
         except ValueError as exc:
             raise LLMError("HOWHARD_LLM_COMMAND must be a JSON argument array") from exc
-        return adapter, {"mode": value, "backend": adapter.identity}
+        return adapter, {"mode": "provider", "backend": adapter.identity}
     try:
-        if value == "command":
-            raise LLMError("command backend requires HOWHARD_LLM_COMMAND")
         adapter = ClaudeCLI()
-        return adapter, {"mode": value, "backend": adapter.identity}
     except LLMError as exc:
-        if value != "auto":
-            raise
-        return None, {"mode": "auto", "backend": "statistical", "reason": str(exc)}
+        raise LLMError(f"{exc}. Use context/decide with calling-agent forecasts or configure HOWHARD_LLM_COMMAND") from exc
+    return adapter, {"mode": "provider", "backend": adapter.identity}
