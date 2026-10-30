@@ -1,0 +1,419 @@
+{
+  "format": "howhard-rule-benchmark-v1",
+  "provenance": "Authored, controlled diagnostic scenarios. No production incident corpus, empirical task distribution or field routing-quality claim. Labels and rationales are grading-only.",
+  "rules": [
+    {
+      "id": "schema",
+      "applies_when": "Changing persisted database data or schema where existing records must survive the change.",
+      "recommendation": "Plan rollback and recovery verification before applying the migration.",
+      "exceptions": "Describing a migration without changing persisted data or schema does not qualify."
+    },
+    {
+      "id": "docs",
+      "applies_when": "Changing only documentation or comments, with executable behavior and persistent data left unchanged.",
+      "recommendation": "Review wording, links and examples; use documentation-specific checks.",
+      "exceptions": "A task that also modifies executable behavior is not documentation-only."
+    },
+    {
+      "id": "contract",
+      "applies_when": "Changing a wire format or interface shared by independently updated producers and consumers.",
+      "recommendation": "Check both sides and compatibility across deployment versions.",
+      "exceptions": "An internal refactor that preserves the shared interface does not qualify."
+    },
+    {
+      "id": "concurrency",
+      "applies_when": "Changing behavior that depends on overlapping operations, asynchronous ordering, races or cancellation.",
+      "recommendation": "Prove the relevant interleavings with observable overlap and bounded synchronization.",
+      "exceptions": "A description of concurrent code without any behavior change does not qualify."
+    },
+    {
+      "id": "money",
+      "applies_when": "Changing executable calculations or actions that determine charges, credits, refunds or monetary amounts.",
+      "recommendation": "Check exact accounting, rounding and idempotency at the money boundary.",
+      "exceptions": "Pricing documentation, spelling fixes and narrative billing examples alone do not qualify."
+    },
+    {
+      "id": "dependency",
+      "applies_when": "Changing an actual third-party package requirement, resolved version or dependency lock.",
+      "recommendation": "Check release compatibility and exercise affected integration boundaries.",
+      "exceptions": "Editing documentation that mentions a version while preserving requirements and locks does not qualify."
+    },
+    {
+      "id": "rollout",
+      "applies_when": "Applying a prepared change to an already-running installation while preserving its state.",
+      "recommendation": "Use a reviewed preserving rollout with preflight, verification and a recovery path.",
+      "exceptions": "Offline builds, release preparation and instructions alone are not an actual rollout."
+    },
+    {
+      "id": "clarify",
+      "applies_when": "A requested change lacks a concrete affected component or enough desired behavior to choose an implementation.",
+      "recommendation": "Obtain the missing scope or acceptance facts before committing to an implementation.",
+      "exceptions": "A concrete task with a named component and desired behavior does not qualify."
+    }
+  ],
+  "cases": [
+    {
+      "id": "schema-column",
+      "category": "paraphrase",
+      "task": "Add a non-null preferred-language column to the customer table and backfill existing records without losing them.",
+      "applicable": [
+        "schema"
+      ],
+      "rationale": "This changes persisted schema and existing records."
+    },
+    {
+      "id": "schema-split",
+      "category": "paraphrase",
+      "task": "Split an existing catalog table into two tables, migrating all stored entries intact.",
+      "applicable": [
+        "schema"
+      ],
+      "rationale": "Persisted structure and data change."
+    },
+    {
+      "id": "schema-backfill",
+      "category": "paraphrase",
+      "task": "Replace stored legacy status values with the new enum values while retaining a recoverable copy.",
+      "applicable": [
+        "schema"
+      ],
+      "rationale": "This transforms existing stored data."
+    },
+    {
+      "id": "schema-key",
+      "category": "paraphrase",
+      "task": "Rename the persisted settings key and convert all previously saved settings to the new name.",
+      "applicable": [
+        "schema"
+      ],
+      "rationale": "Existing persisted records must be converted."
+    },
+    {
+      "id": "schema-plus-rollout",
+      "category": "conjunction",
+      "task": "Apply the prepared table migration to the running installation, preserving its existing rows and service state.",
+      "applicable": [
+        "schema",
+        "rollout"
+      ],
+      "rationale": "Both persistent migration and actual live application are explicit."
+    },
+    {
+      "id": "docs-refund",
+      "category": "action-overlap",
+      "task": "Only fix the Markdown refund guide describing charges, rounding and retry idempotency; leave code and data untouched.",
+      "applicable": [
+        "docs"
+      ],
+      "rationale": "Money vocabulary describes documentation, not executable money behavior."
+    },
+    {
+      "id": "docs-migration",
+      "category": "action-overlap",
+      "task": "Rewrite the database-schema migration tutorial and its rollback-test explanations. This is documentation only; do not run or alter migrations.",
+      "applicable": [
+        "docs"
+      ],
+      "rationale": "Migration and rollback vocabulary does not satisfy the schema trigger."
+    },
+    {
+      "id": "docs-concurrency",
+      "category": "negation",
+      "task": "Correct comments explaining races and asynchronous cancellation; do not alter any executable statement.",
+      "applicable": [
+        "docs"
+      ],
+      "rationale": "Concurrent behavior is explicitly unchanged."
+    },
+    {
+      "id": "docs-rollout",
+      "category": "negation",
+      "task": "Proofread the preserving-rollout checklist and recovery instructions without executing a deployment or changing software.",
+      "applicable": [
+        "docs"
+      ],
+      "rationale": "The installation is not being changed."
+    },
+    {
+      "id": "docs-dependency",
+      "category": "exception",
+      "task": "Update the README explanation of supported package versions while leaving package requirements and the lockfile byte-for-byte unchanged.",
+      "applicable": [
+        "docs"
+      ],
+      "rationale": "A documented version is not an actual dependency update."
+    },
+    {
+      "id": "contract-message",
+      "category": "paraphrase",
+      "task": "Rename a JSON field sent by the API and consumed by workers that deploy separately, keeping older workers compatible.",
+      "applicable": [
+        "contract"
+      ],
+      "rationale": "Independently updated wire-contract participants are explicit."
+    },
+    {
+      "id": "contract-protobuf",
+      "category": "paraphrase",
+      "task": "Add a protobuf response field across a service and its independently shipped client.",
+      "applicable": [
+        "contract"
+      ],
+      "rationale": "The wire contract crosses independent deployments."
+    },
+    {
+      "id": "contract-request",
+      "category": "paraphrase",
+      "task": "Change the request validator and caller to accept a new required API parameter while older callers remain in service.",
+      "applicable": [
+        "contract"
+      ],
+      "rationale": "Both producer/consumer compatibility and staggered versions matter."
+    },
+    {
+      "id": "contract-event",
+      "category": "paraphrase",
+      "task": "Version the event payload shared by separately released publisher and subscriber applications.",
+      "applicable": [
+        "contract"
+      ],
+      "rationale": "This is a shared wire-format change."
+    },
+    {
+      "id": "contract-not-storage",
+      "category": "missing-prerequisite",
+      "task": "Change the field names in an in-memory API response consumed by independently updated clients. Do not alter any database schema or stored records.",
+      "applicable": [
+        "contract"
+      ],
+      "rationale": "Wire-format evidence is present; persistent schema change is absent."
+    },
+    {
+      "id": "concurrency-race",
+      "category": "paraphrase",
+      "task": "Fix two overlapping workers claiming the same queue item by correcting the lease acquisition ordering.",
+      "applicable": [
+        "concurrency"
+      ],
+      "rationale": "The observable failure depends on overlap."
+    },
+    {
+      "id": "concurrency-cancel",
+      "category": "paraphrase",
+      "task": "Prevent a timer callback from committing results after its asynchronous job has been cancelled.",
+      "applicable": [
+        "concurrency"
+      ],
+      "rationale": "Cancellation and callback order affect behavior."
+    },
+    {
+      "id": "concurrency-lock",
+      "category": "paraphrase",
+      "task": "Move the journal lock so a reader cannot observe a half-published result while a writer is active.",
+      "applicable": [
+        "concurrency"
+      ],
+      "rationale": "The critical condition is a reader/writer interleaving."
+    },
+    {
+      "id": "concurrency-proof",
+      "category": "paraphrase",
+      "task": "Repair the asynchronous test barrier so the parent and child operations demonstrably overlap and readiness has a bounded wait.",
+      "applicable": [
+        "concurrency"
+      ],
+      "rationale": "The task changes synchronization and proof of overlap."
+    },
+    {
+      "id": "concurrency-not-contract",
+      "category": "exception",
+      "task": "Fix an internal task scheduling race without changing any public interface, request or message format.",
+      "applicable": [
+        "concurrency"
+      ],
+      "rationale": "The shared-interface prerequisite is explicitly absent."
+    },
+    {
+      "id": "money-refund",
+      "category": "paraphrase",
+      "task": "Fix the synchronous refund function so retrying the same request cannot issue a second credit.",
+      "applicable": [
+        "money"
+      ],
+      "rationale": "The executable action changes monetary settlement."
+    },
+    {
+      "id": "money-rounding",
+      "category": "paraphrase",
+      "task": "Correct the currency rounding calculation in the invoice total function.",
+      "applicable": [
+        "money"
+      ],
+      "rationale": "The implementation determines monetary amounts."
+    },
+    {
+      "id": "money-fees",
+      "category": "paraphrase",
+      "task": "Change the executable fee formula from a flat amount to a percentage, preserving correct ledger totals.",
+      "applicable": [
+        "money"
+      ],
+      "rationale": "Actual monetary calculations change."
+    },
+    {
+      "id": "money-allocation",
+      "category": "paraphrase",
+      "task": "Repair the synchronous allocation of a captured charge among accounts so the allocated amounts sum exactly to the charge.",
+      "applicable": [
+        "money"
+      ],
+      "rationale": "The task targets executable accounting."
+    },
+    {
+      "id": "money-plus-schema",
+      "category": "conjunction",
+      "task": "Change refund calculations to integer minor units and migrate previously stored monetary values from decimal major units.",
+      "applicable": [
+        "money",
+        "schema"
+      ],
+      "rationale": "Both executable money logic and persisted data conversion are explicit."
+    },
+    {
+      "id": "dependency-numpy",
+      "category": "paraphrase",
+      "task": "Raise the actual NumPy minimum version in pyproject.toml and regenerate the resolved dependency lock.",
+      "applicable": [
+        "dependency"
+      ],
+      "rationale": "The installed dependency constraint changes."
+    },
+    {
+      "id": "dependency-http",
+      "category": "paraphrase",
+      "task": "Upgrade the pinned HTTP client package and exercise its existing integration without changing the application wire contract.",
+      "applicable": [
+        "dependency"
+      ],
+      "rationale": "A library release changes; the application protocol is preserved."
+    },
+    {
+      "id": "dependency-tokenizer",
+      "category": "paraphrase",
+      "task": "Replace the pinned tokenizer wheel version in requirements.txt while keeping prompts and model selection unchanged.",
+      "applicable": [
+        "dependency"
+      ],
+      "rationale": "The actual third-party requirement changes."
+    },
+    {
+      "id": "dependency-lock",
+      "category": "paraphrase",
+      "task": "Resolve the security-fixed parser release into the dependency lockfile without deploying it to any running service.",
+      "applicable": [
+        "dependency"
+      ],
+      "rationale": "Dependency resolution changes; live rollout is excluded."
+    },
+    {
+      "id": "dependency-plus-rollout",
+      "category": "conjunction",
+      "task": "Install the new dependency lock on the running instance using the prepared update and preserve the instance data.",
+      "applicable": [
+        "dependency",
+        "rollout"
+      ],
+      "rationale": "The dependency versions and running installation both change."
+    },
+    {
+      "id": "rollout-binary",
+      "category": "paraphrase",
+      "task": "Replace the executable on the existing running installation with the prepared build, retaining its configuration and data.",
+      "applicable": [
+        "rollout"
+      ],
+      "rationale": "This applies an artifact to a running installation."
+    },
+    {
+      "id": "rollout-service",
+      "category": "paraphrase",
+      "task": "Apply the reviewed service configuration to the running deployment and verify preserved state after the service reload.",
+      "applicable": [
+        "rollout"
+      ],
+      "rationale": "This is actual application to a running service."
+    },
+    {
+      "id": "rollout-artifact",
+      "category": "paraphrase",
+      "task": "Carry out the approved preserving rollout of the prebuilt artifact on the existing host.",
+      "applicable": [
+        "rollout"
+      ],
+      "rationale": "The task executes the rollout rather than preparing it."
+    },
+    {
+      "id": "rollout-recovery",
+      "category": "paraphrase",
+      "task": "Restore the previous prepared application build on the running instance while keeping its existing persisted data intact.",
+      "applicable": [
+        "rollout"
+      ],
+      "rationale": "A live recovery application still requires preserving rollout checks."
+    },
+    {
+      "id": "rollout-not-schema",
+      "category": "missing-prerequisite",
+      "task": "Apply a prepared application binary to the running installation. Its database schema and records remain unchanged.",
+      "applicable": [
+        "rollout"
+      ],
+      "rationale": "Live artifact application is explicit; data migration is excluded."
+    },
+    {
+      "id": "clarify-vague",
+      "category": "missing-prerequisite",
+      "task": "Make it work better. No component, current failure or expected behavior has been supplied.",
+      "applicable": [
+        "clarify"
+      ],
+      "rationale": "There is insufficient scope to choose an implementation."
+    },
+    {
+      "id": "clarify-billing",
+      "category": "missing-prerequisite",
+      "task": "Something about billing is broken; the report names no code path, failed behavior or expected amounts.",
+      "applicable": [
+        "clarify"
+      ],
+      "rationale": "Money keywords do not establish a concrete executable money task."
+    },
+    {
+      "id": "clarify-deployment",
+      "category": "missing-prerequisite",
+      "task": "Fix deployment. We do not know which installation or what operation failed.",
+      "applicable": [
+        "clarify"
+      ],
+      "rationale": "A specific actual rollout is not yet established."
+    },
+    {
+      "id": "clarify-concurrency",
+      "category": "missing-prerequisite",
+      "task": "Improve concurrency somehow; there is no named component, observed race or requested behavior.",
+      "applicable": [
+        "clarify"
+      ],
+      "rationale": "Concurrency terminology alone does not establish an actionable synchronization change."
+    },
+    {
+      "id": "clarify-packages",
+      "category": "missing-prerequisite",
+      "task": "Update dependencies, but no package, target version or affected component has been identified.",
+      "applicable": [
+        "clarify"
+      ],
+      "rationale": "The required package-change scope is absent."
+    }
+  ]
+}

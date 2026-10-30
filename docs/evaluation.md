@@ -2,7 +2,9 @@
 
 Evaluate routing and learning with genuine work from maintained projects. No generated
 tasks, artificial paraphrases or invented outcomes count as quality evidence. Fixtures
-in the unit suite verify software mechanics only.
+in the unit suite verify software mechanics only. The separate [rule retrieval
+benchmark](rule-benchmark.md) uses authored diagnostic scenarios to compare memory
+representations; it supplies no field routing-quality evidence.
 
 ## First field study
 
