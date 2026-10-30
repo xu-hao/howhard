@@ -73,6 +73,32 @@ loaded howhard, and the worker need not rerun routing just to execute its assign
 For a required workflow, include an explicit howhard instruction in the coordinating
 agent's task or project instructions. Skill discovery and activation remain host-owned.
 
+(require-howhard-before-delegation)=
+### Require howhard before delegation
+
+Add the following to the coordinating agent's persistent project instructions after
+installing the skill and backend. For Codex, use the project's `AGENTS.md`;
+[Codex loads project instructions before working](https://learn.chatgpt.com/docs/agent-configuration/agents-md).
+For another host, use its native project-instruction mechanism.
+
+```text
+Before delegating an authorized task to a worker, use the installed howhard skill to
+select the worker's native model and reasoning effort from the host's supported
+controls. Respect explicit user model choices and required review. Start the worker
+with the selected controls; if routing is unavailable or the controls cannot be
+enforced, report the limitation instead of silently bypassing routing.
+After execution, verify the actual model and effort, record the observed outcome
+and measured usage under a stable execution ID, and update howhard memory.
+The independent baseline forecast inside howhard is part of routing; do not
+recursively route that forecast through howhard.
+```
+
+This makes howhard use an instruction-level requirement for the coordinating agent.
+The plugin does not enforce it at the delegation tool boundary. A host-enforced
+guarantee would require the host to reject worker launches without a valid howhard
+decision matching the requested model and effort. Installing the plugin or adding
+this instruction does not implement that check or authorize additional delegation.
+
 ## Capability boundaries
 
 The skill uses original task/current project context, an independent baseline, retrieved
