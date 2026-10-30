@@ -104,10 +104,16 @@ feedback, and leave it unscored only when its identity/control is unknown.
 After actual execution and assessment, record the matched receipt when an accepted
 explicit override or reported actual identity/control establishes an exact match:
 
+Use a note that describes the actual provenance. For the accepted-override case where
+the host does not return a separate resolved identity:
+
 ```sh
 howhard observe DECISION_ID OUTCOME --id EXECUTION_ID --note 'Native host accepted explicit model/effort overrides; task execution completed.' --llm off --json
 howhard evidence EXECUTION_ID --raw --llm off --json
 ```
+
+If reported actual identity/control establishes the match instead, describe that host
+metadata in `--note`; do not claim accepted overrides unless they were accepted.
 
 Use the returned decision ID and a stable per-execution ID. OUTCOME is clean, loud or
 silent based on actual feedback. Add tokens, seconds and cost_usd only when measured;

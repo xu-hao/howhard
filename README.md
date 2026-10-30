@@ -105,7 +105,12 @@ free or assuming API list prices apply to the host.
 
 The JSON decision includes `chosen.model`, `chosen.effort`, `decision_id`, `cap_met`,
 `needs_review` and the native `cost_policy`. A recommendation does not execute the task.
-Honor required review and check the actual host execution against the chosen cell.
+Honor required review. When the native host accepts explicit model and effort overrides
+and the task completes, use the matched decision receipt for the requested cell unless
+the host reports a launch failure, ignored control, substitution or contradictory
+metadata; note that host-API provenance when no resolved identity is returned. Otherwise,
+match only on exact reported actual identity/control, use raw feedback for a known
+mismatch, and leave feedback unscored only when that identity/control is unknown.
 Fresh Git worktrees automatically share repository state while capturing the current
 checkout; plain folders use local `.howhard`, and explicit store selection is available.
 Inspect the resolved roots with:
@@ -130,8 +135,9 @@ means a failure escaped and was discovered later. Supply `--tokens`, `--seconds`
 `--cost-usd` only when measured; unknown usage stays null. Never record an unrun action
 or attach a different executed cell to the selected receipt. A verified different cell
 is recorded as raw native feedback with the original frozen context and provenance; an
-unknown actual identity/control stays unscored. Matching stable-ID retries return the
-first row, while conflicting feedback is refused. The skill uses the returned
+unknown actual identity/control stays unscored when neither accepted overrides nor exact
+reported identity establishes a match. Matching stable-ID retries return the first row,
+while conflicting feedback is refused. The skill uses the returned
 learning context, including the original and correction notes, to revise mutable memory. After the host prepares a temporary `writer-response.json`
 with `operations` and `reason` grounded in that result, apply it using `N` and `EVENT_KEY`
 from `memory learn-context`:
