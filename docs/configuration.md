@@ -9,7 +9,6 @@ Unknown keys are refused. This reference is for integrators, not a user setup ch
 on_cap_unmet = "flag-review" # or lowest-bound
 project = "local"
 journal = ".howhard/pending.jsonl"
-cache = ".howhard/posterior.npz"
 
 [[logs]]
 path = ".howhard/outcomes.jsonl"
@@ -27,8 +26,8 @@ epsilon = 0.10
 ```
 
 An explicit config requires `--risk` when picking an unknown task. Known taxonomy types
-can be reassigned with `task_types`. Class names are critical, contract, standard, docs
-and routine. The first log belongs to the current project and is the flush destination;
+can be reassigned with `task_types`. Packaged classes are critical, contract, standard, docs
+and routine; explicit projects may define additional classes. The first log belongs to the current project and is the flush destination;
 additional logs can name other projects.
 
 Known model mappings can be overlaid by `[models."concrete-id"]`:
@@ -40,28 +39,23 @@ efforts = ["low", "medium", "high", "xhigh", "max"]
 weight = 1.0
 ```
 
-An explicitly mapped concrete ID inherits that family's learned effects. A model entry
-requires a known family and supported efforts; omitted evidence weight means 1.0.
-Unknown native IDs need no configuration: the backend assigns distinct neutral families.
+An explicit mapping labels the model's protocol cells and supplies its evidence weight;
+it does not inherit learned family effects. Omitted evidence weight means 1.0. Unknown
+native identities need no configuration and receive distinct opaque identity labels.
 Every `pick`, `summary` and `context` request supplies its actual inventory through
 `--candidates FILE` (Python: `native_candidates`). Registry entries do not activate
 candidates. Supply known host worker prices as optional `usd_per_mtok` in that inventory;
 unknown prices remain omitted/null. Family selection flags, model default efforts,
 component API prices and token-mix configuration are not accepted.
 
-Maintainers can supply an entire strictly validated prior with `[prior] path = "prior.toml"`
-or recursively replace individual assumptions under `[prior.overrides]`. For example,
-`[prior.overrides.outcome.loud.a]` accepts `mean` and positive `sd`. All missing terms in
-a supplied prior file, unknown terms, unknown vocabularies and invalid sds are refused.
-This does not alter any provider model weights or train a provider model.
-
-`[prior] import = ".howhard/imported-prior.json"` is the default transfer destination.
-An absent file starts with the shipped prior. `import-prior FILE` validates before writing
-there. `[transfer] variance_inflation = 2.0` overrides the exported covariance multiplier.
-`--cache` and `--journal` are available for integration overrides.
+Statistical priors, imported priors, cache paths and transfer tuning are no longer
+accepted. `--journal` remains available for an integration path override. Provider
+selection has no mode switch: Python accepts an adapter, and standalone inference uses
+`HOWHARD_LLM_COMMAND` or an authenticated Claude CLI. Calling-agent commands do not
+resolve a provider.
 
 Native host use does not require this configuration. The skill supplies discovered
 model/control cells through `--candidates`, and the backend owns their minimal historical
-metadata and neutral defaults. Native price omission means unknown. `--state-dir` redirects standard `.howhard/` data paths while honoring custom
+metadata. Native price omission means unknown. `--state-dir` redirects standard `.howhard/` data paths while honoring custom
 configured paths, and keeps current project capture separate. Explicit configuration
-without that override retains its existing data locations and prior settings.
+without that override retains its existing data locations and policies.

@@ -38,7 +38,7 @@ class FixtureLLM:
         for memory in request["memories"]:
             if not any(c["family"] == "opus" and c["effort"] == "high" for c in request["cells"]):
                 continue
-            forecasts.append({"id": memory["id"], "version": memory["version"], "forecasts": [{"family": "opus", "effort": "high", "clean": .98, "loud": .015, "silent": .005, "tokens": 10000., "seconds": 30.}]})
+            forecasts.append({"id": memory["id"], "version": memory["version"], "forecasts": [{"family": "opus", "effort": "high", "clean": .98, "loud": .015, "silent": .005, "tokens": 5000., "seconds": 15.}]})
         return {"memory_forecasts": forecasts, "reason": "Memory-conditioned fixture"}
 
 
@@ -58,7 +58,7 @@ def test_independent_baseline_and_original_semantic_inputs_are_preserved(project
     assert reader["context"]["task_text"] == result["context"]["task_text"]
     assert reader["memories"][0]["body"] == memory["body"]
     receipt = load(engine.config, result["decision_id"])
-    assert receipt["format"] == "howhard-decision-v3"
+    assert receipt["format"] == "howhard-decision-v4"
     assert receipt["semantic"]["memories"][0]["body"] == memory["body"]
     again = engine.pick("Y", result["context"]["task_text"], seed=42, native_candidates=inventory())
     assert again["chosen"] == result["chosen"]
@@ -123,15 +123,15 @@ def test_correction_chain_replays_forecasts_and_writer_events_once(project):
                      for name, panel in worlds.items()}
         # Resource evidence is unchanged; only the outcome likelihood ratio changes.
         expected = initial["log_score"] + SETTINGS["belief"]["temperature"] * .4 * math.log(
-            (forecasts[key][outcome] / forecasts["statistical"][outcome]) /
-            (forecasts[key]["clean"] / forecasts["statistical"]["clean"]))
+            (forecasts[key][outcome] / forecasts["llm"][outcome]) /
+            (forecasts[key]["clean"] / forecasts["llm"]["clean"]))
         assert current["log_score"] == pytest.approx(expected)
         metrics_report = report(engine)
         assert metrics_report["runs"] == 1 and metrics_report["outcomes"][outcome] == 1
         for metrics in metrics_report["forecast_metrics"].values():
             assert metrics["runs"] == 1
-        assert metrics_report["forecast_metrics"]["statistical"]["mean_log_loss"] == pytest.approx(
-            -math.log(forecasts["statistical"][outcome]))
+        assert metrics_report["forecast_metrics"]["llm"]["mean_log_loss"] == pytest.approx(
+            -math.log(forecasts["llm"][outcome]))
         event_key = engine.memory_learning_context(amendment)["event_key"]
         assert event_key not in keys
         keys.add(event_key)
@@ -157,7 +157,7 @@ def test_unrelated_cell_does_not_credit_memory_and_removal_stops_influence(proje
     engine.memory.remove(memory["id"])
     result = engine.pick("Y", "migration", seed=2, native_candidates=inventory())
     assert result["semantic"]["memories"] == []
-    assert set(result["semantic"]["worlds"]) == {"statistical", "llm"}
+    assert set(result["semantic"]["worlds"]) == {"llm"}
     engine.memory.restore(memory["id"])
     assert engine.pick("Y", "migration", seed=2, native_candidates=inventory())["semantic"]["memories"][0]["id"] == memory["id"]
 
@@ -204,7 +204,7 @@ def test_retrieval_results_frozen_and_changed_memory_invalidates_cache(project):
     assert len(provider.calls) > before
 
 
-def test_explicit_backend_failure_is_not_silent_and_auto_fallback_is_visible(project):
+def test_provider_failure_never_falls_back(project):
     class Broken:
         identity = "broken"
         def complete(self, request):
@@ -213,7 +213,8 @@ def test_explicit_backend_failure_is_not_silent_and_auto_fallback_is_visible(pro
     with pytest.raises(LLMError):
         engine.pick("Y", "task", seed=1, native_candidates=inventory())
     engine.backend["mode"] = "auto"
-    assert engine.pick("Y", "task", seed=1, native_candidates=inventory())["backend"]["mode"] == "statistical-fallback"
+    with pytest.raises(LLMError):
+        engine.pick("Y", "task", seed=1, native_candidates=inventory())
     events = [json.loads(line) for line in (engine.config.base / ".howhard/inference.jsonl").read_text().splitlines()]
     assert len(events) == 2 and all(e["status"] == "failed" for e in events)
     assert all(e["cost_usd"] is None for e in events)
@@ -224,10 +225,10 @@ def test_explicit_backend_failure_is_not_silent_and_auto_fallback_is_visible(pro
 def test_stale_writer_outcome_is_rejected_without_memory_mutation(project, corrections, refresh):
     from howhard.validation import HowHardError
     config = project()
-    engine = Engine(config, llm="off")
+    engine = Engine(config)
     engine.observe("Y", "claude-opus-5-5", "high", "clean", id="original")
     pending = engine.memory_learning_context("original")
-    other = Engine(config, llm="off")
+    other = Engine(config)
     target = "original"
     for index, outcome in enumerate(corrections):
         target = other.observe("Y", "claude-opus-5-5", "high", outcome,
@@ -244,7 +245,7 @@ def test_project_retrieval_rejects_changed_context_and_private_state(project):
     config = project()
     readme = config.base / "README.md"
     readme.write_text("Original project")
-    engine = Engine(config, llm="off")
+    engine = Engine(config)
     pending = engine.prepare("Y", "Task", native_candidates=inventory())
     readme.write_text("Changed project")
     with pytest.raises(HowHardError, match="Project changed"):
@@ -285,7 +286,7 @@ def test_project_retrieval_does_not_read_files_omitted_from_git_snapshot(project
     (config.base / ".gitignore").write_text("ignored.py\n")
     (config.base / "README.md").write_text("A public project description")
     (config.base / "ignored.py").write_text("excluded from decision-time project capture")
-    engine = Engine(config, llm="off")
+    engine = Engine(config)
     pending = engine.prepare("Y", "Task", native_candidates=inventory())
     # Internal requests/memory state must not change the project fingerprint.
     engine.retrieve(pending["request_id"], [{"tool": "project.read", "path": "README.md"}])

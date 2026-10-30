@@ -4,28 +4,20 @@
 
 [Read the documentation](https://howhard.readthedocs.io/en/latest/).
 
-`howhard` chooses the model and the reasoning effort for a task delegated to an AI
-agent. An LLM can read task descriptions, current project context and writable semantic
-memory. Recorded outcomes update predictive weights, while a statistical model learns
-how often each (model, effort) cell
-finishes cleanly, fails loudly (the failure is caught before release by a test gate, a
-refusal or a review) or fails silently (the failure escapes and is found later, or never),
-and what a run costs in tokens and wall time. It then picks the cell with the lowest expected
-total cost: the run's own cost, plus the expected cost of a loud and of a silent failure, plus
-a price on waiting, while keeping the chance of a silent failure under a cap set for the
-task's risk class.
+`howhard` chooses the model and reasoning effort for a task delegated to an AI
+agent. An LLM reads the actual task, current project and writable semantic memory,
+forecasting clean completion, caught failures, escaped failures, tokens and time for
+each candidate. Recorded outcomes update the predictive support for memories.
 
-The model is Bayesian and starts from an explicit, documented prior, so it gives useful
-answers before any data exist and sharpens as outcomes are recorded. Model and effort are
-two separate categorical axes with an interaction, not one ordered ladder. Choices are made
-by Thompson sampling from the posterior, so cheaper cells keep being tried. A project can
-export what it has learned about generic task types as a prior for another project, without
-exporting any of its records.
+Selection balances worker cost, expected failure cost and waiting time. Its risk cap
+uses a weighted envelope of LLM forecasts; these estimates are not a calibrated
+failure guarantee. Without a usable LLM forecast, routing fails explicitly. There is
+no statistical prediction model or statistical fallback.
 
 ## Quickstart
 
 You need Python 3.11+, Git and a current Codex, Claude Code or Antigravity client
-with native plugin support. No statistical configuration, tuning or Node/npm setup is
+with native plugin support. No parameter tuning or Node/npm setup is
 required by howhard. From your project directory, install the Python backend from source:
 
 ```sh
@@ -92,13 +84,13 @@ the instruction's scope and the host enforcement needed for a hard guarantee.
 The skill discovers the host's executable model/control inventory, creates temporary
 protocol inputs, obtains an independent baseline and uses memory-conditioned forecasts.
 It calls the native howhard CLI/API directly. You do not write a project bridge, add a
-dependency-lock feature, maintain a separate ledger, map models to statistical families
-or tune parameters. Unknown native identities get distinct neutral prior families;
+dependency-lock feature, maintain a separate ledger, map models to families
+or tune parameters. Unknown native identities get distinct identity labels;
 unsupported or unknown execution controls are reported honestly.
 
 Your host's existing LLM supplies the calling-agent reasoning without another API key.
 An independent baseline needs a fresh context without memory/history; if unavailable,
-the agent reports that limit and uses the labeled statistical path. Unknown worker
+the agent reports routing unavailable until an independent LLM forecast is available. Unknown worker
 prices stay unknown. If any candidate is unpriced, every candidate is compared without
 worker money; the partial objective is labeled rather than treating unknown charges as
 free or assuming API list prices apply to the host.
@@ -116,18 +108,18 @@ checkout; plain folders use local `.howhard`, and explicit store selection is av
 Inspect the resolved roots with:
 
 ```sh
-howhard paths --llm off --json
+howhard paths --json
 ```
 
 Only after execution, replace `DECISION_ID` with the returned receipt ID, `EXECUTION_ID`
 with a stable ID for that actual invocation, and `OUTCOME` with `clean`, `loud` or `silent`:
 
 ```sh
-howhard observe DECISION_ID OUTCOME --id EXECUTION_ID --llm off --json
-howhard evidence EXECUTION_ID --raw --llm off --json
-howhard memory learn-context EXECUTION_ID --llm off --json
-howhard memory list --llm off --json
-howhard report --llm off --json
+howhard observe DECISION_ID OUTCOME --id EXECUTION_ID --json
+howhard evidence EXECUTION_ID --raw --json
+howhard memory learn-context EXECUTION_ID --json
+howhard memory list --json
+howhard report --json
 ```
 
 `clean` means no observed defect; `loud` means a gate/review caught a failure; `silent`
@@ -143,23 +135,25 @@ with `operations` and `reason` grounded in that result, apply it using `N` and `
 from `memory learn-context`:
 
 ```sh
-howhard memory learn EXECUTION_ID --file writer-response.json --expected-revision N --event-key EVENT_KEY --llm off --json
+howhard memory learn EXECUTION_ID --file writer-response.json --expected-revision N --event-key EVENT_KEY --json
 ```
 
 An empty operations list is valid. New lessons receive no retrospective predictive
 credit. Retry learning for the same effective event, and append changed feedback with
 `--amends` instead of creating another original run.
 
-The default provider adapter can also reuse an authenticated Claude CLI; explicit
-`--llm off` keeps commands statistical and disables provider-backed writing. The
+Standalone `pick` can reuse an authenticated Claude CLI or `HOWHARD_LLM_COMMAND`.
+Calling-agent commands need no provider configuration and never start nested inference.
+Observations made without a provider adapter return a pending memory update; use the
+explicit writer workflow above or `memory learn RUN_ID` to invoke a provider. The
 [skill guide](docs/skills.md) covers native lifecycle commands, native feedback/mismatch handling and local/pinned sources.
 A third-party cross-agent `npx skills` route is optional, not a prerequisite.
 Python backend upgrades and skill updates are separate.
 
 See the [quickstart](docs/quickstart.md), [documentation index](docs/index.md),
 [model and storage contracts](docs/reference.md), and [changelog](CHANGELOG.md).
-The [context architecture](docs/context.md) explains text features, changing project
-snapshots and receipts in the statistical baseline. Evaluate routing quality with the
+The [context architecture](docs/context.md) explains original text, changing project
+snapshots and decision receipts. Evaluate routing quality with the
 [real-project protocol](docs/evaluation.md); unit fixtures establish implementation
 behavior rather than product-quality evidence.
 Python 3.11+ and a POSIX platform are required. Run tests with

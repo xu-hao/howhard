@@ -10,14 +10,14 @@ from howhard.cli import main
 
 
 def test_help_for_every_command():
-    for args in (["--help"], *([name, "--help"] for name in ("pick", "summary", "observe", "flush", "export-prior", "import-prior"))):
+    for args in (["--help"], *([name, "--help"] for name in ("pick", "summary", "observe", "flush", "context", "decide", "paths", "report"))):
         with pytest.raises(SystemExit) as exit:
             main(args)
         assert exit.value.code == 0
 
 
 def test_packaged_defaults_available_through_resources():
-    for name in ("default_prior.toml", "default_config.toml"):
+    for name in ("default_config.toml", "semantic.toml", "context.toml"):
         assert files("howhard").joinpath("data", name).read_bytes()
 
 
@@ -32,7 +32,7 @@ def test_zero_configuration_end_to_end(tmp_path, monkeypatch, capsys, candidate_
     assert main(["observe", "new-task", chosen["model"], chosen["effort"], "clean", "--id", "first", "--json"]) == 0
     observed = json.loads(capsys.readouterr().out)
     assert observed["observed"]["id"] == "first"
-    assert observed["fit"]["kind"] == "warm"
+    assert observed["memory_update"]["status"] == "pending"
     assert not (tmp_path / ".howhard/outcomes.jsonl").exists()
     assert main(["flush", "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["ids"] == ["first"]
@@ -41,26 +41,7 @@ def test_zero_configuration_end_to_end(tmp_path, monkeypatch, capsys, candidate_
     summary = json.loads(capsys.readouterr().out)
     assert "chosen" not in summary and "seed" not in summary
     assert all("sampled_J" not in c for c in summary["cells"])
-    assert summary["fit"]["kind"] == "cached" and summary["fit"]["iterations"] == 0
-    assert main(["export-prior", "--out", "shared.json"]) == 0
-    capsys.readouterr()
-    assert (tmp_path / "shared.json").is_file()
     assert not (tmp_path / "howhard.toml").exists()
-
-
-def test_zero_config_custom_type_transfer_to_empty_project(tmp_path):
-    a_dir, b_dir = tmp_path / "a", tmp_path / "b"
-    a_dir.mkdir()
-    b_dir.mkdir()
-    a = Engine(directory=a_dir)
-    a.observe("custom-task", "claude-sonnet-5-5", "high", "clean")
-    path = tmp_path / "prior.json"
-    a.export_prior(path)
-    b = Engine(directory=b_dir)
-    b.import_prior(path)
-    assert "custom-task" in b.prior.task_types
-    assert b.summary("custom-task", native_candidates=inventory())["risk_class"] == "standard"
-    assert b.summary("custom-task", native_candidates=inventory())["cells"] == Engine(directory=b_dir).summary("custom-task", native_candidates=inventory())["cells"]
 
 
 def test_journal_override_cannot_alias_tracked_log(project):
@@ -69,14 +50,6 @@ def test_journal_override_cannot_alias_tracked_log(project):
     log = config.path(config.data["logs"][0]["path"])
     with pytest.raises(HowHardError, match="distinct"):
         Engine(config, journal_path=log)
-
-
-def test_default_taxonomy_transfer_without_config(tmp_path, monkeypatch, capsys):
-    monkeypatch.chdir(tmp_path)
-    assert main(["export-prior", "--out", "shared.json"]) == 0
-    capsys.readouterr()
-    assert main(["import-prior", "shared.json", "--json"]) == 0
-    assert ".howhard/imported-prior.json" in json.loads(capsys.readouterr().out)["imported"]
 
 
 def test_explicit_config_required_policy_and_unknown_type_risk(tmp_path, capsys, candidate_file):

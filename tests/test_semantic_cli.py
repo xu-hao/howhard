@@ -36,7 +36,7 @@ def test_memory_cli_full_lifecycle(tmp_path, monkeypatch, capsys):
 
 
 def test_calling_agent_request_retrieval_decision_and_writer(project):
-    engine = Engine(project(), llm="off")
+    engine = Engine(project())
     entry = engine.memory.add("Migration", "Use boundary validation")
     request = engine.prepare("Y", "Repair transaction ordering", native_candidates=inventory())
     assert "memories" not in request["baseline_request"]
@@ -67,12 +67,14 @@ else:
 ''')
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("HOWHARD_LLM_COMMAND", json.dumps([sys.executable, str(script)]))
-    assert main(["pick", "bookkeeping", "--text", "Track issue", "--llm", "command", "--json", "--seed", "8", "--candidates", str(candidate_file)]) == 0
+    assert main(["pick", "bookkeeping", "--text", "Track issue", "--json", "--seed", "8", "--candidates", str(candidate_file)]) == 0
     picked = json.loads(capsys.readouterr().out)
     assert picked["backend"]["mode"] == "semantic"
-    assert main(["observe", picked["decision_id"], "clean", "--llm", "command", "--json", "--id", "run"]) == 0
+    assert main(["observe", picked["decision_id"], "clean", "--json", "--id", "run"]) == 0
     observed = json.loads(capsys.readouterr().out)
-    assert observed["memory_update"]["status"] == "updated"
+    assert observed["memory_update"]["status"] == "pending"
+    assert main(["memory", "learn", "run", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "updated"
     assert main(["memory", "list", "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["memories"][0]["title"] == "Learned"
     assert main(["report", "--json"]) == 0
@@ -106,7 +108,7 @@ def test_report_scores_observed_actions_and_keeps_unknown_costs(project):
 
 
 def test_calling_agent_costs_and_decisions_are_not_reported_as_free(project):
-    engine = Engine(project(), llm="off")
+    engine = Engine(project())
     pending = engine.prepare("Y", "Task", native_candidates=inventory())
     response = FixtureLLM().complete(pending["baseline_request"])
     response["memory_forecasts"] = []

@@ -8,9 +8,21 @@ from howhard.context import FORMAT
 
 
 @pytest.fixture(autouse=True)
-def offline_llm_by_default(monkeypatch):
-    # Ordinary tests never spend tokens or depend on a machine's login/runtime.
-    monkeypatch.setenv("HOWHARD_LLM", "off")
+def offline_llm_by_default(monkeypatch, tmp_path_factory):
+    # No test invokes an authenticated model. The subprocess adapter is a protocol double.
+    import sys
+    monkeypatch.delenv("HOWHARD_LLM", raising=False)
+    script = tmp_path_factory.mktemp("fixture-model") / "provider.py"
+    script.write_text('''import json,sys
+r=json.load(sys.stdin)["request"]
+if r["kind"]=="learn":
+ print(json.dumps({"operations":[],"reason":"fixture"}))
+elif r.get("phase")=="baseline":
+ print(json.dumps({"forecasts":[{"family":c["family"],"effort":c["effort"],"clean":.5,"loud":.45,"silent":.05,"tokens":10000,"seconds":30} for c in r["cells"]],"reason":"fixture"}))
+else:
+ print(json.dumps({"memory_forecasts":[],"reason":"fixture"}))
+''')
+    monkeypatch.setenv("HOWHARD_LLM_COMMAND", json.dumps([sys.executable, str(script)]))
 
 
 @pytest.fixture
@@ -46,17 +58,8 @@ def row(i, *, task="X", family="opus", effort="high", outcome="clean", **kwargs)
             "seconds": None, "cost_usd": None, "note": "", "amends": None, **kwargs}
 
 
-def fitted_rows(config, rows):
-    return effective_rows(config, [{**r, "project": config.data["project"]} for r in rows])
-
-
 def cell(summary, family, effort):
     return next(c for c in summary["cells"] if (c["family"], c["effort"]) == (family, effort))
-
-
-def frequency(engine, task, target, candidates):
-    return sum((p["chosen"]["family"], p["chosen"]["effort"]) == target
-               for p in (engine.pick(task, seed=s, native_candidates=inventory(candidates)) for s in range(200))) / 200
 
 
 # Synthetic host inventory and prices; these are fixture inputs, not provider claims.

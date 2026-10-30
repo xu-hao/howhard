@@ -6,7 +6,7 @@ from howhard.validation import HowHardError
 
 
 def test_add_edit_remove_restore_preserves_versions_and_history(project):
-    engine = Engine(project(), llm="off")
+    engine = Engine(project())
     memory = engine.memory.add("Migration depth", "Cross-service migrations need more reasoning.")
     assert engine.memory.read(memory["id"])["body"] == memory["body"]
     revised = engine.memory.edit(memory["id"], body="Cross-service migrations without integration tests need more reasoning.")
@@ -18,11 +18,11 @@ def test_add_edit_remove_restore_preserves_versions_and_history(project):
     restored = engine.memory.restore(memory["id"])
     assert restored["version"] == 2 and restored["active"]
     assert len(engine.memory.history(memory["id"])) == 4
-    assert Engine(engine.config, llm="off").memory.read(memory["id"])["body"] == revised["body"]
+    assert Engine(engine.config).memory.read(memory["id"])["body"] == revised["body"]
 
 
 def test_merge_split_and_search_are_real_operations(project):
-    engine = Engine(project(), llm="off")
+    engine = Engine(project())
     a = engine.memory.add("Contracts", "Contract changes across services need boundary tests.")
     b = engine.memory.add("Migrations", "Database migrations need rollback tests.")
     merged = engine.memory.merge([a["id"], b["id"]], title="Boundary validation", body="Contract changes and migrations need integration and rollback checks.")
@@ -35,7 +35,7 @@ def test_merge_split_and_search_are_real_operations(project):
 
 
 def test_memory_batches_are_atomic_and_reject_stale_writes(project):
-    engine = Engine(project(), llm="off")
+    engine = Engine(project())
     before = engine.memory.snapshot()
     with pytest.raises(HowHardError):
         engine.memory.apply([{"op": "add", "title": "Valid", "body": "valid"}, {"op": "remove", "id": "missing"}])
@@ -47,7 +47,7 @@ def test_memory_batches_are_atomic_and_reject_stale_writes(project):
 
 
 def test_memory_evidence_is_validated_and_survives_removal(project):
-    engine = Engine(project(), llm="off")
+    engine = Engine(project())
     with pytest.raises(HowHardError, match="evidence"):
         engine.memory.add("Invented", "unsupported", evidence_ids=["unknown-run"])
     engine.observe("Y", "claude-opus-5-5", "high", "loud", id="real-run", note="boundary failure")

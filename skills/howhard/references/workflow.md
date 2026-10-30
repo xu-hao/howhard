@@ -14,12 +14,12 @@ The input accepts 1–32 distinct cells. Model IDs are preserved exactly (bounde
 characters); effort/control IDs use 1–64 letters, digits, underscores or hyphens.
 `model_default` and missing/no-effort controls are refused for native selection.
 The entire inventory is validated before admission. Unknown model identities get
-separate neutral prior families automatically. The backend persists only historical
+separate identity labels automatically. The backend persists only historical
 identity/effort metadata in its own store; active cells and prices belong to the request.
 
 ```sh
-howhard paths --llm off --json
-howhard context task --text-file /tmp/task.txt --candidates /tmp/host-candidates.json --llm off --json
+howhard paths --json
+howhard context task --text-file /tmp/task.txt --candidates /tmp/host-candidates.json --json
 ```
 
 Replace temporary paths with this task's actual artifacts. `context` returns a
@@ -29,26 +29,23 @@ repeat the inventory. The prepared request is bound to this worktree and rejects
 retrieve/decide from a sibling checkout. Feedback can use the frozen receipt from
 another worktree of the same project.
 
-For an explicitly statistical recommendation with no model calls:
-
-```sh
-howhard pick task --text-file /tmp/task.txt --candidates /tmp/host-candidates.json --llm off --seed 42 --json
-```
-
-The direct Python equivalent is executable after the host writes the two input files
-in the current task's temporary directory (the example uses their current filenames):
+The Python equivalent starts with a provider-free prepared request:
 
 ```python
 import json
 from pathlib import Path
 from howhard import Engine
 
-engine = Engine(llm="off")
+engine = Engine()
 inventory = json.loads(Path("host-candidates.json").read_text())
-decision = engine.pick("task", Path("task.txt").read_text(),
-                       native_candidates=inventory, seed=42)
-print(json.dumps(decision))
+request = engine.prepare("task", Path("task.txt").read_text(),
+                         native_candidates=inventory)
+print(json.dumps(request))
 ```
+
+The host evaluates `baseline_request` in a fresh independent model context, then submits
+its forecasts and memory overrides through `decide`. If independence is unavailable,
+report routing unavailable; do not fabricate a baseline or select statistically.
 
 `Engine.prepare(..., native_candidates=inventory)` starts the calling-agent route;
 `engine.retrieve(request_id, queries)` and `engine.decide(request_id, response)` use
@@ -63,8 +60,8 @@ forecasts. Separately reason over `request` using original task/project text, me
 and actual experience. Retrieve only through the backend's bounded tools:
 
 ```sh
-howhard retrieve REQUEST_ID --file /tmp/retrieval-queries.json --llm off --json
-howhard decide REQUEST_ID --file /tmp/forecasts.json --llm off --seed 42 --json
+howhard retrieve REQUEST_ID --file /tmp/retrieval-queries.json --json
+howhard decide REQUEST_ID --file /tmp/forecasts.json --seed 42 --json
 ```
 
 Retrieval returns a new request ID. Queries are an array such as
@@ -74,8 +71,7 @@ the returned schema: frozen baseline `forecasts`, seen active-memory/version ove
 in `memory_forecasts`, and a reason. Copy opaque family/effort keys emitted by the
 backend; do not invent or rename them. An empty override list is valid. Generate honest
 prospective estimates; do not fabricate past forecasts, observations or independence.
-If an independent context is unavailable, disclose it and use the labeled statistical
-path. If evidence/memory is stale, prepare again once; report repeated failure.
+If an independent context is unavailable, report routing unavailable and stop selection. If evidence/memory is stale, prepare again once; report repeated failure.
 
 The decision includes the receipt `decision_id`, `chosen` native ID/control,
 `cost_policy`, and cap/review status. With any unpriced cell, `worker_money_included`
@@ -83,7 +79,7 @@ is false and the comparison excludes worker money for all cells. Unknown `C_run`
 null; known estimated worker costs remain visible but do not affect that comparison.
 `J` is then risk-and-time cost, not a complete monetary objective. Fully priced native
 inventories include worker money. `needs_review` still requires independent review;
-semantic memory cannot clear the statistical silent-failure guard by itself.
+the risk cap is checked against the weighted LLM forecast envelope.
 
 Delegate through the host's actual tool with supported controls and the authorized
 scope. Retain a stable ID for the actual invocation, requested cell, any reported actual
@@ -108,8 +104,8 @@ Use a note that describes the actual provenance. For the accepted-override case 
 the host does not return a separate resolved identity:
 
 ```sh
-howhard observe DECISION_ID OUTCOME --id EXECUTION_ID --note 'Native host accepted explicit model/effort overrides; task execution completed.' --llm off --json
-howhard evidence EXECUTION_ID --raw --llm off --json
+howhard observe DECISION_ID OUTCOME --id EXECUTION_ID --note 'Native host accepted explicit model/effort overrides; task execution completed.' --json
+howhard evidence EXECUTION_ID --raw --json
 ```
 
 If reported actual identity/control establishes the match instead, describe that host
@@ -129,7 +125,7 @@ attaching the unexecuted receipt. `--native` can admit a previously unseen actua
 without creating a retrospective forecast:
 
 ```sh
-howhard observe TASK ACTUAL_MODEL ACTUAL_EFFORT OUTCOME --native --id EXECUTION_ID --text-file /tmp/original-task.txt --project-context /tmp/original-context.json --note 'Requested and actual execution differed; describe verified identities here' --llm off --json
+howhard observe TASK ACTUAL_MODEL ACTUAL_EFFORT OUTCOME --native --id EXECUTION_ID --text-file /tmp/original-task.txt --project-context /tmp/original-context.json --note 'Requested and actual execution differed; describe verified identities here' --json
 ```
 
 The task text and complete project snapshot come from the original decision's `context`,
@@ -151,9 +147,9 @@ project ledger or adapter is needed.
 Append corrections instead of a second original run:
 
 ```sh
-howhard observe TASK MODEL EFFORT loud --amends EXECUTION_ID --id CORRECTION_ID --note 'Actual reason for correction' --llm off --json
-howhard observe TASK MODEL EFFORT clean --amends CORRECTION_ID --id NEXT_CORRECTION_ID --note 'Actual reason for revised judgment' --llm off --json
-howhard memory learn-context NEXT_CORRECTION_ID --llm off --json
+howhard observe TASK MODEL EFFORT loud --amends EXECUTION_ID --id CORRECTION_ID --note 'Actual reason for correction' --json
+howhard observe TASK MODEL EFFORT clean --amends CORRECTION_ID --id NEXT_CORRECTION_ID --note 'Actual reason for revised judgment' --json
+howhard memory learn-context NEXT_CORRECTION_ID --json
 ```
 
 For erroneous measured usage, append an amendment with the intended current outcome
@@ -183,7 +179,7 @@ Reason over that actual history. Save `{operations: [...], reason: string}` and 
 the exact returned revision/event key:
 
 ```sh
-howhard memory learn EXECUTION_ID --file /tmp/writer-response.json --expected-revision N --event-key EVENT_KEY --llm off --json
+howhard memory learn EXECUTION_ID --file /tmp/writer-response.json --expected-revision N --event-key EVENT_KEY --json
 ```
 
 An empty operations list is valid. Unchanged learning events are idempotent; each new
@@ -196,7 +192,7 @@ Memories remain mutable through `memory list/search/read`, `add`, `edit`, `remov
 `restore`, `merge`, `split`, `history` and `beliefs`. Add/edit accept title/body or body-file
 and actual evidence IDs; split accepts an array of title/body objects. Edits create
 content versions, remove archives, and new lessons gain no retrospective forecast credit.
-Use `report --llm off --json` for descriptive observed-action scores and known/unknown
+Use `report --json` for descriptive observed-action scores and known/unknown
 usage; these reports and mechanical fixtures do not establish routing superiority.
 
 ## Backend-owned state

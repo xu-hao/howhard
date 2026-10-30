@@ -13,9 +13,7 @@ from .validation import HowHardError
 
 def common(command):
     command.add_argument("--config", metavar="PATH", help="optional advanced project settings")
-    command.add_argument("--cache", metavar="PATH", help=argparse.SUPPRESS)
     command.add_argument("--journal", metavar="PATH", help=argparse.SUPPRESS)
-    command.add_argument("--llm", choices=("auto", "off", "claude", "command"), help="LLM backend; auto reuses an installed Claude CLI")
     command.add_argument("--state-dir", metavar="PATH", help="explicit durable state directory; current project capture stays separate")
     command.add_argument("--json", action="store_true")
 
@@ -24,7 +22,7 @@ def parser():
     root = argparse.ArgumentParser(prog="howhard", description="Choose a model and effort, then learn from the outcome. No setup required.")
     root.add_argument("--version", action="version", version=f"howhard {__version__}")
     commands = root.add_subparsers(dest="command", required=True)
-    for name in ("pick", "summary", "observe", "flush", "export-prior", "import-prior", "context", "decide", "retrieve", "report", "evidence", "paths"):
+    for name in ("pick", "summary", "observe", "flush", "context", "decide", "retrieve", "report", "evidence", "paths"):
         command = commands.add_parser(name)
         common(command)
         if name in ("pick", "summary", "observe", "context"):
@@ -52,10 +50,6 @@ def parser():
             command.add_argument("--measurement-corrections", metavar="FILE", help="amendment-only JSON map of tokens/seconds/cost_usd replacements; null clears to unknown")
             for option, kind in (("tokens", int), ("seconds", float), ("cost-usd", float), ("ticket", str), ("note", str), ("amends", str), ("date", str), ("id", str)):
                 command.add_argument(f"--{option}", type=kind)
-        if name == "export-prior":
-            command.add_argument("--out", required=True, metavar="FILE")
-        if name == "import-prior":
-            command.add_argument("file")
         if name in ("decide", "retrieve"):
             command.add_argument("request_id")
             command.add_argument("--file", required=True, help="response/queries JSON file")
@@ -108,7 +102,7 @@ def render(result):
         lines.append(f"Backend: {backend.get('name', backend['mode'])}" + (f" ({backend['reason']})" if "reason" in backend else ""))
     if "semantic" in result:
         lines.append(result["semantic"]["reason"])
-        lines.append("Intervals: statistical safety guard plus approximate weighted semantic envelope")
+        lines.append("Intervals: approximate weighted LLM forecast envelope")
     if not result["cost_policy"]["worker_money_included"]:
         lines.append("Worker monetary cost is unknown for at least one candidate and omitted uniformly from comparison; J includes risk and time only.")
     if "chosen" in result:
@@ -130,8 +124,6 @@ def render(result):
         lines.append("  ".join(fields))
     for reason in result.get("why", []):
         lines.append(f"Why {reason['family']}/{reason['effort']} lost: {reason['message']}")
-    stats = result["fit"]
-    lines.append(f"Fit: {stats['kind']}, {stats['iterations']} Newton iterations")
     return "\n".join(lines)
 
 
@@ -193,7 +185,7 @@ def main(argv=None):
         if args.command in ("pick", "summary", "context"):
             from .native import preflight
             native_candidates = preflight(config, read_json(args.candidates))
-        engine = Engine(config, cache_path=args.cache, journal_path=args.journal, llm=args.llm)
+        engine = Engine(config, journal_path=args.journal)
         context_options = {}
         if args.command in ("pick", "summary", "observe", "context"):
             if args.text_file is not None:
@@ -238,15 +230,10 @@ def main(argv=None):
                 observed = engine.observe(args.task_type, args.model, args.effort, args.outcome, decision=args.decision, native=args.native, **context_options, **options)
             else:
                 raise HowHardError("observe: expected DECISION_ID OUTCOME, or TASK_TYPE MODEL EFFORT OUTCOME")
-            result = {"observed": observed, "fit": engine.posterior.statistics, "memory_update": engine.last_memory_update}
+            result = {"observed": observed, "memory_update": engine.last_memory_update}
         elif args.command == "flush":
             ids = engine.flush()
-            result = {"moved": len(ids), "ids": ids, "fit": engine.posterior.statistics}
-        elif args.command == "export-prior":
-            engine.export_prior(args.out)
-            result = {"exported": args.out}
-        else:
-            result = {"imported": str(engine.import_prior(args.file))}
+            result = {"moved": len(ids), "ids": ids}
         print(json.dumps(result, allow_nan=False, sort_keys=True) if args.json else render(result))
         return 0
     except (HowHardError, OSError) as exc:
