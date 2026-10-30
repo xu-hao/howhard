@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add an opt-in pytest-probability diagnostic benchmark comparing whole-rule versus
+  applicability-condition embeddings, with and without cross-encoder reranking.
+  Forty authored tasks cover paraphrases, misleading action words, exceptions,
+  missing prerequisites and conjunctions. Retain labels separately, report candidate
+  recall/ranking metrics and latency, and keep real-model runs outside the ordinary gate.
+
 - Remove statistical-only routing, the internal statistical expert/risk floor, lexical
   features, outcome/resource fitting, posterior caches and generic prior transfer.
   Routing now requires independent LLM forecasts and semantic memory; missing or failed
