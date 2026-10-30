@@ -1,20 +1,12 @@
-"""Deterministic posterior tables and seeded Thompson selection."""
+"""Native candidate policies and selection from LLM and memory forecasts."""
 
 from copy import deepcopy
 import secrets
-import numpy as np
 
-from .gaussian import draw, extend
-from .outcomes import probabilities
-from .prior import build_prior, design
 from .validation import HowHardError, text
-from .context import encode
-
-SUMMARY_SEED = 20260501
-SUMMARY_DRAWS = 4000
 
 
-def prepare(posterior, config, task, risk=None, context=None, native_candidates=None):
+def prepare(config, task, risk=None, context=None, native_candidates=None):
     text(task, "task_type", label=True)
     cls = risk or config.task_types.get(task)
     if cls is None:
@@ -23,78 +15,31 @@ def prepare(posterior, config, task, risk=None, context=None, native_candidates=
         cls = "standard"
     if cls not in config.data["classes"]:
         raise HowHardError(f"risk: unknown class {cls!r}")
-    # A risk override changes loss constants. Existing task effects retain their
-    # learned distribution; only a previously unknown type needs new prior terms.
-    distributions = {b: getattr(posterior, b) for b in ("outcome", "tokens", "time")}
-    if task not in posterior.prior.task_types or (context is not None and not posterior.prior.has_context):
-        prior = build_prior(config, extra_types={**posterior.prior.task_types, task: cls}, contextual=posterior.prior.has_context or context is not None)
-        distributions = {b: extend(distributions[b], getattr(prior, b)) for b in distributions}
-    cells = []
     from .native import preflight
-    native_candidates = preflight(config, native_candidates)
-    for candidate in native_candidates:
-        model, effort = candidate["model"], candidate["effort"]
-        family = config.data["models"][model]["family"]
-        price = candidate.get("usd_per_mtok")
-        cells.append(dict(model=model, family=family, effort=effort, price=price))
+    inventory = preflight(config, native_candidates)
+    cells = [{"model": c["model"], "family": config.data["models"][c["model"]]["family"],
+              "effort": c["effort"], "price": c.get("usd_per_mtok")} for c in inventory]
     monetary = all(c["price"] is not None for c in cells)
     for cell in cells:
         cell["comparison_price"] = cell["price"] if monetary else 0.0
-    inputs = [(task, c["family"], c["effort"], config.data["project"]) for c in cells]
-    features = encode(context["task_text"], context["project_context"]) if context is not None else {}
-    marginals = {b: distributions[b].project(design(distributions[b], b, inputs, [features] * len(inputs))) for b in distributions}
-    return cls, cells, marginals
+    result = {"task_type": task, "risk_class": cls, "constants": deepcopy(config.data["classes"][cls]),
+              "cells": [{k: c[k] for k in ("model", "family", "effort")} for c in cells],
+              "native_candidates": deepcopy(inventory), "context": deepcopy(context),
+              "cost_policy": {"worker_money_included": monetary,
+                              "unknown_price_models": sorted({c["model"] for c in cells if c["price"] is None}),
+                              "comparison": "full-cost" if monetary else "risk-and-time-excluding-worker-money"},
+              "paths": {"project_root": str(config.project_root), "state_root": str(config.state_root)}}
+    return result, cells
 
 
-def components(marginals, cells, noise, constants, rng, size):
-    outcome = draw(*marginals["outcome"], rng, size).reshape(size, len(cells), 2)
-    p = probabilities(outcome)
-    tokens = np.exp(draw(*marginals["tokens"], rng, size) + noise["tokens"] ** 2 / 2)
-    hours = np.exp(draw(*marginals["time"], rng, size) + noise["time"] ** 2 / 2) / 3600
-    run = tokens / 1e6 * np.array([c["price"] if c["price"] is not None else np.nan for c in cells])
-    compared_run = tokens / 1e6 * np.array([c["comparison_price"] for c in cells])
-    parts = {"run": compared_run, "loud": p[:, :, 1] * constants["C_loud"],
-             "silent": p[:, :, 2] * constants["C_silent"], "time": hours * constants["lambda_per_hour"]}
-    return p, run, hours, sum(parts.values()), parts
-
-
-def summarize(posterior, config, task, risk=None, context=None, native_candidates=None):
-    cls, cells, marginals = prepare(posterior, config, task, risk, context, native_candidates)
-    constants = config.data["classes"][cls].copy()
-    p, run, hours, j, _ = components(marginals, cells, posterior.prior.noise, constants, np.random.default_rng(SUMMARY_SEED), SUMMARY_DRAWS)
-    table = []
-    for i, cell in enumerate(cells):
-        row = {k: v for k, v in cell.items() if k not in ("price", "comparison_price")}
-        for k, name in enumerate(("P_clean", "P_loud", "P_silent")):
-            row[name] = {"mean": float(p[:, i, k].mean()), "lower": float(np.quantile(p[:, i, k], .025)), "upper": float(np.quantile(p[:, i, k], .975))}
-        row.update(C_run=float(run[:, i].mean()) if cell["price"] is not None else None, T=float(hours[:, i].mean()), J=float(j[:, i].mean()),
-                   admissible=row["P_silent"]["upper"] <= constants["epsilon"])
-        table.append(row)
-    table.sort(key=lambda row: (row["C_run"] if row["C_run"] is not None else float("inf"), row["family"], row["effort"]))
-    result = {"task_type": task, "risk_class": cls, "constants": constants, "cells": table,
-              "fit": posterior.statistics.copy()}
-    result["native_candidates"] = deepcopy(native_candidates)
-    result["cost_policy"] = {"worker_money_included": all(c["price"] is not None for c in cells),
-                             "unknown_price_models": sorted({c["model"] for c in cells if c["price"] is None}),
-                             "comparison": "full-cost" if all(c["price"] is not None for c in cells) else "risk-and-time-excluding-worker-money"}
-    result["paths"] = {"project_root": str(config.project_root), "state_root": str(config.state_root)}
-    if context is not None:
-        result["context"] = deepcopy(context)
-    return result, cells, marginals
-
-
-def choose(prepared, posterior, config, seed=None, sample_parts=None):
-    result, cells, marginals = prepared
+def choose(prepared, config, seed, parts):
+    result, cells = prepared
     result = deepcopy(result)
     if seed is None:
         seed = secrets.randbits(64)
     if type(seed) is not int or seed < 0:
         raise HowHardError("seed: expected a non-negative integer")
-    if sample_parts is None:
-        _, _, _, j, parts = components(marginals, cells, posterior.prior.noise, result["constants"], np.random.default_rng(seed), 1)
-    else:
-        parts = sample_parts
-        j = sum(parts.values())
+    j = sum(parts.values())
     indices = {(cell["family"], cell["effort"]): i for i, cell in enumerate(cells)}
     for row in result["cells"]:
         row["sampled_J"] = float(j[0, indices[row["family"], row["effort"]]])

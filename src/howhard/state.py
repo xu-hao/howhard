@@ -102,7 +102,7 @@ def identity_locked(config):
 
 def claim(config):
     """Called after data validation, under both project identity and storage locks."""
-    from .transfer import atomic_write
+    from .files import atomic_write
     check(config)
     if not config.project_identity:
         config.project_identity = secrets.token_hex(16)

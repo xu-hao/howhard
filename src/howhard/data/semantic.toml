@@ -1,5 +1,5 @@
-format = "howhard-semantic-v1"
-prompt_version = "semantic-reader-v2"
+format = "howhard-semantic-v2"
+prompt_version = "semantic-reader-v3"
 writer_version = "semantic-writer-v1"
 memory_limit = 4
 evidence_limit = 6
@@ -15,6 +15,5 @@ resource_weight = 0.25 # Usage accuracy also contributes to predictive support.
 resource_noise_sd = 1.5 # Broad fixed log-usage likelihood for approximate evidence weighting.
 probability_floor = 0.0001 # Bound the influence of an overconfident forecast.
 memory_prior = 0.25 # New/revised memories start with limited predictive weight.
-statistical_prior = 1.0 # Keep the learned statistical baseline as a competing expert.
-llm_prior = 1.0 # The LLM without a specific memory is another expert.
+llm_prior = 1.0 # The LLM without a specific memory is the reference expert.
 sample_concentration = 12.0 # Approximate uncertainty around semantic forecasts.

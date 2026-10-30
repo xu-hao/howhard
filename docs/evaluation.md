@@ -16,7 +16,6 @@ Before any worker outcome, record forecasts from these arms:
 
 | Arm | Information and state |
 | --- | --- |
-| Existing statistical router | Task/project features and outcome posterior |
 | Stateless LLM | Current task and project only |
 | Plain retrieval | Immutable earlier experience, without mutable semantic memory |
 | Writable memory | Reader/writer with fixed weights |

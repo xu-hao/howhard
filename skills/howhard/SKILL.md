@@ -18,21 +18,20 @@ the host's actual tools execute the task.
    none remain. Respect the user's chosen model or other execution constraints.
 2. Follow [the native decision workflow](references/workflow.md). Write the observed
    candidate list to a temporary JSON input and pass `--candidates` to `context` or
-   `pick`. Unknown identities receive separate neutral prior families automatically;
-   no statistical settings are required. Omit worker prices unless actually known:
+   `pick`. Unknown identities receive separate identity labels automatically;
+   no model assumptions or statistical settings are required. Omit worker prices unless actually known:
    if any are unknown, the backend compares all cells without worker money and labels
    that limit. Do not supply zero or an API list price for unknown host charges.
-3. Run commands from the current project. `howhard paths --llm off --json` exposes the
+3. Run commands from the current project. `howhard paths --json` exposes the
    capture/state roots. Fresh Git worktrees share repository state automatically while
    each task captures its current checkout. Explicit store selection remains available.
    Keep protocol inputs/responses in temporary artifacts outside project source.
    Do not create project wrappers, state contracts or a second memory store.
-4. For calling-agent reasoning, use `--llm off` and the returned `baseline_request` in a
+4. For calling-agent reasoning, evaluate the returned `baseline_request` in a
    separate fresh model context without memory/history or learned tables. Then reason
    over the original task, project and retrieved experience for memory overrides. Copy
    emitted opaque cell keys into the forecast schema; generate prospective estimates
-   honestly. If genuine independence is unavailable, disclose it and use the labeled
-   statistical path. Prepared requests already bind candidates, prices and worktree;
+   honestly. If genuine independence is unavailable, disclose it and report routing unavailable until an independent LLM forecast is available. Prepared requests already bind candidates, prices and worktree;
    follow-up retrieve/decide commands do not repeat or replace that inventory.
 5. Inspect the chosen native ID/control, cost policy and cap/review status. Delegate
    through the actual host tool within the authorized scope, using only supported

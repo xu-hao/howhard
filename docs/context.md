@@ -1,56 +1,9 @@
 # Task text and changing project context
 
-This page describes the statistical baseline. The [LLM semantic-memory path](semantic-memory.md)
-reads original semantic text and mutable memories in addition to this model.
-
-Each decision conditions on the task type, task description, and a fresh snapshot of
-the current project. Project context belongs to a run: it can change between two tasks
-in the same repository. Historical rows keep the snapshot captured for that run.
-
-## Model architecture
-
-The existing hierarchical categorical effects remain. For each failure class, the
-outcome predictor gains three sets of slopes on the contextual feature vector `x`:
-
-```text
-eta_k = existing categorical predictor
-      + x * shared_context_slopes[k]
-      + x * family_context_slopes[k, family]
-      + x * effort_context_slopes[k, effort]
-```
-
-Thus text and project attributes can change relative family and effort preferences.
-The log-token and log-time regressions each gain their own shared contextual slopes.
-Outcome fitting remains a joint Newton/Laplace fit; cost and time updates remain exact.
-Inactive coefficients are marginalized under their normal prior and reconstructed with
-their full conditional covariance, including imported correlations. This reduces work
-on small logs without changing the statistical model or using sequential approximations.
-
-The versioned feature vector contains:
-
-| Input | Representation |
-| --- | --- |
-| Task text | 32 signed hash buckets for word unigrams and adjacent bigrams; normalized log counts |
-| Task size | Log-scaled character and line counts |
-| Project text | 16 signed hash buckets from a bounded summary of current README, manifests and source snippets |
-| Project size | Log-scaled file count, source bytes, source suffix diversity and manifest count |
-| Validation setup | Test-file count, CI, lockfile and typing indicators |
-| Working-tree changes | Current staged, unstaged and untracked changed-file count |
-| Measured coverage | Optional fraction and a separate indicator for whether coverage is known |
-| Context availability | Indicator distinguishing an observed project snapshot from missing historical context |
-
-Hashing uses stable BLAKE2 digests, Unicode normalization and case folding, rather than
-Python's process-randomized hash. The encoder is local and needs no model download,
-network service or credentials. The approach follows
-[feature hashing](https://arxiv.org/abs/0902.2206), with a deliberately small fixed vector
-to keep joint Bayesian fitting practical.
-
-This is a lexical encoder. It learns associations from recorded outcomes; it has no
-pretrained semantic understanding of tasks or code. Synonyms need not have similar
-features, and unrelated terms can collide. Context slopes start at zero with normal
-uncertainty, so initial expectations rely mainly on the categorical prior. Recorded or
-transferred contextual evidence is needed to learn which words and project states
-favor a particular model or effort. Prior values live in packaged `data/context.toml`.
+The LLM receives original task text and bounded project text, together with observable
+project attributes. No lexical feature hashing, pretrained local encoder, contextual
+regression or statistical task representation is used. Historical observations preserve
+the task and snapshot captured for the actual execution.
 
 ## Capturing project state
 
@@ -108,37 +61,3 @@ available and accepts `--text` or `--text-file`; without a receipt it captures c
 at observation time. Use a receipt when the task changed project state. A receipt can
 also be passed to `Engine.observe(..., decision=...)`. Amendments always retain the
 original run's text, project snapshot and usage measurements.
-
-## Current records, cache and transfer
-
-Original rows require `task_text`, `project_context` and `context_encoder` together,
-plus `observed_at` and a `decision_id` when a receipt was used. Empty task text and null
-project context explicitly record unknown inputs; absent fields are refused. Validation
-refuses unknown fields, malformed snapshots and unsupported encoder versions.
-
-Full-log cache hashes include the recorded context and encoder assumptions. Query
-memoization keys also include the actual task text and current snapshot, so two
-requests with the same type cannot reuse different contextual predictions. Cache format
-v2 rejects any other cache format. Identical posterior, text, snapshot and seed reproduce
-the same result and receipt ID across processes.
-
-Contextual prior exports use `howhard-prior-v2`, with an exact feature vocabulary and
-encoder ID. They export shared context slopes and covariance, including family and
-effort slopes, and omit raw text, snapshots, revisions, fingerprints, paths, filenames,
-receipts and project-specific terms. The coefficients still represent learned evidence;
-this is not a formal differential-privacy guarantee. Exports always use the current
-contextual format, even before any evidence is recorded. Imports reject other prior
-formats, incompatible encoder IDs or feature vocabularies.
-
-## Worktree context and shared state
-
-Project capture uses the current checkout even when a durable store is shared. Fresh
-Git worktrees automatically use the repository common directory's howhard store.
-Explicit configuration owns its declared paths. `paths --json` exposes capture/state roots
-and `--state-dir` selects an intentional store without changing the source capture root.
-Prepared requests are worktree-bound, preventing sibling checkouts from satisfying
-retrieval against another checkout's saved source. Frozen receipts remain valid for
-feedback from another worktree in the same project. Stable backend-owned identity markers
-move with the project; new receipts reject other repositories even with the same project
-label. The resolved store subtree, including aliases, is excluded from source capture and
-retrieval. State cannot equal or contain the capture root. See the [state contract](reference.md).

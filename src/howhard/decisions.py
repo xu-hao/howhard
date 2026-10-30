@@ -5,7 +5,7 @@ from pathlib import Path
 import re
 
 from .context import DECISION_FORMAT, FORMAT, canonical, digest, validate_project, validate_text
-from .transfer import atomic_write
+from .files import atomic_write
 from .validation import HowHardError, keys, text
 
 
@@ -17,8 +17,7 @@ def save(config, result):
     value = {"format": DECISION_FORMAT, "project": config.data["project"],
              "project_identity": config.project_identity,
              **{key: result[key] for key in ("task_type", "risk_class", "chosen", "seed", "context")}}
-    if "semantic" in result:
-        value["semantic"] = result["semantic"]
+    value["semantic"] = result["semantic"]
     value["cost_policy"] = result["cost_policy"]
     value["native_candidates"] = result["native_candidates"]
     decision_id = digest(value)
@@ -26,7 +25,7 @@ def save(config, result):
     return decision_id
 
 
-def load(config, source):
+def load(config, source, *, for_scoring=False):
     if isinstance(source, dict):
         if "decision_id" in source:
             source = source["decision_id"]
@@ -43,7 +42,11 @@ def load(config, source):
             raise HowHardError(f"decision: cannot read valid receipt {path}") from exc
         if re.fullmatch(r"[0-9a-f]{64}", source) and digest(value) != source:
             raise HowHardError("decision: receipt content does not match its ID")
-    keys(value, ["format", "project", "project_identity", "task_type", "risk_class", "chosen", "seed", "context", "cost_policy", "native_candidates"], ["semantic"], where="decision")
+    if for_scoring and isinstance(value, dict) and value.get("format") in {
+        "howhard-decision-v1", "howhard-decision-v2", "howhard-decision-v3"
+    }:
+        return None  # Preserve old evidence without replaying a removed predictor.
+    keys(value, ["format", "project", "project_identity", "task_type", "risk_class", "chosen", "seed", "context", "cost_policy", "native_candidates", "semantic"], where="decision")
     if value["format"] != DECISION_FORMAT:
         raise HowHardError("decision.format: unsupported version")
     policy = value["cost_policy"]

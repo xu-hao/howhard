@@ -11,8 +11,8 @@ from .validation import HowHardError
 
 def report(engine):
     outcomes = Counter(row["outcome"] for row in engine.rows)
-    scored = {key: [] for key in ("statistical", "llm", "weighted_memory")}
-    missing = []
+    scored = {key: [] for key in ("llm", "weighted_memory")}
+    missing, unsupported = [], []
     for row in engine.rows:
         decision_id = row.get("decision_id")
         if not decision_id:
@@ -20,16 +20,17 @@ def report(engine):
         if not receipt_path(engine.config, decision_id).is_file():
             missing.append(row["id"])
             continue
-        decision = load(engine.config, decision_id)
-        state = decision.get("semantic")
-        if state is None:
+        decision = load(engine.config, decision_id, for_scoring=True)
+        if decision is None:
+            unsupported.append(row["id"])
             continue
+        state = decision["semantic"]
         pair = row["family"], row["resolved_effort"]
         panels = {key: panel_lookup(panel) for key, panel in state["worlds"].items()}
-        if pair not in panels["statistical"]:
+        if pair not in panels["llm"]:
             raise HowHardError(f"report: receipt has no actual cell for {row['id']}")
-        probabilities = {key: [panels[key][pair][outcome] for outcome in OUTCOMES] for key in ("statistical", "llm")}
-        probabilities["weighted_memory"] = [sum(e["weight"] * panels.get(e["key"], panels["statistical"])[pair][outcome] for e in state["beliefs"]["experts"]) for outcome in OUTCOMES]
+        probabilities = {key: [panels[key][pair][outcome] for outcome in OUTCOMES] for key in ("llm",)}
+        probabilities["weighted_memory"] = [sum(e["weight"] * panels.get(e["key"], panels["llm"])[pair][outcome] for e in state["beliefs"]["experts"]) for outcome in OUTCOMES]
         target = OUTCOMES.index(row["outcome"])
         for key, values in probabilities.items():
             loss = -math.log(max(SETTINGS["belief"]["probability_floor"], values[target]))
@@ -59,7 +60,7 @@ def report(engine):
     known_worker = sum(row["cost_usd"] for row in engine.rows if row["cost_usd"] is not None)
     unknown_worker = sum(row["cost_usd"] is None for row in engine.rows)
     return {"project": engine.config.data["project"], "runs": len(engine.rows), "outcomes": {k: outcomes[k] for k in OUTCOMES},
-            "forecast_metrics": metrics, "missing_receipts": missing,
+            "forecast_metrics": metrics, "missing_receipts": missing, "unsupported_receipts": unsupported,
             "worker_cost": {"known_usd": known_worker, "unknown_runs": unknown_worker, "total_usd": known_worker if not unknown_worker else None},
             "inference": {"calls": len(measured), "failed_calls": sum(e["status"] == "failed" for e in measured),
                           "seconds": sum(e["seconds"] for e in measured), "known_usd": known_inference,
