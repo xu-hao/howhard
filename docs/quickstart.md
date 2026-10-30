@@ -61,7 +61,7 @@ To request the complete workflow explicitly, give it your real task:
 > execution ID and update memory. Report any unsupported controls or identity mismatch.
 
 For persistent use before worker delegation, copy the
-[coordinating-agent instruction](skills.md#require-howhard-before-delegation)
+[coordinating-agent instruction](skills.md)
 into your agent's project instructions (`AGENTS.md` in Codex). The skill guide explains
 the instruction's scope and the host enforcement needed for a hard guarantee.
 
