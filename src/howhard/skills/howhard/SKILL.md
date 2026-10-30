@@ -25,8 +25,8 @@ Installing or loading it does not add a delegation tool or enforce a model selec
    `baseline_request` in a separate, fresh model context without memories, history or
    the learned table; then reason over the original task and retrieved evidence for
    memory-conditioned overrides. If an independent context cannot be obtained, report
-   that limit and use the explicitly labeled statistical path. Do not invent forecasts
-   or present a memory-informed call as an independent baseline.
+   that limit and use the explicitly labeled statistical path. Generate prospective
+   estimates honestly; do not fabricate past forecasts, observations or baseline independence.
 4. Validate the result against the same host inventory and preserve its decision ID,
    chosen concrete model, effort, context, cap/review status and reasons. Honor review
    requirements. Delegate through the host's actual tool using supported controls and

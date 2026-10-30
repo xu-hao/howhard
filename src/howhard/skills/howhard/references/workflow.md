@@ -76,7 +76,8 @@ Combine the frozen baseline `forecasts` with reader-supplied `memory_forecasts` 
 `reason` in `forecasts.json`. Follow the returned schema: every baseline candidate has
 family, effort, clean/loud/silent probabilities summing to one, tokens and seconds;
 memory overrides identify a seen active memory ID and version. An empty override list
-is valid. No invented memories, fabricated forecasts or retrospective forecasts.
+is valid. Generate prospective estimates from the supplied context; do not fabricate
+memories, past forecasts, observations or baseline independence.
 Malformed/stale responses are refused by the backend. If inputs become stale, prepare
 fresh context and recompute once; stop and report repeated failure.
 
