@@ -17,6 +17,7 @@ with zipfile.ZipFile(wheel) as archive:
     for resource in ("default_config.toml", "context.toml", "semantic.toml"):
         assert f"howhard/data/{resource}" in names, resource
     assert not any(name.startswith("howhard/skills/") for name in names)
+    assert not any(name.startswith("benchmarks/") for name in names)
     for retired in ("cache", "outcomes", "prior", "regression", "gaussian", "transfer"):
         assert f"howhard/{retired}.py" not in names
     assert "howhard/data/default_prior.toml" not in names
@@ -27,6 +28,8 @@ with zipfile.ZipFile(wheel) as archive:
 sdist = Path("dist") / f"howhard-{expected}.tar.gz"
 with tarfile.open(sdist) as archive:
     assert f"howhard-{expected}/tests/conftest.py" in archive.getnames()
+    for name in ("__init__.py", "rule_retrieval.py", "bench_rule_retrieval.py", "rule_cases.json"):
+        assert f"howhard-{expected}/benchmarks/{name}" in archive.getnames()
     for name in ("SKILL.md", "references/hosts.md", "references/workflow.md"):
         assert f"howhard-{expected}/skills/howhard/{name}" in archive.getnames()
     for name in ("plugin.json", ".claude-plugin/plugin.json", ".antigravity-plugin/plugin.json"):
