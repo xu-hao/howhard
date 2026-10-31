@@ -75,7 +75,7 @@ own earlier evaluation history. No operation deletes original outcome evidence.
 The reader receives the original task, a freshly captured project snapshot, candidate
 model/effort cells, current belief summaries, semantic memories and relevant recorded
 experience. [Execution experience retrieval](retrieval.md) uses BM25 plus HNSW, fuses
-up to 200 candidates, and applies pretrained Qwen3-Reranker-0.6B to select up to eight
+up to 200 candidates, and applies a compact pretrained MiniLM-L4 INT8 cross-encoder to select up to eight
 observed executions/written lessons. Relevance includes broader/narrower task demands
 and project constraints. The calling agent remains the final reasoning stage.
 It can request bounded additional `memory.search`, `memory.read`, `evidence.search`,
