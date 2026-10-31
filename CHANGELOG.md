@@ -7,7 +7,8 @@
 ### Compatibility
 
 This is a breaking release of the LLM-only routing workflow, not a compatible patch
-to the 0.6 maintenance series. See the [upgrade guide](docs/upgrading-1.0.md).
+to the 0.6 maintenance series. See the
+[upgrade guide](https://github.com/xu-hao/howhard/blob/v1.0.0/docs/upgrading-1.0.md).
 
 - Remove statistical routing, its CLI/API/configuration surfaces and generic prior
   transfer. Native routing requires explicit host model/effort candidates and an

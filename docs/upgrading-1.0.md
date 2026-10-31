@@ -35,7 +35,7 @@ configuration. Old family-selection flags, implicit registry-only candidates and
 default-effort guessing are unavailable. Invalid configuration fails explicitly.
 
 Follow the [current Quickstart](quickstart.md) and
-[native workflow](skills.md#capability-boundaries). Supply the actual host's model
+{ref}`native workflow <skill-capability-boundaries>`. Supply the actual host's model
 and effort/control inventory through `--candidates FILE` or Python
 `native_candidates`. The calling agent prepares context, obtains a fresh independent
 baseline, considers retrieved experience, and submits forecasts to `decide`.
@@ -72,7 +72,7 @@ The new attribution skill investigates escaped defects using reproductions and G
 history, resolving the original task and execution before amending an outcome.
 Blame alone is insufficient and uncertain attribution remains unscored. Retain
 base/result commits, PR and acceptance evidence in existing artifacts and observation
-notes to support future investigations; see [escaped-defect attribution](skills.md#escaped-defect-attribution).
+notes to support future investigations; see {ref}`escaped-defect attribution <escaped-defect-attribution>`.
 
 Published tests and package checks establish implementation behavior and mechanics.
 They do not establish comparative routing accuracy or cost savings.

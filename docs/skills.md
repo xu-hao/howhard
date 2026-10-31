@@ -111,6 +111,7 @@ guarantee would require the host to reject worker launches without a valid howha
 decision matching the requested model and effort. Installing the plugin or adding
 this instruction does not implement that check or authorize additional delegation.
 
+(escaped-defect-attribution)=
 ## Escaped-defect attribution
 
 During bug fixing or a requested audit, the companion `attribute-failure` skill
@@ -142,6 +143,7 @@ task artifacts and observation notes.
 
 The complete maintained procedure lives in `skills/attribute-failure/SKILL.md`.
 
+(skill-capability-boundaries)=
 ## Capability boundaries
 
 The skill uses original task/current project context, an independent baseline, retrieved
