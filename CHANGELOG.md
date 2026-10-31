@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Use a pinned MiniLM-L4 INT8 ONNX cross-encoder as the default CPU reranker. A
+  two-thread check of 200 pairs took 0.32–0.41 seconds for short inputs and 8.34–8.55
+  seconds for full 512-token windows. Keep the 200-to-eight pipeline and calling-agent
+  forecasts; retain instruction-aware Qwen through the optional `qwen` install extra.
+  The compact default has a 512-token combined window and no instruction tuning.
+
 - Retrieve transferable execution experience with local BM25 and HNSW, RRF fusion
   to 200 candidates and pretrained instruction-aware Qwen3-Reranker-0.6B selection
   of up to eight precedents. Keep observed model/effort/outcome/cost attached, include

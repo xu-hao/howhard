@@ -15,7 +15,7 @@ project context + task
           |
   reciprocal rank fusion: up to 200
           |
-  Qwen3-Reranker-0.6B: up to 8
+  MiniLM-L4 INT8 cross-encoder: up to 8
           |
   calling agent / configured reader
           |
@@ -23,12 +23,17 @@ project context + task
 ```
 
 SQLite FTS5 supplies BM25. FastEmbed's `BAAI/bge-small-en-v1.5` supplies local dense
-embeddings; USearch supplies HNSW with cosine distance. The cross-encoder is
-[`Qwen/Qwen3-Reranker-0.6B`](https://huggingface.co/Qwen/Qwen3-Reranker-0.6B), pinned
-to revision `e61197ed45024b0ed8a2d74b80b4d909f1255473`. Its instruction ranks usefulness
-for model-and-effort prediction, considering project constraints, capabilities,
-complexity, scope, and broader/narrower tasks. It scores query/candidate pairs in
-batches; it does not receive 200 candidates in one generative LLM prompt.
+embeddings; USearch supplies HNSW with cosine distance. The CPU default cross-encoder
+is [`Xenova/ms-marco-MiniLM-L-4-v2`](https://huggingface.co/Xenova/ms-marco-MiniLM-L-4-v2),
+pinned to revision `e8fdba61d478d042b338f7bcf7ba4e48ed7d46d7`, using the pretrained
+`onnx/model_quantized.onnx` INT8 artifact through FastEmbed. It scores query/candidate
+pairs in batches of 16 with two CPU threads and selects up to eight. This compact
+search-relevance model has no custom instruction-following capability. The final
+agent assesses how broader/narrower task experience transfers to the new task.
+
+The instruction-aware `QwenReranker` remains replaceable through the same interface,
+but is optional because its CPU latency is substantially higher. Neither reranker
+receives 200 candidates in one generative LLM prompt.
 
 Execution ranking text contains the task and historical project text/characteristics,
 not the chosen model, outcome or cost. Those fields remain attached as evidence for
@@ -36,7 +41,8 @@ the final agent. Written lessons also participate, using their title and body.
 Retrieval never prefers successful executions simply because they succeeded.
 Neither query nor document includes transient project paths, Git fingerprints or
 timestamps as similarity features. Dense embedding length follows the embedding
-model's tokenizer limit; the default reranker caps pairs at 8,192 tokens. Truncated
+model's tokenizer limit; the default reranker's **combined query/document window is
+512 tokens**. Longer tasks/project descriptions are truncated by the tokenizer. Truncated
 model inputs do not replace the original stored snapshots or observed results.
 
 The eight-result budget is shared by observed executions and written lessons. A
@@ -73,10 +79,10 @@ canonical outcome record changes when replacing a stage.
 
 ```python
 from howhard import Engine, RetrievalPipeline, load_config
-from howhard.retrieval import QwenReranker
+from howhard.retrieval import FastEmbedReranker
 
 config = load_config()
-reranker = QwenReranker(config.state_root / "models", device="cpu", threads=1)
+reranker = FastEmbedReranker(config.state_root / "models", threads=2)
 pipeline = RetrievalPipeline(config.state_root, reranker=reranker)
 engine = Engine(config, retrieval=pipeline)
 ```
@@ -98,6 +104,15 @@ must change when their representation/model changes; the dense cache depends on 
 embedding identity. `QwenReranker` also accepts `model`, `revision`, `instruction`,
 `device`, `max_length` and `batch_size` for another compatible cross-encoder. When
 changing a model, supply its matching revision and instruction/template support.
+`FastEmbedReranker` accepts another compatible ONNX model, matching `revision`,
+`model_file`, `threads` and `batch_size`.
+
+To opt into instruction-aware Qwen, install `howhard[qwen]` and pass
+`reranker=QwenReranker(config.state_root / "models", device="cpu", threads=2)`.
+Its frozen default revision is `e61197ed45024b0ed8a2d74b80b4d909f1255473`, its
+combined window is capped at 8,192 tokens, and its instruction explicitly considers
+project constraints, capabilities, complexity and broader/narrower tasks. It retains
+the same calling-agent forecasting and learned-weight interfaces.
 
 The calling agent remains the final reasoning stage, through the existing
 `context`/`retrieve`/`decide` protocol. No extra LLM selection call or rule-condition
@@ -108,13 +123,22 @@ at most eight memory forecasts are accepted.
 
 No server, container or project configuration is needed. Larger-corpus search loads
 the models lazily, downloading weights under the state root's `models/` directory.
-The Qwen download is approximately 1.21 GB; inference needs additional RAM and runtime
-libraries. Keep the pipeline alive in a long-running Python integration to reuse loaded
-models; separate CLI processes reload them from the local cache. CPU float32 is the
-default, avoiding software BF16 arithmetic on CPUs without native BF16 support. The
-in-memory weights alone therefore need approximately 2.4 GB, before working memory.
+Keep the pipeline alive in a long-running Python integration to reuse loaded models;
+separate CLI processes reload them from the local cache. The ordinary install uses
+ONNX Runtime and requires neither PyTorch nor Sentence Transformers. Optional Qwen
+uses those libraries, downloads approximately 1.21 GB, and defaults to CPU float32:
+its in-memory weights alone need approximately 2.4 GB before working memory.
 Local compute has a cost even though no inference API is called. Decision wall-clock
 audit includes retrieval; it does not invent a dollar price for local resources.
+
+A local timing check on a Ryzen 9 5900X capped to two CPU threads, batch size 16 and 200 pairs measured
+0.32–0.41 seconds for short pairs and 8.34–8.55 seconds for inputs filling the
+512-token window. This met the requested under-15-second warm reranking target in
+that check. Initial download/model initialization, indexing and final LLM forecasts
+are separate. Three repetitions measure timing variation, not independent quality
+evidence. A small four-pair sanity check placed both transaction-related precedents
+above unrelated prose/CSS work, as Qwen did; this does not establish equivalent
+relevance quality. Longer inputs and other hardware need separate validation.
 
 `retrieval.sqlite3` holds disposable FTS, content-addressed embeddings, and a checked
 HNSW graph. Changes in the indexed content or embedding identity rebuild the current
