@@ -23,7 +23,7 @@ def run(*command):
 run("claude", "plugin", "validate", str(root), "--strict")
 checkout = json.loads(run("agy", "plugin", "validate", str(root), "--json"))
 assert not any(finding["severity"] == "error" for finding in checkout["findings"])
-assert checkout["components"]["skills"] == 1
+assert checkout["components"]["skills"] == 2
 
 # The multiprovider checkout intentionally contains contributor AGENTS.md and a
 # portable manifest that Agy ignores. Validate its exact host payload strictly too.
@@ -32,5 +32,5 @@ with tempfile.TemporaryDirectory(prefix="howhard-native-plugin-") as directory:
     shutil.copytree(root / ".antigravity-plugin", payload / ".antigravity-plugin")
     shutil.copytree(root / "skills", payload / "skills")
     strict = json.loads(run("agy", "plugin", "validate", str(payload), "--strict", "--json"))
-    assert strict["components"]["skills"] == 1
+    assert strict["components"]["skills"] == 2
 print("Verified Claude native manifests and Antigravity checkout/exact host payload; no installs")

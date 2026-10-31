@@ -32,6 +32,7 @@ with tarfile.open(sdist) as archive:
         assert f"howhard-{expected}/benchmarks/{name}" in archive.getnames()
     for name in ("SKILL.md", "references/hosts.md", "references/workflow.md"):
         assert f"howhard-{expected}/skills/howhard/{name}" in archive.getnames()
+    assert f"howhard-{expected}/skills/attribute-failure/SKILL.md" in archive.getnames()
     for name in ("plugin.json", ".claude-plugin/plugin.json", ".antigravity-plugin/plugin.json"):
         manifest = json.load(archive.extractfile(f"howhard-{expected}/{name}"))
         assert manifest["name"] == "howhard" and manifest["version"] == expected

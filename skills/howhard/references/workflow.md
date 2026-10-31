@@ -124,6 +124,11 @@ metadata in `--note`; do not claim accepted overrides unless they were accepted.
 Use the returned decision ID and a stable per-execution ID. OUTCOME is clean, loud or
 silent based on actual feedback. Add tokens, seconds and cost_usd only when measured;
 unknown values stay null. Tokens include total cached/uncached input and output.
+For code tasks, include the base/result commits, PR when applicable and acceptance
+evidence in existing task artifacts and the observation note, together with the stable
+execution ID. Preserve the published merge/squash mapping when known; unknown links
+stay explicit. The [attribute-failure skill](../../attribute-failure/SKILL.md) uses
+that provenance during later bug investigations, without another ledger.
 Do not record an unrun action. A matching stable-ID retry returns the original row,
 including its first timestamp/context and derived risk class. Explicit
 changes to task/context, controls, outcome, measurements or notes conflict instead of

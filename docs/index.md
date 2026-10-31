@@ -9,8 +9,8 @@
   adapters, memory operations, feedback weights and agent tools.
 - [Execution experience retrieval](retrieval.md) — replaceable BM25/HNSW retrieval,
   pretrained instruction-aware reranking and bounded precedent context.
-- [Reusable skill and host installation](skills.md) — Codex, Claude Code and Antigravity
-  discovery, first-party plugin installation and honest execution capabilities.
+- [Reusable skills and host installation](skills.md) — routing, escaped-defect attribution,
+  Codex, Claude Code and Antigravity discovery, native installation and execution limits.
 - [Rule retrieval benchmark](rule-benchmark.md) — opt-in representation/reranking diagnostics
   with pytest-probability, separate from field routing-quality evidence.
 - [Real-project evaluation](evaluation.md) — chronological field trials and genuine
