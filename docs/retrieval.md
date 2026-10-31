@@ -36,7 +36,7 @@ but is optional because its CPU latency is substantially higher. Neither reranke
 receives 200 candidates in one generative LLM prompt.
 
 Users/applications can select a fixed profile through
-[`[retrieval]` configuration](configuration.md#fixed-retrieval-configuration):
+{ref}`[retrieval] configuration <fixed-retrieval-configuration>`:
 `reranker = "fast"` or `reranker = "qwen"`, with optional model/revision/runtime
 overrides. The agent cannot request a different tier through retrieval tools, and the
 backend never upgrades automatically. Changing owner policy requires a fresh request.
