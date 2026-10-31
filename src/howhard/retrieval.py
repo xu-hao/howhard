@@ -175,6 +175,9 @@ class HNSWIndex:
         self.path = path
 
     def search(self, documents, query, *, embedder, limit):
+        # USearch exposes native symbols globally; importing ONNX afterwards can
+        # segfault. Initialize inference first, only when dense search is needed.
+        import onnxruntime
         from usearch.index import Index
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with sqlite3.connect(self.path, timeout=180) as db:
