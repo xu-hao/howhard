@@ -35,6 +35,12 @@ The instruction-aware `QwenReranker` remains replaceable through the same interf
 but is optional because its CPU latency is substantially higher. Neither reranker
 receives 200 candidates in one generative LLM prompt.
 
+Users/applications can select a fixed profile through
+[`[retrieval]` configuration](configuration.md#fixed-retrieval-configuration):
+`reranker = "fast"` or `reranker = "qwen"`, with optional model/revision/runtime
+overrides. The agent cannot request a different tier through retrieval tools, and the
+backend never upgrades automatically. Changing owner policy requires a fresh request.
+
 Execution ranking text contains the task and historical project text/characteristics,
 not the chosen model, outcome or cost. Those fields remain attached as evidence for
 the final agent. Written lessons also participate, using their title and body.
