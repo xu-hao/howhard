@@ -5,6 +5,7 @@ when present; `--config PATH` chooses another file. Paths are relative to that f
 An explicit config must state `on_cap_unmet`; other settings overlay packaged defaults.
 Unknown keys are refused. This reference is for integrators, not a user setup checklist.
 
+(fixed-retrieval-configuration)=
 ## Fixed retrieval configuration
 
 Select the reranker in user/application-owned `howhard.toml`:
