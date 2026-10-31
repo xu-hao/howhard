@@ -2,8 +2,6 @@
 
 from contextlib import contextmanager
 import json
-import math
-import re
 import secrets
 import sqlite3
 
@@ -19,9 +17,13 @@ def strings(value, where):
 
 
 class MemoryStore:
-    def __init__(self, config, evidence=None):
+    def __init__(self, config, evidence=None, retrieval=None):
         self.path = config.state_root / "memory.sqlite3"
         self._evidence = evidence or (lambda: set())
+        if retrieval is None:
+            from .retrieval import RetrievalPipeline
+            retrieval = RetrievalPipeline(config.state_root)
+        self.retrieval = retrieval
 
     @contextmanager
     def _db(self):
@@ -94,17 +96,10 @@ class MemoryStore:
             return [{"revision": row["revision"], "actor": row["actor"], "operation": json.loads(row["operation"])}
                     for row in db.execute("SELECT * FROM events ORDER BY revision") if memory_id is None or memory_id in json.loads(row["targets"])]
 
-    def search(self, query, *, limit=6, include_removed=False):
-        if not isinstance(query, str) or type(limit) is not int or not 1 <= limit <= 100:
-            raise HowHardError("memory.search: expected query string and limit in [1, 100]")
-        terms = set(re.findall(r"\w+", query.casefold()))
-        def rank(entry):
-            words = set(re.findall(r"\w+", (entry["title"] + " " + entry["body"]).casefold()))
-            return (-len(terms & words) / math.sqrt(max(1, len(words))), entry["id"])
-        entries = self.list(include_removed=include_removed)
-        if terms:
-            entries = [entry for entry in entries if rank(entry)[0] < 0]
-        return sorted(entries, key=rank)[:limit]
+    def search(self, query, *, limit=8, include_removed=False):
+        from .retrieval import records
+        result = self.retrieval.search(records(memories=self.list(include_removed=include_removed)), query, limit=limit)
+        return [r["value"] for r in result["records"]]
 
     def learned(self, event_key):
         with self._db() as db:

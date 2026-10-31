@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Retrieve transferable execution experience with local BM25 and HNSW, RRF fusion
+  to 200 candidates and pretrained instruction-aware Qwen3-Reranker-0.6B selection
+  of up to eight precedents. Keep observed model/effort/outcome/cost attached, include
+  relevant failures and broader/narrower tasks, and retain the calling agent for final
+  forecasts. Make every retrieval/reranking stage independently replaceable in Python.
+- Expose observed runs as read-only memory experts with prospective predictive credit.
+  Normalize decision support over participating experts so unrelated history cannot
+  dilute retrieved experience. Rebuild derived indexes on edits/amendments without
+  changing canonical evidence. Larger searches lazily download local pretrained models.
+
 - Add an opt-in pytest-probability diagnostic benchmark comparing whole-rule versus
   applicability-condition embeddings, with and without cross-encoder reranking.
   Forty authored tasks cover paraphrases, misleading action words, exceptions,
