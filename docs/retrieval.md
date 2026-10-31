@@ -58,6 +58,12 @@ at most 200, and the cross-encoder orders the final eight. Scores are ordering s
 not calibrated relevance probabilities: there is no arbitrary confidence cutoff.
 Empty candidate pools return no results. Model/index failures are explicit errors.
 
+Native runtime initialization stays lazy: dense search initializes ONNX Runtime before
+loading USearch, whose globally loaded native symbols can otherwise crash a later ONNX
+import. This also protects an ONNX reranker paired with a custom embedder. Requests whose
+corpus fits the eight-result budget load neither runtime, and callers need no manual
+pre-imports. Initialization order does not change the configured stages or ranking.
+
 ## Evidence and weights
 
 Observed executions are exposed to the reader as read-only `execution:RUN_ID` memory
