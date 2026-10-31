@@ -38,7 +38,7 @@ class Engine:
         self._summaries = {}
         self.refresh()
         from .retrieval import RetrievalPipeline
-        self.retrieval = retrieval if retrieval is not None else RetrievalPipeline(self.config.state_root)
+        self.retrieval = retrieval if retrieval is not None else RetrievalPipeline.from_config(self.config)
         self.memory = MemoryStore(self.config, evidence=lambda: {r["id"] for r in self.raw_rows}, retrieval=self.retrieval)
 
     def refresh(self):

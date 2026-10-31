@@ -7,6 +7,10 @@ journal = ".howhard/pending.jsonl"
 path = ".howhard/outcomes.jsonl"
 project = "local"
 
+# User/application policy; an agent cannot override this through retrieval tools.
+[retrieval]
+reranker = "fast"
+
 # USD costs of rework and escaped defects; waiting is priced per hour.
 [classes.critical]
 C_loud = 200.0

@@ -3,7 +3,8 @@
 from copy import deepcopy
 from dataclasses import dataclass, field
 from importlib.resources import files
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+import re
 import tomllib
 
 from .validation import HowHardError, keys, number, table, text
@@ -28,6 +29,32 @@ def parse_toml(data, where):
         return tomllib.loads(data.decode("utf-8"))
     except (UnicodeError, tomllib.TOMLDecodeError) as exc:
         raise HowHardError(f"{where}: {exc}") from exc
+
+
+def validate_retrieval(spec):
+    keys(spec, ["reranker"], ["model", "revision", "threads", "batch_size", "model_file", "instruction", "max_length", "device"], "retrieval")
+    if spec["reranker"] not in ("fast", "qwen"):
+        raise HowHardError("retrieval.reranker: expected fast or qwen")
+    specific = {"fast": ("model_file",), "qwen": ("instruction", "max_length", "device")}
+    for field in specific["qwen" if spec["reranker"] == "fast" else "fast"]:
+        if field in spec:
+            raise HowHardError(f"retrieval.{field}: not supported by {spec['reranker']}")
+    if ("model" in spec) != ("revision" in spec):
+        raise HowHardError("retrieval: provide model and matching revision together")
+    if "model" in spec:
+        text(spec["model"], "retrieval.model")
+        if not isinstance(spec["revision"], str) or not re.fullmatch(r"[0-9a-f]{40}", spec["revision"]):
+            raise HowHardError("retrieval.revision: expected a full immutable commit SHA")
+    for field, cap in (("threads", 256), ("batch_size", 1024), ("max_length", 32768)):
+        if field in spec and (type(spec[field]) is not int or not 1 <= spec[field] <= cap):
+            raise HowHardError(f"retrieval.{field}: expected integer in [1, {cap}]")
+    for field in ("model_file", "instruction", "device"):
+        if field in spec:
+            text(spec[field], f"retrieval.{field}")
+    if "model_file" in spec:
+        path = PurePosixPath(spec["model_file"])
+        if path.is_absolute() or ".." in path.parts or not spec["model_file"].endswith(".onnx"):
+            raise HowHardError("retrieval.model_file: expected a relative ONNX artifact path")
 
 
 @dataclass
@@ -78,7 +105,8 @@ def load_config(path=None, *, directory=None, state_directory=None):
     else:
         data = default
     keys(data, ["project", "on_cap_unmet", "journal", "logs", "classes", "models"],
-         ["task_types"], "config")
+         ["task_types", "retrieval"], "config")
+    validate_retrieval(data.get("retrieval", {"reranker": "fast"}))
     for key in ("classes", "models", "task_types"):
         table(data.get(key, {}), f"config.{key}")
     text(data["project"], "config.project", label=True)

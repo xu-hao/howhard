@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add optional fixed `[retrieval]` settings for the fast ONNX or Qwen reranker,
+  pinned model/artifact overrides and runtime controls. Apply the policy to routing,
+  memory and evidence search; reject invalid combinations before creating state.
+  Agent retrieval tools cannot change the tier, model or configuration, and no
+  automatic upgrade/fallback is introduced. Policy changes invalidate pending requests.
+
 - Use a pinned MiniLM-L4 INT8 ONNX cross-encoder as the default CPU reranker. A
   two-thread check of 200 pairs took 0.32–0.41 seconds for short inputs and 8.34–8.55
   seconds for full 512-token windows. Keep the 200-to-eight pipeline and calling-agent
