@@ -8,6 +8,7 @@ import hashlib
 import json
 import re
 import sqlite3
+from threading import Lock
 from time import monotonic
 
 import numpy as np
@@ -18,8 +19,12 @@ from .validation import HowHardError
 CANDIDATES = 200
 KEEP = 8
 EMBED_MODEL = "BAAI/bge-small-en-v1.5"
-RERANK_MODEL = "Qwen/Qwen3-Reranker-0.6B"
-RERANK_REVISION = "e61197ed45024b0ed8a2d74b80b4d909f1255473"
+RERANK_MODEL = "Xenova/ms-marco-MiniLM-L-4-v2"
+RERANK_REVISION = "e8fdba61d478d042b338f7bcf7ba4e48ed7d46d7"
+RERANK_FILE = "onnx/model_quantized.onnx"
+QWEN_MODEL = "Qwen/Qwen3-Reranker-0.6B"
+QWEN_REVISION = "e61197ed45024b0ed8a2d74b80b4d909f1255473"
+_MODEL_REGISTRATION = Lock()
 INSTRUCTION = (
     "Rank past project tasks and execution experiences by their usefulness for estimating "
     "model and reasoning effort performance on the new task. Match project constraints, "
@@ -74,10 +79,43 @@ class FastEmbedder:
         return np.asarray(list(method(texts, batch_size=32)), dtype=np.float32)
 
 
-class QwenReranker:
-    identity = f"{RERANK_MODEL}@{RERANK_REVISION}:routing-v1:8192"
+class FastEmbedReranker:
+    """Compact CPU cross-encoder; frozen INT8 weights, no generative instructions."""
 
     def __init__(self, cache_directory, *, model=RERANK_MODEL, revision=RERANK_REVISION,
+                 model_file=RERANK_FILE, threads=2, batch_size=16):
+        self.cache_directory, self.model = cache_directory, None
+        self.model_name, self.revision, self.model_file = model, revision, model_file
+        self.threads, self.batch_size = threads, batch_size
+        fingerprint = digest(["fastembed-0.9.1", model, revision, model_file])
+        self.identity = f"{model}@{revision}:{model_file}:{fingerprint}"
+        self.alias = "howhard/" + fingerprint
+
+    def score(self, query, documents):
+        if not documents:
+            return []
+        if self.model is None:
+            from huggingface_hub import snapshot_download
+            from fastembed.rerank.cross_encoder import TextCrossEncoder
+            from fastembed.common.model_description import ModelSource
+            path = snapshot_download(
+                self.model_name, revision=self.revision, cache_dir=str(self.cache_directory),
+                allow_patterns=["*.json", "*.txt", self.model_file])
+            with _MODEL_REGISTRATION:
+                if not any(m["model"] == self.alias for m in TextCrossEncoder.list_supported_models()):
+                    TextCrossEncoder.add_custom_model(
+                        model=self.alias, sources=ModelSource(hf=self.model_name),
+                        model_file=self.model_file, license="apache-2.0")
+            self.model = TextCrossEncoder(
+                model_name=self.alias, specific_model_path=str(path), threads=self.threads,
+                providers=["CPUExecutionProvider"])
+        return list(self.model.rerank(query, documents, batch_size=self.batch_size))
+
+
+class QwenReranker:
+    identity = f"{QWEN_MODEL}@{QWEN_REVISION}:routing-v1:8192"
+
+    def __init__(self, cache_directory, *, model=QWEN_MODEL, revision=QWEN_REVISION,
                  instruction=INSTRUCTION, device="cpu", max_length=8192, batch_size=4, threads=1):
         self.cache_directory, self.model = cache_directory, None
         self.model_name, self.revision, self.instruction = model, revision, instruction
@@ -86,8 +124,11 @@ class QwenReranker:
 
     def score(self, query, documents):
         if self.model is None:
-            import torch
-            from sentence_transformers import CrossEncoder
+            try:
+                import torch
+                from sentence_transformers import CrossEncoder
+            except ImportError as exc:
+                raise HowHardError("Qwen reranking requires the optional howhard[qwen] dependencies") from exc
             torch.set_num_threads(self.threads)
             self.model = CrossEncoder(
                 self.model_name, revision=self.revision, device=self.device, max_length=self.max_length,
@@ -201,7 +242,7 @@ class RetrievalPipeline:
         self.lexical = lexical if lexical is not None else BM25Index(path)
         self.dense = dense if dense is not None else HNSWIndex(path)
         self.fusion = fusion if fusion is not None else reciprocal_rank_fusion
-        self.reranker = reranker if reranker is not None else QwenReranker(state_root / "models")
+        self.reranker = reranker if reranker is not None else FastEmbedReranker(state_root / "models")
 
     def search(self, documents, query, *, limit=KEEP):
         if not isinstance(query, str) or type(limit) is not int or not 1 <= limit <= CANDIDATES:

@@ -52,7 +52,7 @@ with tempfile.TemporaryDirectory(prefix="howhard-wheel-") as directory:
     python = root / "venv/bin/python"
     subprocess.run([str(python), "-m", "pip", "install", "--quiet", str(wheel.resolve())],
                    cwd=root, env=environment, check=True)
-    code = 'from importlib.resources import files; import howhard; assert files("howhard").joinpath("data/semantic.toml").is_file(); print(howhard.__version__)'
+    code = 'from importlib.resources import files; import importlib.util; import howhard; from howhard.retrieval import FastEmbedReranker; assert importlib.util.find_spec("torch") is None; assert files("howhard").joinpath("data/semantic.toml").is_file(); print(howhard.__version__)'
     installed_version = subprocess.check_output([str(python), "-c", code], cwd=root, env=environment, text=True).strip()
     assert installed_version == expected
     command = root / "venv/bin/howhard"
