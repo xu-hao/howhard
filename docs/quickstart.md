@@ -7,11 +7,12 @@ required by howhard. From your project directory, install the Python backend fro
 ```sh
 python3 -m venv .venv-howhard
 . .venv-howhard/bin/activate
-python -m pip install "git+https://github.com/xu-hao/howhard.git"
+python -m pip install "git+https://github.com/xu-hao/howhard.git@v1.0.0"
 howhard --version
 ```
 
-Expect `howhard 0.6.0` (or later). This is a source installation, not a PyPI release
+Expect `howhard 1.0.0`. Read the [upgrade guide](upgrading-1.0.md) when moving
+from 0.6.x. This is a source installation, not a PyPI release
 claim. Keep this environment active and start your coding agent from the same shell so
 it can find `howhard`. Install the skill through **your agent's native plugin manager**;
 choose the matching block below.
@@ -42,8 +43,9 @@ agy plugin list
 These native flows use the user's plugin environment. Claude Code also supports explicit
 `--scope project` or `--scope local` on both marketplace addition and plugin installation.
 Choose the intended scope before running those commands. Reopen the agent if necessary.
-All three load the same `skills/howhard/SKILL.md`: common Agent Skills content with thin,
-host-specific plugin metadata, not three copies or a howhard installer.
+All three load the same skills: `howhard` for routing and learning, and
+`attribute-failure` for investigating escaped defects. They share common Agent Skills
+content with thin host-specific plugin metadata; see [skill installation](skills.md).
 
 In Codex, the installed skill can activate automatically when a task matches its
 model-selection or feedback-learning description. Explicit invocation is optional:
