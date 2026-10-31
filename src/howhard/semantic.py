@@ -28,10 +28,25 @@ def panel_lookup(panel):
     return {(c["family"], c["effort"]): c for c in panel}
 
 
+def execution_memory(row):
+    """A read-only expert backed by an effective observed execution, never an invented run."""
+    return {"id": "execution:" + row["id"], "version": int(digest(row)[:12], 16) + 1,
+            "active": True, "title": "Observed execution: " + row["task_type"],
+            "body": "Observed execution (read-only): " + json.dumps({k: row.get(k) for k in (
+                "task_text", "model", "effort", "outcome", "cause", "tokens", "seconds", "cost_usd", "note")}, ensure_ascii=True),
+            "scope": "project", "evidence_ids": [row["id"]], "parents": []}
+
+
+def memory_snapshot(engine):
+    snapshot = engine.memory.snapshot()
+    snapshot["memories"].extend(execution_memory(row) for row in engine.rows)
+    return snapshot
+
+
 def beliefs(engine, snapshot=None):
     """Replay effective outcomes; only pre-recorded forecasts earn predictive support."""
     from .decisions import load, receipt_path
-    snapshot = engine.memory.snapshot() if snapshot is None else snapshot
+    snapshot = memory_snapshot(engine) if snapshot is None else snapshot
     priors = SETTINGS["belief"]
     entries = {"llm": priors["llm_prior"],
                **{memory_key(m): priors["memory_prior"] for m in snapshot["memories"]}}
@@ -83,11 +98,9 @@ def beliefs(engine, snapshot=None):
 
 
 def evidence_search(engine, query="", limit=None):
-    terms = set(re.findall(r"\w+", query.casefold()))
-    def rank(row):
-        content = " ".join(str(row.get(k, "")) for k in ("task_type", "task_text", "note", "outcome"))
-        return (-len(terms & set(re.findall(r"\w+", content.casefold()))), row["id"])
-    return deepcopy(sorted(engine.rows, key=rank)[:limit or SETTINGS["evidence_limit"]])
+    from .retrieval import records
+    result = engine.retrieval.search(records(rows=engine.rows), query, limit=limit or SETTINGS["evidence_limit"])
+    return [r["value"] for r in result["records"]]
 
 
 def tool(engine, request, *, allow_project=True, project_snapshot=None):
@@ -98,6 +111,9 @@ def tool(engine, request, *, allow_project=True, project_snapshot=None):
         return engine.memory.search(text(request["query"], "retrieval.query"))
     if name == "memory.read":
         keys(request, ["tool", "id"], where="LLM retrieval")
+        for row in engine.rows:
+            if request["id"] == "execution:" + row["id"]:
+                return execution_memory(row)
         return engine.memory.read(request["id"])
     if name == "evidence.search":
         keys(request, ["tool", "query"], where="LLM retrieval")
@@ -140,24 +156,62 @@ def tool(engine, request, *, allow_project=True, project_snapshot=None):
 
 def request(engine, prepared):
     result = prepared[0]
-    snapshot = engine.memory.snapshot()
+    snapshot = memory_snapshot(engine)
     state = beliefs(engine, snapshot)
-    weights = {e["key"]: e["weight"] for e in state["experts"]}
-    # The reader can retrieve other entries before forecasting; this is a bounded
-    # initial view, not a fixed-size memory bank.
-    memories = sorted(snapshot["memories"], key=lambda m: (-weights[memory_key(m)], m["id"]))[:SETTINGS["memory_limit"]]
+    from .retrieval import records, task_text
+    editable = [m for m in snapshot["memories"] if not m["id"].startswith("execution:")]
+    retrieved = engine.retrieval.search(records(engine.rows, editable), task_text(result["task_type"], result["context"]))
+    engine.last_retrieval_usage = {"seconds": retrieved["trace"].pop("seconds")}
+    memories = [r["value"] for r in retrieved["records"] if r["kind"] == "memory"]
+    evidence = [r["value"] for r in retrieved["records"] if r["kind"] == "evidence"]
+    memories.extend(execution_memory(row) for row in evidence)
     payload = {"kind": "predict", "prompt_version": SETTINGS["prompt_version"], "task_type": result["task_type"],
                "context": deepcopy(result["context"]), "risk_class": result["risk_class"], "constants": result["constants"],
                "cells": deepcopy(result["cells"]), "memory_revision": snapshot["revision"], "memories": memories,
-               "beliefs": state, "evidence": evidence_search(engine, result["context"]["task_text"]),
-               "retrieval": [], "tools": ["memory.search", "memory.read", "evidence.search", "evidence.read", "project.read"],
+               "beliefs": state, "evidence": evidence,
+               "retrieval": [{"request": {"tool": "experience.search", "query": task_text(result["task_type"], result["context"])}, "result": retrieved["trace"]}],
+               "tools": ["memory.search", "memory.read", "evidence.search", "evidence.read", "project.read"],
                "contract": {"forecasts": "One row for EVERY supplied cell: family, effort, clean, loud, silent, tokens, seconds. Probabilities sum to 1; usage estimates are nonnegative.",
-                            "memory_forecasts": "Array of {id, version, forecasts}: predictions conditional on each relevant supplied/read ACTIVE memory. Rows may override a subset of baseline forecasts. No invented memories.",
+                            "memory_forecasts": "Array of {id, version, forecasts}: predictions conditional on each relevant supplied/read ACTIVE memory. execution: IDs are read-only observed runs; their original outcomes are evidence for related tasks, not counterfactual results. Infer model AND reasoning effort jointly. Broader/narrower tasks can transfer imperfectly. Rows may override a subset of baseline forecasts. No invented memories or unrun outcomes.",
                             "reason": "Brief explanation grounded in task/project semantics and actual evidence.",
                             "request_more": "Instead of forecasts, optionally return ONLY {request_more: [{tool, query/id/path}]} to retrieve more evidence. At most 3 requests per round."}}
     if "cost_policy" in result:
         payload["cost_policy"] = deepcopy(result["cost_policy"])
     return payload, snapshot
+
+
+def visible_request(payload):
+    """Keep unselected expert bookkeeping out of the model's context."""
+    result = deepcopy(payload)
+    visible = {"llm", *(f"memory:{id}:{version}" for id, version in visible_memories(payload))}
+    result["beliefs"]["experts"] = [e for e in result["beliefs"]["experts"] if e["key"] in visible]
+    normalize_support(result["beliefs"]["experts"])
+    return result
+
+
+def visible_memories(payload):
+    visible = {(m["id"], m["version"]) for m in payload["memories"]}
+    for item in payload["retrieval"]:
+        name, data = item["request"]["tool"], item["result"]
+        if name.startswith("memory.") or name in ("evidence.search", "evidence.read"):
+            for entry in data if isinstance(data, list) else [data]:
+                if not isinstance(entry, dict):
+                    continue
+                if name.startswith("evidence."):
+                    entry = execution_memory(entry)
+                if entry.get("active"):
+                    visible.add((entry["id"], entry["version"]))
+    return visible
+
+
+def normalize_support(experts):
+    # Recompute from log scores: globally dominant but irrelevant experts can
+    # underflow all participating global weights to zero.
+    peak = max(e["log_score"] for e in experts)
+    mass = [math.exp(e["log_score"] - peak) for e in experts]
+    total = math.fsum(mass)
+    for expert, value in zip(experts, mass):
+        expert["weight"] = value / total
 
 
 def baseline_request(payload):
@@ -196,16 +250,10 @@ def validate_response(response, payload, snapshot):
     text(response["reason"], "LLM response.reason")
     allowed = {(c["family"], c["effort"]) for c in payload["cells"]}
     validate_panel(response["forecasts"], allowed)
-    if not isinstance(response["memory_forecasts"], list):
-        raise LLMError("memory_forecasts: expected array")
+    if not isinstance(response["memory_forecasts"], list) or len(response["memory_forecasts"]) > SETTINGS["memory_limit"]:
+        raise LLMError("memory_forecasts: expected an array with at most eight entries")
     known = {(m["id"], m["version"]): m for m in snapshot["memories"]}
-    visible = {(m["id"], m["version"]) for m in payload["memories"]}
-    for item in payload["retrieval"]:
-        data = item["result"]
-        if item["request"]["tool"].startswith("memory."):
-            for entry in data if isinstance(data, list) else [data]:
-                if isinstance(entry, dict) and entry.get("active"):
-                    visible.add((entry["id"], entry["version"]))
+    visible = visible_memories(payload)
     seen = set()
     for item in response["memory_forecasts"]:
         keys(item, ["id", "version", "forecasts"], where="memory_forecast")
@@ -292,7 +340,7 @@ def complete(engine, payload, snapshot):
     calls.append(usage)
     for round_number in range(SETTINGS["retrieval_rounds"] + 1):
         if snapshot["memories"]:
-            response, usage = call(engine, current)
+            response, usage = call(engine, visible_request(current))
             calls.append(usage)
         else:
             response = {"memory_forecasts": [], "reason": baseline_response["reason"]}
@@ -342,12 +390,13 @@ def augment(engine, prepared, response, payload, snapshot, usage):
         key = memory_key(entries[item["id"], item["version"]])
         worlds[key] = list(panel.values())
         exposures[key] = [[c["family"], c["effort"]] for c in changed]
-    state = payload["beliefs"]
+    state = deepcopy(payload["beliefs"])
+    # Relevance gates participation. Unrelated library growth must not dilute
+    # the memories that actually produced a prospective forecast for this task.
+    state["experts"] = [e for e in state["experts"] if e["key"] in worlds]
+    normalize_support(state["experts"])
     weights = {e["key"]: e["weight"] for e in state["experts"]}
-    # Unretrieved memories are sleeping experts: retain their mass on the independent LLM
-    # baseline, and do not award them evidence for forecasts they never made.
     indexed = {key: panel_lookup(panel) for key, panel in worlds.items()}
-    indexed.update({key: indexed["llm"] for key in weights if key not in indexed})
     for row in result["cells"]:
         pair = row["family"], row["effort"]
         for outcome in OUTCOMES:
@@ -507,7 +556,7 @@ def learning_request(engine, evidence_id):
     request = {"kind": "learn", "prompt_version": SETTINGS["writer_version"], "observation": row,
                "decision": receipt, "memory_revision": snapshot["revision"], "memories": snapshot["memories"],
                "beliefs": beliefs(engine), "evidence": evidence_search(engine, row.get("task_text", "")),
-               "contract": "Return ONLY {operations: [...], reason: string}. Operations: add(title,body,scope?,evidence_ids?); edit(id,title?/body?/scope?/evidence_ids?,expected_version?); remove(id); restore(id); merge(ids,title,body); split(id,parts:[{title,body}]). Every item includes op. Use actual evidence IDs. Hypotheses are provisional; evidence that inspired a new memory does not validate its forecasts. Prefer targeted useful changes; an empty list is valid. Never delete raw run evidence."}
+               "contract": "Return ONLY {operations: [...], reason: string}. Operations: add(title,body,scope?,evidence_ids?); edit(id,title?/body?/scope?/evidence_ids?,expected_version?); remove(id); restore(id); merge(ids,title,body); split(id,parts:[{title,body}]). Every item includes op. Use actual evidence IDs. execution: IDs in decision/beliefs are read-only observed runs, never editable memories. Hypotheses are provisional; evidence that inspired a new memory does not validate its forecasts. Prefer targeted useful changes; an empty list is valid. Never delete raw run evidence."}
     roots, history = {}, []
     for raw in engine.raw_rows:
         roots[raw["id"]] = roots[raw["amends"]] if raw["amends"] else raw["id"]
