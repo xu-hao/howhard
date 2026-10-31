@@ -4,5 +4,6 @@ __version__ = "0.6.0"
 
 from .config import load_config
 from .engine import Engine
+from .retrieval import RetrievalPipeline
 
-__all__ = ["Engine", "load_config", "__version__"]
+__all__ = ["Engine", "RetrievalPipeline", "load_config", "__version__"]

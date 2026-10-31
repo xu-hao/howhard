@@ -18,7 +18,7 @@ from . import semantic
 
 
 class Engine:
-    def __init__(self, config=None, *, directory=None, state_directory=None, journal_path=None, llm=None):
+    def __init__(self, config=None, *, directory=None, state_directory=None, journal_path=None, llm=None, retrieval=None):
         if llm is not None and not callable(getattr(llm, "complete", None)):
             raise LLMError("llm: expected an adapter with complete(request)")
         self.config = config if isinstance(config, Config) else load_config(config, directory=directory, state_directory=state_directory)
@@ -37,7 +37,9 @@ class Engine:
         self.last_memory_update = {"status": "not-requested"}
         self._summaries = {}
         self.refresh()
-        self.memory = MemoryStore(self.config, evidence=lambda: {r["id"] for r in self.raw_rows})
+        from .retrieval import RetrievalPipeline
+        self.retrieval = retrieval if retrieval is not None else RetrievalPipeline(self.config.state_root)
+        self.memory = MemoryStore(self.config, evidence=lambda: {r["id"] for r in self.raw_rows}, retrieval=self.retrieval)
 
     def refresh(self):
         config = self.config
@@ -159,7 +161,7 @@ class Engine:
         from .files import atomic_write
         request_id = digest(bundle)
         atomic_write(self.config.state_root / "requests" / f"{request_id}.json", canonical(bundle) + b"\n")
-        return {"request_id": request_id, "request": bundle["payload"], "baseline_request": semantic.baseline_request(bundle["payload"])}
+        return {"request_id": request_id, "request": semantic.visible_request(bundle["payload"]), "baseline_request": semantic.baseline_request(bundle["payload"])}
 
     def _load_request(self, request_id):
         self.refresh()

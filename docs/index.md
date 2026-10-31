@@ -7,6 +7,8 @@
   snapshots and decision receipts.
 - [LLM reasoning and writable semantic memory](semantic-memory.md) — reader/writer
   adapters, memory operations, feedback weights and agent tools.
+- [Execution experience retrieval](retrieval.md) — replaceable BM25/HNSW retrieval,
+  pretrained instruction-aware reranking and bounded precedent context.
 - [Reusable skill and host installation](skills.md) — Codex, Claude Code and Antigravity
   discovery, first-party plugin installation and honest execution capabilities.
 - [Rule retrieval benchmark](rule-benchmark.md) — opt-in representation/reranking diagnostics
@@ -26,6 +28,7 @@ quickstart
 reference
 context
 semantic-memory
+retrieval
 skills
 evaluation
 rule-benchmark

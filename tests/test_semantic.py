@@ -32,7 +32,7 @@ class FixtureLLM:
             return {"operations": operations, "reason": "Protocol fixture operation"}
         if request["phase"] == "baseline":
             return {"forecasts": [{"family": c["family"], "effort": c["effort"], "clean": .5, "loud": .45, "silent": .05, "tokens": 10000., "seconds": 30.} for c in request["cells"]], "reason": "Independent baseline fixture"}
-        if self.retrieve and not request["retrieval"]:
+        if self.retrieve and not any(r["request"]["tool"] == "project.read" for r in request["retrieval"]):
             return {"request_more": [{"tool": "memory.search", "query": "migration"}, {"tool": "project.read", "path": "README.md"}]}
         forecasts = []
         for memory in request["memories"]:
@@ -156,8 +156,9 @@ def test_unrelated_cell_does_not_credit_memory_and_removal_stops_influence(proje
     assert expert(engine, memory)["evidence_count"] == 0
     engine.memory.remove(memory["id"])
     result = engine.pick("Y", "migration", seed=2, native_candidates=inventory())
-    assert result["semantic"]["memories"] == []
-    assert set(result["semantic"]["worlds"]) == {"llm"}
+    assert all(m["id"] != memory["id"] for m in result["semantic"]["memories"])
+    assert f"memory:{memory['id']}:{memory['version']}" not in result["semantic"]["worlds"]
+    assert result["semantic"]["memories"][0]["id"] == "execution:unrelated"
     engine.memory.restore(memory["id"])
     assert engine.pick("Y", "migration", seed=2, native_candidates=inventory())["semantic"]["memories"][0]["id"] == memory["id"]
 
@@ -197,7 +198,7 @@ def test_retrieval_results_frozen_and_changed_memory_invalidates_cache(project):
     (config.base / "README.md").write_text("A different project state after the run")
     engine.observe_decision(result["decision_id"], "clean", id="done")
     receipt = load(config, result["decision_id"])
-    assert "before" in receipt["semantic"]["retrieval"][1]["result"]["text"]
+    assert "before" in next(r["result"]["text"] for r in receipt["semantic"]["retrieval"] if r["request"]["tool"] == "project.read")
     before = len(provider.calls)
     engine.memory.edit(memory["id"], body="New semantics")
     engine.pick("Y", "migration", seed=4, native_candidates=inventory())

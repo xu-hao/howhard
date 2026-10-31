@@ -1,8 +1,8 @@
 format = "howhard-semantic-v2"
 prompt_version = "semantic-reader-v3"
 writer_version = "semantic-writer-v1"
-memory_limit = 4
-evidence_limit = 6
+memory_limit = 8
+evidence_limit = 8
 retrieval_rounds = 2
 timeout_seconds = 180
 claude_model = "sonnet"

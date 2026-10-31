@@ -29,7 +29,11 @@ the host's actual tools execute the task.
    Do not create project wrappers, state contracts or a second memory store.
 4. For calling-agent reasoning, evaluate the returned `baseline_request` in a
    separate fresh model context without memory/history or learned tables. Then reason
-   over the original task, project and retrieved experience for memory overrides. Copy
+   over the original task, project and retrieved experience for memory overrides.
+   The backend retrieves/reranks up to eight useful precedents, including read-only
+   `execution:RUN_ID` experts with actual model, effort, outcomes and measured usage.
+   Broader/narrower tasks and relevant failures can inform estimates; do not infer unrun
+   outcomes or edit execution experts. Copy
    emitted opaque cell keys into the forecast schema; generate prospective estimates
    honestly. If genuine independence is unavailable, disclose it and report routing unavailable until an independent LLM forecast is available. Prepared requests already bind candidates, prices and worktree;
    follow-up retrieve/decide commands do not repeat or replace that inventory.
