@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add the portable `attribute-failure` skill for bug-fixing agents to investigate
+  escaped defects through reproductions, Git history/blame and optional bisection,
+  connect supported findings to original executions, and amend outcomes with explicit
+  memory learning. Retain commit/PR provenance in existing artifacts and observation
+  notes; uncertain attribution remains unscored. Native plugins discover both skills.
+
 - Fix a native-runtime import-order crash in hybrid retrieval by initializing ONNX
   Runtime before USearch at the lazy dense-search boundary. Fresh and cached HNSW
   searches work without caller pre-imports; small corpora still load neither runtime.

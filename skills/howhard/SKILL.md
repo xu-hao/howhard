@@ -53,6 +53,10 @@ the host's actual tools execute the task.
    action. Use the matched receipt for the accepted-override case above, or when
    reported actual model and control exactly match the chosen cell, so feedback scores
    its prospective forecast.
+   For code tasks, retain the base/result commits, PR when applicable and acceptance
+   evidence alongside that execution ID in existing task artifacts and observation
+   notes. Use [attribute-failure](../attribute-failure/SKILL.md) during later bug fixing
+   to investigate escaped defects; uncertain attribution must not change evidence.
    Matching retries return the original row; explicit conflicts are refused. Use
    `evidence ID --raw` to reconcile ambiguous writes. If a different known cell ran,
    record raw actual feedback with `--native`, the original frozen task/context and a
