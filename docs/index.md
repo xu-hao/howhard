@@ -16,6 +16,8 @@
 - [Real-project evaluation](evaluation.md) — chronological field trials and genuine
   observed outcomes, with implementation fixtures kept separate.
 - [Advanced configuration](configuration.md) — optional registry, policies and data locations.
+- [Upgrading to 1.0](upgrading-1.0.md) — breaking interfaces, backend/skill updates and
+  preserved historical state.
 - [Contributor workflow](contributing.md) — issue tracking, worktrees and coordinated checks.
 - [Packaging and release](releasing.md) — versions, distribution validation and publication.
 - [Changelog](changelog.md) — user-facing changes by version.
@@ -33,6 +35,7 @@ skills
 evaluation
 rule-benchmark
 configuration
+upgrading-1.0
 contributing
 releasing
 changelog

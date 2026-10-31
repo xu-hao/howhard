@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+## 1.0.0 — 2026-10-31
+
+### Compatibility
+
+This is a breaking release of the LLM-only routing workflow, not a compatible patch
+to the 0.6 maintenance series. See the
+[upgrade guide](https://github.com/xu-hao/howhard/blob/v1.0.0/docs/upgrading-1.0.md).
+
+- Remove statistical routing, its CLI/API/configuration surfaces and generic prior
+  transfer. Native routing requires explicit host model/effort candidates and an
+  independent LLM forecast; unavailable inference stops selection.
+- Require `howhard-decision-v4`, `howhard-agent-request-v3` and
+  `howhard-semantic-v2`. Older requests and receipts cannot be reused; no automatic
+  state migration or deletion occurs. Preserve historical evidence and reprepare
+  current requests; unsupported persisted inputs are refused explicitly.
+- Local retrieval adds FastEmbed, ONNX Runtime and USearch dependencies and lazily
+  downloads pinned models for larger searches. Qwen remains an optional extra.
+- Synchronize Python and all native plugin manifests at 1.0.0. Upgrade the backend
+  and installed skills separately; old GitHub releases remain available.
+
+### Changes
+
 - Add the portable `attribute-failure` skill for bug-fixing agents to investigate
   escaped defects through reproductions, Git history/blame and optional bisection,
   connect supported findings to original executions, and amend outcomes with explicit
@@ -74,6 +96,16 @@
 - Explain automatic task-based Codex skill activation and optional explicit invocation.
   The coordinating agent selects a worker before spawning; subagent startup does not
   itself guarantee skill activation. Remove retired installation guidance.
+
+## 0.6.1 — 2026-10-30
+
+- Allow append-only measured-usage corrections with a validated amendment-only
+  `measurement_corrections` map and `observe --measurement-corrections FILE`. Explicit
+  replacements or null clears update effective regressions, worker costs and learning
+  once while preserving the raw original, context and receipt identity.
+- Preserve existing 0.6 persistence/API behavior. This additive row-semantics expansion
+  leaves existing data readable; older readers refuse rows containing the new field.
+- Link the live Read the Docs site from the README and release guide.
 
 ## 0.6.0 — 2026-10-30
 

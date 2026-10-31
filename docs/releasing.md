@@ -8,6 +8,8 @@ major for incompatible public interfaces. While below 1.0, document any incompat
 change explicitly. Receipt and request format versions are separate compatibility contracts.
 Keep the version fields in the portable, Claude Code and Antigravity plugin manifests
 in sync with that Python version; distribution validation checks them in the source archive.
+The [1.0 upgrade guide](upgrading-1.0.md) records the current compatibility boundary;
+the published 0.6.1 maintenance release has its own retained changelog section.
 
 Before release:
 
@@ -17,9 +19,12 @@ Before release:
 2. Land the exact release commit through `agc land`, with `scripts/check` as its gate.
    The gate builds the wheel and source distribution, checks the version and packaged
    defaults, runs the complete behavioral suite and builds the canonical docs.
-3. Install the built wheel into a clean environment outside the checkout. Check
-   `howhard --version`, `howhard pick bookkeeping --candidates /tmp/host-candidates.json --seed 42 --json`, and package data
-   through `importlib.resources`. Check the source distribution can also build a wheel.
+3. Build a wheel from the source distribution and install that exact wheel into a clean
+   environment outside the checkout. Check `howhard --version`, package data through
+   `importlib.resources`, and the `context --candidates FILE` / `decide --seed 42`
+   protocol using explicitly labeled synthetic forecasts. These mechanical probes
+   require no provider calls or real execution observations. Standalone `pick` needs
+   a configured inference provider and is not a provider-free release check.
 4. Tag the verified commit `vX.Y.Z` and create a GitHub release only when requested.
    Attach the verified distributions and their SHA-256 checksums.
 5. Upload to PyPI only if the user explicitly authorizes that upload. Implementation,
