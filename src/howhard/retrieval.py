@@ -244,6 +244,20 @@ class RetrievalPipeline:
         self.fusion = fusion if fusion is not None else reciprocal_rank_fusion
         self.reranker = reranker if reranker is not None else FastEmbedReranker(state_root / "models")
 
+    @classmethod
+    def from_config(cls, config):
+        """Construct fixed application policy; retrieval tool requests cannot change it."""
+        from .config import validate_retrieval
+        spec = config.data.get("retrieval", {"reranker": "fast"})
+        validate_retrieval(spec)
+        options = {k: v for k, v in spec.items() if k != "reranker"}
+        if spec["reranker"] == "qwen":
+            options.setdefault("threads", 2)
+            reranker = QwenReranker(config.state_root / "models", **options)
+        else:
+            reranker = FastEmbedReranker(config.state_root / "models", **options)
+        return cls(config.state_root, reranker=reranker)
+
     def search(self, documents, query, *, limit=KEEP):
         if not isinstance(query, str) or type(limit) is not int or not 1 <= limit <= CANDIDATES:
             raise HowHardError("retrieval.search: expected query string and limit in [1, 200]")

@@ -5,6 +5,55 @@ when present; `--config PATH` chooses another file. Paths are relative to that f
 An explicit config must state `on_cap_unmet`; other settings overlay packaged defaults.
 Unknown keys are refused. This reference is for integrators, not a user setup checklist.
 
+(fixed-retrieval-configuration)=
+## Fixed retrieval configuration
+
+Select the reranker in user/application-owned `howhard.toml`:
+
+```toml
+on_cap_unmet = "flag-review"
+
+[retrieval]
+reranker = "fast"
+```
+
+`fast` is the default MiniLM-L4 INT8 ONNX cross-encoder, using two CPU threads and
+batches of 16 with a 512-token combined window. Set `reranker = "qwen"` to choose
+the slower instruction-aware Qwen3-Reranker-0.6B instead; install `howhard[qwen]`
+for that backend. Configured Qwen defaults to two CPU threads, batches of four and
+an 8,192-token window. These are explicit fixed choices: there is no automatic
+upgrade or fallback, and agent retrieval messages cannot supply a tier, model or
+configuration override. The packaged skill instructs agents to keep this policy fixed.
+
+Both profiles accept `threads` (1–256) and `batch_size` (1–1,024). To replace the
+pretrained model, supply **both** `model` and its full 40-character immutable `revision`.
+For example, a user can select another compatible ONNX artifact:
+
+```toml
+[retrieval]
+reranker = "fast"
+model = "Xenova/ms-marco-MiniLM-L-6-v2"
+revision = "a09144355adeed5f58c8ed011d209bf8ee5a1fec"
+model_file = "onnx/model_quantized.onnx"
+threads = 2
+batch_size = 16
+```
+
+`model_file` is fast-backend-only and must be a relative `.onnx` artifact path inside
+the model snapshot. Qwen instead accepts `instruction`, `device` and `max_length`
+(1–32,768). Unsupported backend/option combinations, unknown keys, invalid numbers and
+unpinned model overrides are rejected before state is created. Selecting Qwen does not
+load weights or invoke a provider while parsing configuration; if its optional runtime
+is missing when inference is needed, the error is explicit.
+
+The same configuration applies to initial context, `memory search`, and evidence
+search. Prepared requests are bound to configuration; changing policy requires a new
+request. An application-supplied `Engine(retrieval=pipeline)` still takes precedence
+over file-based construction. See [retrieval stages](retrieval.md) for replacing
+components through Python.
+
+## Routing policy and storage
+
 ```toml
 on_cap_unmet = "flag-review" # or lowest-bound
 project = "local"

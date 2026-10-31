@@ -65,6 +65,9 @@ model/effort/outcome/usage rows in `evidence`. Use relevant failures and broader
 tasks as imperfect transfer evidence. Do not invent counterfactual outcomes or edit
 execution experts. At most eight memory forecast overrides are accepted. The calling
 agent remains the final reasoning step; no extra generative reranking call is needed.
+The user/application fixes the reranker in `[retrieval]` settings. Do not change those
+settings or request a tier/model override to improve a result. Existing bounded query
+reformulation and evidence reads use the same configured pipeline.
 
 ```sh
 howhard retrieve REQUEST_ID --file /tmp/retrieval-queries.json --json
