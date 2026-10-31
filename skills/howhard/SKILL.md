@@ -27,6 +27,9 @@ the host's actual tools execute the task.
    each task captures its current checkout. Explicit store selection remains available.
    Keep protocol inputs/responses in temporary artifacts outside project source.
    Do not create project wrappers, state contracts or a second memory store.
+   Honor the user/application's fixed retrieval configuration. Do not edit it or try
+   to upgrade its reranker when results are weak; retrieval tools accept no tier,
+   model or configuration override.
 4. For calling-agent reasoning, evaluate the returned `baseline_request` in a
    separate fresh model context without memory/history or learned tables. Then reason
    over the original task, project and retrieved experience for memory overrides.

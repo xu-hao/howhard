@@ -22,7 +22,7 @@ class MemoryStore:
         self._evidence = evidence or (lambda: set())
         if retrieval is None:
             from .retrieval import RetrievalPipeline
-            retrieval = RetrievalPipeline(config.state_root)
+            retrieval = RetrievalPipeline.from_config(config)
         self.retrieval = retrieval
 
     @contextmanager
