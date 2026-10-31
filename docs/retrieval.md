@@ -36,7 +36,7 @@ but is optional because its CPU latency is substantially higher. Neither reranke
 receives 200 candidates in one generative LLM prompt.
 
 Users/applications can select a fixed profile through
-[`[retrieval]` configuration](configuration.md#fixed-retrieval-configuration):
+{ref}`[retrieval] configuration <fixed-retrieval-configuration>`:
 `reranker = "fast"` or `reranker = "qwen"`, with optional model/revision/runtime
 overrides. The agent cannot request a different tier through retrieval tools, and the
 backend never upgrades automatically. Changing owner policy requires a fresh request.
@@ -57,6 +57,12 @@ models. Otherwise BM25 and dense search each return up to 200 hits, RRF fuses th
 at most 200, and the cross-encoder orders the final eight. Scores are ordering signals,
 not calibrated relevance probabilities: there is no arbitrary confidence cutoff.
 Empty candidate pools return no results. Model/index failures are explicit errors.
+
+Native runtime initialization stays lazy: dense search initializes ONNX Runtime before
+loading USearch, whose globally loaded native symbols can otherwise crash a later ONNX
+import. This also protects an ONNX reranker paired with a custom embedder. Requests whose
+corpus fits the eight-result budget load neither runtime, and callers need no manual
+pre-imports. Initialization order does not change the configured stages or ranking.
 
 ## Evidence and weights
 

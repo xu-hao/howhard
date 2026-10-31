@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fix a native-runtime import-order crash in hybrid retrieval by initializing ONNX
+  Runtime before USearch at the lazy dense-search boundary. Fresh and cached HNSW
+  searches work without caller pre-imports; small corpora still load neither runtime.
+
 - Add optional fixed `[retrieval]` settings for the fast ONNX or Qwen reranker,
   pinned model/artifact overrides and runtime controls. Apply the policy to routing,
   memory and evidence search; reject invalid combinations before creating state.
