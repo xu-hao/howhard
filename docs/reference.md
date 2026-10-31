@@ -2,6 +2,9 @@
 
 Routing uses LLM forecasts and writable semantic memories. See the [reader/writer
 contract](semantic-memory.md) for retrieval, isolated forecasts and predictive weights.
+The [retrieval stages](retrieval.md) select execution precedents and written lessons
+before support is normalized over participating forecasts. Observed runs retain their
+joint model/effort, outcome and measured usage; no unrun action is labeled retrospectively.
 There is no fitted outcome regression, token/time regression, lexical predictor,
 statistical safety floor or generic prior transfer.
 

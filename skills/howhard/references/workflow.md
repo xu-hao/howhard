@@ -59,6 +59,13 @@ historical evidence, learned tables or prior conversation. Preserve those prospe
 forecasts. Separately reason over `request` using original task/project text, memories
 and actual experience. Retrieve only through the backend's bounded tools:
 
+The backend supplies up to eight precedents after BM25/HNSW retrieval and pretrained
+Qwen3 reranking. Read-only `execution:RUN_ID` memory experts refer to actual observed
+model/effort/outcome/usage rows in `evidence`. Use relevant failures and broader/narrower
+tasks as imperfect transfer evidence. Do not invent counterfactual outcomes or edit
+execution experts. At most eight memory forecast overrides are accepted. The calling
+agent remains the final reasoning step; no extra generative reranking call is needed.
+
 ```sh
 howhard retrieve REQUEST_ID --file /tmp/retrieval-queries.json --json
 howhard decide REQUEST_ID --file /tmp/forecasts.json --seed 42 --json

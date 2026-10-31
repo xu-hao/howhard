@@ -74,12 +74,13 @@ own earlier evaluation history. No operation deletes original outcome evidence.
 
 The reader receives the original task, a freshly captured project snapshot, candidate
 model/effort cells, current belief summaries, semantic memories and relevant recorded
-experience. It can request bounded additional `memory.search`, `memory.read`,
-`evidence.search`, `evidence.read` and `project.read` operations. Search is a lightweight
-text index/shortlist; the LLM judges relevance and can reformulate queries. This first
-version does not claim a learned semantic retriever or guaranteed retrieval recall.
-The opt-in [rule retrieval benchmark](rule-benchmark.md) compares alternative
-representations and reranking without changing this production retrieval contract.
+experience. [Execution experience retrieval](retrieval.md) uses BM25 plus HNSW, fuses
+up to 200 candidates, and applies pretrained Qwen3-Reranker-0.6B to select up to eight
+observed executions/written lessons. Relevance includes broader/narrower task demands
+and project constraints. The calling agent remains the final reasoning stage.
+It can request bounded additional `memory.search`, `memory.read`, `evidence.search`,
+`evidence.read` and `project.read` operations. Retrieval/reranking stages are replaceable.
+No retrieval recall or routing-quality guarantee is implied.
 
 `project.read` is limited to regular project source/documentation/manifest files inside
 the project and the bounded snapshot's file set. Ignored/excluded files cannot be read.
@@ -100,6 +101,13 @@ representation of the task. Repeated identical requests can reuse a validated in
 cache keyed by inputs, model/adapter identity, prompt/settings, evidence and memory state.
 
 ## Feedback and approximate belief weights
+
+Actual executions also supply read-only `execution:RUN_ID` experts; original model,
+effort, outcome and measured usage remain attached. These experts gain predictive
+credit only from later observed actions, never from their own source execution.
+Amendments replace their effective content version. For a decision, support is normalized
+over the independent forecast and memories that supply overrides; unrelated memories
+do not dilute the selected evidence. See the [retrieval contract](retrieval.md).
 
 For the cell actually executed, the system compares each pre-recorded expert forecast
 with the independent no-memory LLM forecast. Log probability ratios for clean/loud/silent outcomes,
