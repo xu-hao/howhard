@@ -1,10 +1,12 @@
 # Native installation of the howhard skill
 
 All three hosts support the common Agent Skills format: a `SKILL.md` with `name` and
-`description` frontmatter and a Markdown workflow. The canonical content is
+`description` frontmatter and a Markdown workflow. The routing skill is
 `skills/howhard/SKILL.md`, with progressive `references/hosts.md` and
-`references/workflow.md`. Thin native plugin manifests point at this one root skill
-folder. howhard implements no skill copier or plugin installer.
+`references/workflow.md`. The companion `skills/attribute-failure/SKILL.md`
+investigates escaped defects and connects supported findings to original executions.
+Thin native plugin manifests discover both folders under `skills/`. howhard implements
+no skill copier or plugin installer.
 
 The complete [Quickstart](quickstart.md) covers backend installation, native skill
 installation, invocation and real feedback. Keep the Python environment active when
@@ -20,6 +22,9 @@ Use a current native client and choose the commands for your host:
 | Codex | `codex plugin marketplace add xu-hao/howhard`, then `codex plugin add howhard@howhard` | `$howhard` or `/skills` |
 | Claude Code | `claude plugin marketplace add xu-hao/howhard`, then `claude plugin install howhard@howhard` | `/howhard:howhard` |
 | Antigravity (`agy`) | `agy plugin install https://github.com/xu-hao/howhard` | `/howhard` |
+
+The same plugin includes `attribute-failure`; invoke it as `$attribute-failure` in
+Codex, `/howhard:attribute-failure` in Claude Code, or `/attribute-failure` in Antigravity.
 
 These CLI flows install/register in the user's plugin environment. Claude Code also
 supports `--scope project` and `--scope local` for marketplace addition and plugin
@@ -106,6 +111,37 @@ guarantee would require the host to reject worker launches without a valid howha
 decision matching the requested model and effort. Installing the plugin or adding
 this instruction does not implement that check or authorize additional delegation.
 
+## Escaped-defect attribution
+
+During bug fixing or a requested audit, the companion `attribute-failure` skill
+investigates whether a defect escaped an earlier accepted task. It uses a reproducer
+or other concrete evidence, pre-fix history/blame, and optional bisection to identify
+the responsible task and recorded execution. Last-touch attribution alone is
+insufficient; changed requirements, ordinary edits and ambiguous historical provenance
+do not change learning evidence. Missing implementation can be traced through the
+original task even when there is no line to blame.
+
+For confirmed attribution, the skill uses the existing append-only outcome amendment
+and explicit memory-learning protocol. The original execution retains its identity,
+context and measured usage and counts once. The fixing execution has its own outcome;
+finding an escaped defect does not itself make the fixing worker fail. No automatic
+monitor, Git hook, additional ledger or new observation field is installed.
+
+For future code tasks, keep the base/result commits, PR when applicable, stable
+execution ID and acceptance evidence in existing task artifacts and observation notes.
+Existing unknown links stay unknown. Installing the skill makes it discoverable; a
+project can require it with a short instruction:
+
+```text
+For every bug-fix task, invoke the installed attribute-failure skill to investigate
+whether the defect escaped an earlier accepted agent task. Correct only supported
+attribution through howhard's amendment and learning workflow; leave uncertain
+attribution unscored. Retain code-task commit/PR and execution provenance in existing
+task artifacts and observation notes.
+```
+
+The complete maintained procedure lives in `skills/attribute-failure/SKILL.md`.
+
 ## Capability boundaries
 
 The skill uses original task/current project context, an independent baseline, retrieved
@@ -156,7 +192,7 @@ From the target project it can discover and install the same root skill:
 
 ```sh
 npx --yes skills@1.7.4 add xu-hao/howhard --list
-npx --yes skills@1.7.4 add xu-hao/howhard --skill howhard --agent codex claude-code antigravity antigravity-cli --yes
+npx --yes skills@1.7.4 add xu-hao/howhard --skill howhard attribute-failure --agent codex claude-code antigravity antigravity-cli --yes
 npx --yes skills@1.7.4 list --agent codex claude-code antigravity antigravity-cli
 ```
 
@@ -168,7 +204,8 @@ copies. Use its own lifecycle operations:
 ```sh
 npx --yes skills@1.7.4 check
 npx --yes skills@1.7.4 update howhard --project --yes
-npx --yes skills@1.7.4 remove howhard --yes
+npx --yes skills@1.7.4 update attribute-failure --project --yes
+npx --yes skills@1.7.4 remove howhard attribute-failure --yes
 ```
 
 The named removal without an agent filter clears that skill across agent references.

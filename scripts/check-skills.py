@@ -13,6 +13,7 @@ import tempfile
 
 source = Path(__file__).resolve().parents[1]
 agents = ["codex", "claude-code", "antigravity", "antigravity-cli"]
+skills = ["howhard", "attribute-failure"]
 environment = {**os.environ, "DO_NOT_TRACK": "1"}
 if not environment.get("npm_config_cache"):
     raise SystemExit("Set npm_config_cache to a task-owned temporary directory")
@@ -42,20 +43,26 @@ def run(project, *arguments):
 
 with tempfile.TemporaryDirectory(prefix="howhard-standard-skills-") as temporary:
     project = Path(temporary)
-    assert "howhard" in run(project, "add", str(source), "--list")
-    run(project, "add", str(source), "--skill", "howhard", "--agent", *agents, "--yes")
-    installed = project / ".agents/skills/howhard"
-    for original in (source / "skills/howhard").rglob("*"):
-        if original.is_file():
-            relative = original.relative_to(source / "skills/howhard")
-            assert (installed / relative).read_bytes() == original.read_bytes()
-    assert (project / ".claude/skills/howhard").is_symlink()
+    discovered = run(project, "add", str(source), "--list")
+    assert all(skill in discovered for skill in skills)
+    run(project, "add", str(source), "--skill", *skills, "--agent", *agents, "--yes")
+    for skill in skills:
+        installed = project / ".agents/skills" / skill
+        for original in (source / "skills" / skill).rglob("*"):
+            if original.is_file():
+                relative = original.relative_to(source / "skills" / skill)
+                assert (installed / relative).read_bytes() == original.read_bytes()
+        assert (project / ".claude/skills" / skill).is_symlink()
     for agent in agents:
-        assert "howhard" in run(project, "list", "--agent", agent)
-    run(project, "add", str(source), "--skill", "howhard", "--agent", *agents, "--yes")
-    assert (installed / "SKILL.md").read_bytes() == (source / "skills/howhard/SKILL.md").read_bytes()
-    run(project, "remove", "howhard", "--yes")
-    assert not installed.exists()
-    assert not (project / ".claude/skills/howhard").exists()
-    assert "howhard" not in run(project, "list", "--agent", *agents)
-print("Verified standard skills discovery, all four agent IDs, references, repeat and removal")
+        listed = run(project, "list", "--agent", agent)
+        assert all(skill in listed for skill in skills)
+    run(project, "add", str(source), "--skill", *skills, "--agent", *agents, "--yes")
+    for skill in skills:
+        assert (project / ".agents/skills" / skill / "SKILL.md").read_bytes() == (source / "skills" / skill / "SKILL.md").read_bytes()
+    run(project, "remove", *skills, "--yes")
+    for skill in skills:
+        assert not (project / ".agents/skills" / skill).exists()
+        assert not (project / ".claude/skills" / skill).exists()
+    listed = run(project, "list", "--agent", *agents)
+    assert all(skill not in listed for skill in skills)
+print("Verified both skills' discovery, all four agent IDs, references, repeat and removal")
