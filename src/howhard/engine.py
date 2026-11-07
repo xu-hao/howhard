@@ -152,7 +152,7 @@ class Engine:
         inventory = self._register(native_candidates)
         prepared = self._prepared(task_type, risk, task_text, project_context, inventory)
         payload, snapshot = semantic.request(self, prepared)
-        bundle = {"format": "howhard-agent-request-v3", "evidence_key": self.evidence_key, "payload": payload, "snapshot": snapshot}
+        bundle = {"format": "howhard-agent-request-v4", "evidence_key": self.evidence_key, "payload": payload, "snapshot": snapshot}
         bundle["native_candidates"] = inventory
         bundle["project_root"] = str(self.config.project_root)
         return self._save_request(bundle)
@@ -175,7 +175,7 @@ class Engine:
             raise HowHardError("request_id: unavailable or invalid agent request") from exc
         from .validation import keys
         keys(bundle, ["format", "evidence_key", "payload", "snapshot", "native_candidates", "project_root"], where="request")
-        if digest(bundle) != request_id or bundle["format"] != "howhard-agent-request-v3":
+        if digest(bundle) != request_id or bundle["format"] != "howhard-agent-request-v4":
             raise HowHardError("request_id: request integrity or format mismatch")
         if bundle["project_root"] != str(self.config.project_root):
             raise HowHardError("request_id: belongs to another worktree; prepare in the current project")
@@ -259,6 +259,30 @@ class Engine:
     def observe_decision(self, decision, outcome, **options):
         receipt = decisions.load(self.config, decision)
         return self.observe(receipt["task_type"], receipt["chosen"]["model"], receipt["chosen"]["effort"], outcome, decision=receipt, **options)
+
+    def attach_usage(self, execution_id, manifest, *, id):
+        """Collect independently of outcome durability, then append one correction."""
+        from .accounting import collect
+        from copy import deepcopy
+        usage = collect(manifest)
+        if usage["execution_id"] != execution_id:
+            raise HowHardError("usage manifest.execution_id: must match target execution")
+        self.refresh()
+        current = self.evidence(execution_id)
+        if current["id"] != execution_id:
+            raise HowHardError("usage attach: target must be the original execution ID")
+        # Same ID retries compare the originally recorded outcome as well as usage.
+        # Later outcome amendments must not turn a successful measurement retry into a new event.
+        existing = next((r for r in self.raw_rows if r["id"] == id), None)
+        if existing is not None:
+            if existing["amends"] != execution_id or existing.get("measurement_corrections") != {"execution_usage": usage}:
+                raise HowHardError("usage attach.id: conflicting attachment")
+            return deepcopy({k: v for k, v in existing.items() if k != "project"})
+        if current.get("execution_usage") == usage:
+            return deepcopy(current)
+        return self.observe(current["task_type"], current["model"], current["effort"],
+                            current["outcome"], cause=current["cause"], amends=execution_id,
+                            id=id, _preserve_outcome=True, measurement_corrections={"execution_usage": usage})
 
     def save_decision(self, decision, path):
         receipt = decisions.load(self.config, decision)

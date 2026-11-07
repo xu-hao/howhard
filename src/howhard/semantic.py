@@ -33,7 +33,7 @@ def execution_memory(row):
     return {"id": "execution:" + row["id"], "version": int(digest(row)[:12], 16) + 1,
             "active": True, "title": "Observed execution: " + row["task_type"],
             "body": "Observed execution (read-only): " + json.dumps({k: row.get(k) for k in (
-                "task_text", "model", "effort", "outcome", "cause", "tokens", "seconds", "cost_usd", "note")}, ensure_ascii=True),
+                "task_text", "model", "effort", "outcome", "cause", "tokens", "seconds", "cost_usd", "execution_usage", "note")}, ensure_ascii=True),
             "scope": "project", "evidence_ids": [row["id"]], "parents": []}
 
 
@@ -165,13 +165,20 @@ def request(engine, prepared):
     memories = [r["value"] for r in retrieved["records"] if r["kind"] == "memory"]
     evidence = [r["value"] for r in retrieved["records"] if r["kind"] == "evidence"]
     memories.extend(execution_memory(row) for row in evidence)
+    category_cells = {(n["model"], n["effort"]) for n in result["native_candidates"] if "rate_card" in n}
+    visible_cells = []
+    for cell in result["cells"]:
+        visible_cell = deepcopy(cell)
+        if (cell["model"], cell["effort"]) in category_cells:
+            visible_cell["forecast_format"] = "category-v1"
+        visible_cells.append(visible_cell)
     payload = {"kind": "predict", "prompt_version": SETTINGS["prompt_version"], "task_type": result["task_type"],
                "context": deepcopy(result["context"]), "risk_class": result["risk_class"], "constants": result["constants"],
-               "cells": deepcopy(result["cells"]), "memory_revision": snapshot["revision"], "memories": memories,
+               "cells": visible_cells, "memory_revision": snapshot["revision"], "memories": memories,
                "beliefs": state, "evidence": evidence,
                "retrieval": [{"request": {"tool": "experience.search", "query": task_text(result["task_type"], result["context"])}, "result": retrieved["trace"]}],
                "tools": ["memory.search", "memory.read", "evidence.search", "evidence.read", "project.read"],
-               "contract": {"forecasts": "One row for EVERY supplied cell: family, effort, clean, loud, silent, tokens, seconds. Probabilities sum to 1; usage estimates are nonnegative.",
+               "contract": {"forecasts": "One row for EVERY supplied cell: family, effort, clean, loud, silent, tokens, seconds. Probabilities sum to 1; usage estimates are nonnegative. category-v1 cells also REQUIRE token_usage with disjoint input/output/cache_read/cache_write/cache_write_5m/cache_write_1h summing to tokens; total-v1 accepts the scalar tokens forecast.",
                             "memory_forecasts": "Array of {id, version, forecasts}: predictions conditional on each relevant supplied/read ACTIVE memory. execution: IDs are read-only observed runs; their original outcomes are evidence for related tasks, not counterfactual results. Infer model AND reasoning effort jointly. Broader/narrower tasks can transfer imperfectly. Rows may override a subset of baseline forecasts. No invented memories or unrun outcomes.",
                             "reason": "Brief explanation grounded in task/project semantics and actual evidence.",
                             "request_more": "Instead of forecasts, optionally return ONLY {request_more: [{tool, query/id/path}]} to retrieve more evidence. At most 3 requests per round."}}
@@ -218,8 +225,8 @@ def baseline_request(payload):
     clean = {k: deepcopy(payload[k]) for k in ("kind", "prompt_version", "task_type", "context", "risk_class", "constants")}
     if "cost_policy" in payload:
         clean["cost_policy"] = deepcopy(payload["cost_policy"])
-    clean.update(phase="baseline", cells=[{k: c[k] for k in ("family", "effort", "model")} for c in payload["cells"]],
-                 contract="Return {forecasts: [{family,effort,clean,loud,silent,tokens,seconds}], reason: string}. Forecast EVERY supplied cell; probabilities sum to 1. No memory, evidence or retrieval is available in this independent call.")
+    clean.update(phase="baseline", cells=[{k: c[k] for k in ("family", "effort", "model", "forecast_format") if k in c} for c in payload["cells"]],
+                 contract="Return {forecasts: [{family,effort,clean,loud,silent,tokens,seconds}], reason: string}. Forecast EVERY supplied cell; probabilities sum to 1. category-v1 cells require token_usage with disjoint input/output/cache_read/cache_write/cache_write_5m/cache_write_1h summing to tokens; total-v1 accepts scalar tokens. No memory, evidence or retrieval is available in this independent call.")
     return clean
 
 
@@ -228,7 +235,7 @@ def validate_panel(panel, allowed, *, complete=True):
         raise LLMError("LLM forecasts: expected a nonempty array")
     seen = set()
     for row in panel:
-        keys(row, FIELDS, where="LLM forecast")
+        keys(row, FIELDS, ["token_usage"], where="LLM forecast")
         text(row["family"], "forecast.family")
         text(row["effort"], "forecast.effort")
         pair = row["family"], row["effort"]
@@ -240,6 +247,11 @@ def validate_panel(panel, allowed, *, complete=True):
             raise LLMError("LLM forecasts: probabilities must sum to 1")
         for field in ("tokens", "seconds"):
             number(row[field], f"forecast.{field}", nonnegative=True)
+        if "token_usage" in row:
+            from .accounting import tokens, total
+            tokens(row["token_usage"], forecast=True)
+            if abs(total(row["token_usage"]) - row["tokens"]) > 1e-6:
+                raise LLMError("forecast.token_usage: categories must sum to tokens")
     if complete and seen != set(allowed):
         raise LLMError("LLM forecasts: missing candidate cells")
     return panel
@@ -250,6 +262,9 @@ def validate_response(response, payload, snapshot):
     text(response["reason"], "LLM response.reason")
     allowed = {(c["family"], c["effort"]) for c in payload["cells"]}
     validate_panel(response["forecasts"], allowed)
+    category_cells = {(c["family"], c["effort"]) for c in payload["cells"] if c.get("forecast_format") == "category-v1"}
+    if any((r["family"], r["effort"]) in category_cells and "token_usage" not in r for r in response["forecasts"]):
+        raise LLMError("forecast.token_usage: category rate card requires category forecast")
     if not isinstance(response["memory_forecasts"], list) or len(response["memory_forecasts"]) > SETTINGS["memory_limit"]:
         raise LLMError("memory_forecasts: expected an array with at most eight entries")
     known = {(m["id"], m["version"]): m for m in snapshot["memories"]}
@@ -265,6 +280,8 @@ def validate_response(response, payload, snapshot):
             raise LLMError("memory_forecasts: unknown, unseen, stale or duplicate memory")
         seen.add(key)
         validate_panel(item["forecasts"], allowed, complete=False)
+        if any((r["family"], r["effort"]) in category_cells and "token_usage" not in r for r in item["forecasts"]):
+            raise LLMError("forecast.token_usage: category override required")
     return response
 
 
@@ -412,13 +429,13 @@ def augment(engine, prepared, response, payload, snapshot, usage):
             row[f"P_{outcome}"]["mean"] = sum(weights[k] * indexed[k][pair][outcome] for k in weights)
             row[f"P_{outcome}"]["lower"] = min(quantile(.025), row[f"P_{outcome}"]["mean"])
             row[f"P_{outcome}"]["upper"] = max(quantile(.975), row[f"P_{outcome}"]["mean"])
-        tokens = sum(weights[k] * indexed[k][pair]["tokens"] for k in weights)
         seconds = sum(weights[k] * indexed[k][pair]["seconds"] for k in weights)
         cell = next(c for c in cells if (c["family"], c["effort"]) == pair)
-        row["C_run"] = tokens / 1e6 * cell["price"] if cell["price"] is not None else None
+        row["C_run"] = sum(weights[k] * forecast_cost(indexed[k][pair], cell) for k in weights) if cell["priced"] else None
+        row["cost_basis"] = cell["money_basis"]
         row["T"] = seconds / 3600
         c = result["constants"]
-        row["J"] = tokens / 1e6 * cell["comparison_price"] + c["C_loud"] * row["P_loud"]["mean"] + c["C_silent"] * row["P_silent"]["mean"] + c["lambda_per_hour"] * row["T"]
+        row["J"] = (row["C_run"] if cell["money_included"] else 0) + c["C_loud"] * row["P_loud"]["mean"] + c["C_silent"] * row["P_silent"]["mean"] + c["lambda_per_hour"] * row["T"]
         row["admissible"] = row["P_silent"]["upper"] <= c["epsilon"]
     result["cells"].sort(key=lambda row: (row["C_run"] if row["C_run"] is not None else float("inf"), row["family"], row["effort"]))
     result["semantic"] = {"format": FORMAT, "prompt_version": SETTINGS["prompt_version"], "backend": usage["backend"],
@@ -429,6 +446,13 @@ def augment(engine, prepared, response, payload, snapshot, usage):
     result["backend"] = {"mode": "semantic", "name": usage["backend"], "inference_cached": usage["cached"]}
     result["routing_overhead"] = {"seconds": usage["call_seconds"], "cost_usd": usage["call_cost_usd"]}
     return result, cells
+
+
+def forecast_cost(row, cell):
+    if cell["rate_card"] is not None:
+        from .accounting import price
+        return price(row["token_usage"], cell["rate_card"])
+    return row["tokens"] / 1e6 * cell["price"] if cell["price"] is not None else None
 
 
 def sample(prepared, seed):
@@ -444,7 +468,7 @@ def sample(prepared, seed):
     for i, cell in enumerate(cells):
         row = panel[cell["family"], cell["effort"]]
         p = rng.dirichlet(np.maximum([row[k] for k in OUTCOMES], SETTINGS["belief"]["probability_floor"]) * SETTINGS["belief"]["sample_concentration"])
-        parts["run"][0, i] = row["tokens"] / 1e6 * cell["comparison_price"]
+        parts["run"][0, i] = forecast_cost(row, cell) if cell["money_included"] else 0.0
         parts["loud"][0, i] = p[1] * c["C_loud"]
         parts["silent"][0, i] = p[2] * c["C_silent"]
         parts["time"][0, i] = row["seconds"] / 3600 * c["lambda_per_hour"]
@@ -469,7 +493,7 @@ def validate_receipt(state):
         raise HowHardError("decision.semantic.worlds: nonempty panels required")
     allowed = set()
     for row in baseline:
-        keys(row, FIELDS, where="decision.semantic.forecast")
+        keys(row, FIELDS, ["token_usage"], where="decision.semantic.forecast")
         text(row["family"], "forecast.family")
         text(row["effort"], "forecast.effort")
         allowed.add((row["family"], row["effort"]))

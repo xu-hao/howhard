@@ -5,8 +5,9 @@
 Run from the current project directory with the installed howhard backend visible.
 Use the host's own tools/settings to discover actual model and effort/control IDs.
 Write their cells to a temporary `host-candidates.json` file outside project source.
-Each object has `model` and `effort`; optional `usd_per_mtok` is a known worker price
-for that host, not an assumed API price. Omitted/null price means unknown, including
+Each object has `model` and `effort`; optional `usd_per_mtok` is a known blended worker
+price with unspecified basis. Alternatively supply an explicit category `rate_card` and
+category forecasts using [portable accounting](accounting.md). Neither is an assumed API price. Omitted/null price means unknown, including
 when the ID also exists in howhard's shipped registry. Do not fabricate an example
 inventory, prices, family labels, weights or statistical settings.
 
@@ -88,7 +89,7 @@ The decision includes the receipt `decision_id`, `chosen` native ID/control,
 is false and the comparison excludes worker money for all cells. Unknown `C_run` is
 null; known estimated worker costs remain visible but do not affect that comparison.
 `J` is then risk-and-time cost, not a complete monetary objective. Fully priced native
-inventories include worker money. `needs_review` still requires independent review;
+inventories with a uniform money basis include worker money. Mixed bases omit it uniformly. `needs_review` still requires independent review;
 the risk cap is checked against the weighted LLM forecast envelope.
 
 Delegate through the host's actual tool with supported controls and the authorized
@@ -176,7 +177,9 @@ writes a task-owned temporary JSON map, for example:
 ```
 
 This replaces effective tokens and clears seconds to unknown, leaving cost unchanged.
-Only tokens, seconds and cost_usd are permitted; omit untouched keys. Values must be
+An `execution_usage` correction replaces the whole envelope; null clears it. See
+[portable accounting](accounting.md) for collection and stable attachment commands.
+Only tokens, seconds, cost_usd and execution_usage are permitted; omit untouched keys. Values must be
 nonnegative measurements with integer tokens; null means unknown, not zero. The raw
 original remains intact and ordinary amendment measurement fields stay null. Reuse the
 same amendment ID/input to retry, and inspect `evidence ID` for effective values or

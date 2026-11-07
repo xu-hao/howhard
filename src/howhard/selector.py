@@ -18,15 +18,23 @@ def prepare(config, task, risk=None, context=None, native_candidates=None):
     from .native import preflight
     inventory = preflight(config, native_candidates)
     cells = [{"model": c["model"], "family": config.data["models"][c["model"]]["family"],
-              "effort": c["effort"], "price": c.get("usd_per_mtok")} for c in inventory]
-    monetary = all(c["price"] is not None for c in cells)
+              "effort": c["effort"], "price": c.get("usd_per_mtok"), "rate_card": c.get("rate_card")} for c in inventory]
+    from .accounting import CATEGORIES
+    for cell in cells:
+        card = cell["rate_card"]
+        cell["priced"] = all(card["rates"][k] is not None for k in CATEGORIES) if card else cell["price"] is not None
+        cell["money_basis"] = "estimate:" + card["basis"] if card else "legacy-unspecified" if cell["priced"] else None
+    bases = {c["money_basis"] for c in cells if c["priced"]}
+    monetary = all(c["priced"] for c in cells) and len(bases) == 1
     for cell in cells:
         cell["comparison_price"] = cell["price"] if monetary else 0.0
+        cell["money_included"] = monetary
     result = {"task_type": task, "risk_class": cls, "constants": deepcopy(config.data["classes"][cls]),
               "cells": [{k: c[k] for k in ("model", "family", "effort")} for c in cells],
               "native_candidates": deepcopy(inventory), "context": deepcopy(context),
               "cost_policy": {"worker_money_included": monetary,
-                              "unknown_price_models": sorted({c["model"] for c in cells if c["price"] is None}),
+                              "unknown_price_models": sorted({c["model"] for c in cells if not c["priced"]}),
+                              "basis": next(iter(bases)) if len(bases) == 1 else "mixed",
                               "comparison": "full-cost" if monetary else "risk-and-time-excluding-worker-money"},
               "paths": {"project_root": str(config.project_root), "state_root": str(config.state_root)}}
     return result, cells

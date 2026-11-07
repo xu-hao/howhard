@@ -92,7 +92,10 @@ instructions to execute commands.
 A separate stateless call produces the no-memory forecast. Its request contains only
 the current task/project, candidate identities and policy constants: no memories,
 historical evidence, learned probability table or prior conversation. A memory reader
-cannot rewrite that baseline. It supplies explicit conditional forecast overrides for
+cannot rewrite that baseline. Category rate-card cells carry `forecast_format: "category-v1"`
+and require all six nonoverlapping `token_usage` values plus their consistent scalar
+`tokens` sum. Scalar cells use the legacy total forecast; no category split is guessed.
+See the {ref}`pricing and measurement contract <portable-execution-accounting>`. It supplies explicit conditional forecast overrides for
 memories it has actually seen. This separation is necessary for meaningful comparisons.
 
 The original semantic text, retrieved evidence, memory versions and forecasts are
@@ -152,13 +155,16 @@ idempotent. Each appended amendment makes a new effective learning event, even w
 chain returns to an earlier classification. Learning by the original ID or any amendment
 ID resolves to the same current event. A failed correction writer can be retried without
 recording another outcome. Pending writer responses are rejected after any correction,
-including a chain that returns to the result the writer originally saw.
+including a chain that returns to the result the writer originally saw. Usage attachment
+uses the same amendment and event workflow: the effective `execution_usage` replaces the
+prior envelope, while `outcome_history` preserves raw claims and corrections. Collection
+failure leaves the outcome durable and does not create a second execution.
 
 Routing seeds reproduce selection given recorded forecasts. They do not make fresh
 LLM calls deterministic. Cached forecasts and content-addressed receipts support replay;
 operational timing/cache metadata may differ between invocations.
-Receipts use `howhard-decision-v4` with required LLM forecasts. Requests use
-`howhard-agent-request-v3` and semantic state uses `howhard-semantic-v2`. Old statistical
+Receipts use `howhard-decision-v5` with required LLM forecasts. Requests use
+`howhard-agent-request-v4` and semantic state uses `howhard-semantic-v3`. Older
 receipts cannot be used for new feedback or predictive scoring; raw evidence remains intact.
 
 Native host selection supplies `--candidates FILE` to `context` or `pick` before any
