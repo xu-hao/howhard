@@ -4,7 +4,9 @@
 
 ## 2.0.0 — 2026-11-07
 
-This source version is a release candidate; no distribution publication is implied.
+This source version prepares the 2.0.0 release. Until the corresponding GitHub release
+is published, it remains a release candidate. A GitHub tag, release and attached
+distributions are separate from PyPI publication; this entry asserts neither.
 
 - Add portable, bounded, offline usage collection for explicitly owned Codex exec/session
   and Claude SDK/session artifacts. Append usage to an existing execution through
