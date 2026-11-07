@@ -10,7 +10,7 @@ This source version is a release candidate; no distribution publication is impli
   and Claude SDK/session artifacts. Append usage to an existing execution through
   idempotent measurement amendments; preserve the original outcome on collection failure.
 - Normalize nonoverlapping token categories, retain unknown coverage and provenance,
-  refuse duplicate source claims, and keep client cost estimates separate from billed
+  refuse duplicate source claims including exact native parent-session/agent mappings, and keep client cost estimates separate from billed
   charges and historical costs with an unspecified basis. Keep task outcome, token
   coverage, bounded client estimates and authoritative billing independently recorded.
 - Accept explicit category rate cards and prospective token-category forecasts. Omit

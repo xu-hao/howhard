@@ -13,7 +13,7 @@ CATEGORIES = ('input', 'output', 'cache_read', 'cache_write', 'cache_write_5m', 
 USAGE_FORMAT = 'howhard-execution-usage-v1'
 RATE_FORMAT = 'howhard-rate-card-v1'
 ADAPTERS = ('codex-exec-v1', 'codex-session-v1', 'claude-sdk-v1', 'claude-session-v1')
-SUPPORTED_HOSTS = {'codex-exec-v1': ('0.166.0',), 'codex-session-v1': ('0.166.0',), 'claude-sdk-v1': ('2.1.318', '0.3.239'), 'claude-session-v1': ('2.1.318',)}
+SUPPORTED_HOSTS = {'codex-exec-v1': ('0.166.0',), 'codex-session-v1': ('0.166.0',), 'claude-sdk-v1': ('2.1.318',), 'claude-session-v1': ('2.1.318',)}
 MAX_SOURCE = 32 * 1024 * 1024
 MAX_SPAN = 16 * 1024 * 1024
 
@@ -238,7 +238,7 @@ def _claude(u, *, sdk=False):
 
 
 def collect(manifest):
-    keys(manifest, ['format', 'execution_id', 'host_version', 'adapter', 'source', 'session_id', 'scope', 'start', 'end', 'completed', 'provider', 'model', 'service_tier'], ['included_sessions', 'rate_card', 'baseline', 'coordinate_id', 'agent_id'], where='usage manifest')
+    keys(manifest, ['format', 'execution_id', 'host_version', 'adapter', 'source', 'session_id', 'scope', 'start', 'end', 'completed', 'provider', 'model', 'service_tier'], ['included_sessions', 'included_agents', 'rate_card', 'baseline', 'coordinate_id', 'agent_id'], where='usage manifest')
     if manifest['format'] != 'howhard-usage-manifest-v1' or manifest['adapter'] not in ADAPTERS:
         raise HowHardError('usage manifest: unsupported format/adapter')
     if manifest['host_version'] not in SUPPORTED_HOSTS[manifest['adapter']]:
@@ -293,13 +293,18 @@ def collect(manifest):
     children = manifest.get('included_sessions', [])
     if not isinstance(children, list) or any(not isinstance(s, str) or not s or s == session for s in children) or len(set(children)) != len(children):
         raise HowHardError('usage manifest.included_sessions: distinct child session IDs required')
-    if children and manifest['scope'] != 'inclusive':
+    agents = manifest.get('included_agents', [])
+    if not isinstance(agents, list) or any(not isinstance(a, str) or not a for a in agents) or len(set(agents)) != len(agents):
+        raise HowHardError('usage manifest.included_agents: distinct actual Claude agent IDs required')
+    if agents and adapter != 'claude-sdk-v1':
+        raise HowHardError('usage manifest.included_agents: only Claude SDK inclusive results support shared-parent agents')
+    if (children or agents) and manifest['scope'] != 'inclusive':
         raise HowHardError('usage manifest: child claims require inclusive scope')
     # Coordinates must identify a single append-only artifact across captures. Without
     # host binding, cross-source same-session claims are conservatively incompatible.
     coordinate = manifest.get('coordinate_id', str(path.resolve()) + ':' + adapter)
     source_session = session + ':agent:' + manifest['agent_id'] if 'agent_id' in manifest else session
-    claims = [{'session_id': source_session, 'start': start, 'end': end, 'coordinate_id': coordinate}] + [{'session_id': s, 'start': 0, 'end': None, 'coordinate_id': '*'} for s in children]
+    claims = [{'session_id': source_session, 'start': start, 'end': end, 'coordinate_id': coordinate}] + [{'session_id': s, 'start': 0, 'end': None, 'coordinate_id': '*'} for s in children] + [{'session_id': session + ':agent:' + a, 'start': 0, 'end': None, 'coordinate_id': '*'} for a in agents]
     result = dict(format=USAGE_FORMAT, execution_id=manifest['execution_id'], status='unavailable',
                   provenance={k: manifest[k] for k in ('adapter', 'host_version', 'session_id', 'start', 'end', 'scope')}, claims=claims, segments=[])
     result['provenance']['coordinate_id'] = coordinate
@@ -377,6 +382,17 @@ def collect(manifest):
             models = event.get('modelUsage')
             if not isinstance(models, dict) or not models:
                 raise HowHardError('Claude result: modelUsage required')
+            aggregate = event.get('total_cost_usd')
+            if aggregate is not None:
+                aggregate = number(aggregate, 'Claude result.total_cost_usd', nonnegative=True)
+                costs = []
+                for u in models.values():
+                    if not isinstance(u, dict):
+                        raise HowHardError('Claude result: invalid model usage')
+                    if u.get('costUSD') is not None:
+                        costs.append(number(u['costUSD'], 'Claude model estimated cost', nonnegative=True))
+                if len(costs) == len(models) and abs(sum(costs) - aggregate) > max(1e-8, aggregate * 1e-9):
+                    raise HowHardError('Claude result: aggregate client cost contradicts model breakdown; unsupported fee/cost scope')
             if baseline is None:
                 terminal = False
                 continue  # Cumulative totals with unknown starting point are not invocation usage.

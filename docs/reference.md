@@ -79,11 +79,18 @@ retains a measured inclusive aggregate when category coverage is partial; effect
 An interrupted boundary never becomes a complete scalar total. Collector sources
 retain host/schema version, content hash, coordinate and span/source identity, provider,
 model and tier. Supported schemas are Codex `0.166.0`, Claude sessions
-`2.1.318`, and Claude SDK `2.1.318` or `0.3.239`; unknown
-versions are refused. A manifest's optional `coordinate_id` preserves append-only artifact
+`2.1.318`, and Claude SDK artifacts from the verified underlying Claude Code runtime
+`2.1.318`; unknown runtime versions are refused. An SDK package version does not
+establish the runtime's cumulative accounting semantics and is not a supported
+`host_version` identity. A manifest's optional `coordinate_id` preserves append-only artifact
 identity across moves; different coordinate offsets cannot establish disjoint spans
 for one session. Explicit Claude `agent_id` must match the sidechain's `agentId` and
-parent session identity.
+parent session identity. For child-inclusive SDK results, `included_sessions` contains
+only independent host session IDs. Native sidechains sharing the parent's session instead
+use `included_agents: ["EXACT_AGENT_ID"]` under the manifest's verified `session_id`;
+the canonical `PARENT_SESSION:agent:AGENT_ID` claim matches the sidechain import and
+prevents duplicate attachment in either order. Agent IDs are never guessed from flat
+session aliases. Both arrays require distinct IDs and inclusive scope when nonempty.
 Claude SDK cumulative results require a same-session pre-invocation `modelUsage` baseline
 (an empty map explicitly means a fresh session), result UUID and declared child identities.
 Missing SDK baseline is unavailable; counter resets are refused. A resumed Codex session
@@ -109,7 +116,9 @@ remain partial. Rate-card calculation still requires the category measurements i
 prices; an incomplete boundary cannot claim a complete client estimate.
 `billed_cost` requires an explicitly authoritative billing record tied to the execution,
 with `authoritative: true`, `execution_id`, `receipt_id`, source, version and USD amount;
-client `total_cost_usd` and telemetry cost metrics are estimates. Authoritative billing
+client `total_cost_usd` and telemetry cost metrics are estimates. When an SDK aggregate
+and all per-model costs are known, they must reconcile; a mismatch is an unsupported
+cost scope and is refused. No unexplained fee is silently omitted or invented. Authoritative billing
 is independent of token coverage and source boundary completeness: a bound unique
 receipt remains valid with partial or unknown tokens. Billed report totals are known
 when every segment has its authoritative receipt; partial tokens alone do not make a

@@ -45,7 +45,7 @@ def sdk_model(**changes):
 
 def sdk_event(**changes):
     return {"type": "result", "uuid": "result-1", "session_id": "session", "subtype": "success",
-            "is_error": False, "total_cost_usd": 12, "modelUsage": {"fixture-model": sdk_model()}, **changes}
+            "is_error": False, "total_cost_usd": .12, "modelUsage": {"fixture-model": sdk_model()}, **changes}
 
 
 def sdk_manifest(tmp_path, event=None, **changes):
@@ -106,7 +106,7 @@ def test_claude_invalid_ttl_partition_is_refused(tmp_path):
 
 
 def test_claude_sdk_model_breakdown_is_estimated_never_billed(tmp_path):
-    event = sdk_event(modelUsage={"fixture-model": sdk_model(), "other-model": sdk_model(inputTokens=10, costUSD=.02)})
+    event = sdk_event(total_cost_usd=.14, modelUsage={"fixture-model": sdk_model(), "other-model": sdk_model(inputTokens=10, costUSD=.02)})
     result = collect(sdk_manifest(tmp_path, event))
     assert result["status"] == "complete"
     assert [s["model"] for s in result["segments"]] == ["fixture-model", "other-model"]
@@ -565,7 +565,7 @@ def test_codex_missing_usage_frame_stays_partial_despite_terminal_event(tmp_path
 
 
 def test_multimodel_sdk_card_mismatch_can_retry_without_prices(tmp_path):
-    event = sdk_event(modelUsage={"fixture-model": sdk_model(), "other-model": sdk_model(costUSD=.02)})
+    event = sdk_event(total_cost_usd=.14, modelUsage={"fixture-model": sdk_model(), "other-model": sdk_model(costUSD=.02)})
     manifest = sdk_manifest(tmp_path, event, rate_card=card())
     with pytest.raises(HowHardError, match="mismatch"):
         collect(manifest)
@@ -668,3 +668,102 @@ def test_envelope_primary_claim_and_completed_boundary_must_match_provenance(tmp
     incomplete["provenance"]["completed"] = False
     with pytest.raises(HowHardError, match="complete|boundary"):
         validate(incomplete)
+
+
+@pytest.mark.parametrize("parent_first", [True, False])
+def test_sdk_included_native_agent_prevents_separate_sidechain_execution(tmp_path, parent_first):
+    from howhard import Engine
+    parent_dir, child_dir = tmp_path / "parent-source", tmp_path / "child-source"
+    parent_dir.mkdir()
+    child_dir.mkdir()
+    parent = sdk_manifest(parent_dir, included_agents=["owned-agent"])
+    child_event = claude_message()
+    child_event.update(isSidechain=True, agentId="owned-agent")
+    child = artifact(child_dir, [child_event], adapter="claude-session-v1", agent_id="owned-agent", execution_id="child")
+    parent_usage, child_usage = collect(parent), collect(child)
+    included = parent_usage["claims"][1]
+    assert included == {"session_id": "session:agent:owned-agent", "start": 0, "end": None, "coordinate_id": "*"}
+    assert child_usage["claims"][0]["session_id"] == included["session_id"]
+    engine = Engine(directory=tmp_path)
+    first_id, first_usage, second_id, second_manifest = (
+        ("execution", parent_usage, "child", child) if parent_first else ("child", child_usage, "execution", parent))
+    engine.observe("task", "fixture-model", "high", "clean", native=True, id=first_id, execution_usage=first_usage)
+    engine.observe("task", "fixture-model", "high", "clean", native=True, id=second_id)
+    with pytest.raises(HowHardError, match="overlap|claim|source"):
+        Engine(directory=tmp_path).attach_usage(second_id, second_manifest, id=second_id + "-usage")
+    restored = Engine(directory=tmp_path)
+    assert len(restored.rows) == len(restored.raw_rows) == 2
+    assert restored.evidence(second_id)["outcome"] == "clean"
+    assert restored.evidence(second_id).get("execution_usage") is None
+
+
+def test_flat_session_claim_never_guesses_native_agent_alias(tmp_path):
+    from howhard import Engine
+    parent_dir, child_dir = tmp_path / "parent-source", tmp_path / "child-source"
+    parent_dir.mkdir()
+    child_dir.mkdir()
+    parent = sdk_manifest(parent_dir)
+    parent["included_sessions"] = ["owned-agent"]  # A distinct host session, not an agent alias.
+    parent_usage = collect(parent)
+    assert parent_usage["claims"][1]["session_id"] == "owned-agent"
+    child_event = claude_message()
+    child_event.update(isSidechain=True, agentId="owned-agent")
+    child = artifact(child_dir, [child_event], adapter="claude-session-v1", agent_id="owned-agent", execution_id="child")
+    engine = Engine(directory=tmp_path)
+    engine.observe("task", "fixture-model", "high", "clean", native=True, id="execution", execution_usage=parent_usage)
+    engine.observe("task", "fixture-model", "high", "clean", native=True, id="child", execution_usage=collect(child))
+    assert len(engine.rows) == 2
+    assert engine.evidence("child")["execution_usage"]["claims"][0]["session_id"] == "session:agent:owned-agent"
+
+
+@pytest.mark.parametrize("agents", [["owned-agent", "owned-agent"], [""], "owned-agent", [False]])
+def test_native_included_agents_require_distinct_exact_agent_ids(tmp_path, agents):
+    with pytest.raises(HowHardError, match="included_agents|agent"):
+        collect(sdk_manifest(tmp_path, included_agents=agents))
+
+
+def test_self_scope_cannot_claim_included_native_agents(tmp_path):
+    with pytest.raises(HowHardError, match="inclusive|scope|child"):
+        collect(artifact(tmp_path, [claude_message()], adapter="claude-session-v1", included_agents=["owned-agent"]))
+
+
+@pytest.mark.parametrize("aggregate", [.13, -1, True, float("inf")])
+def test_sdk_contradictory_or_invalid_aggregate_client_cost_refused(tmp_path, aggregate):
+    with pytest.raises(HowHardError, match="cost|aggregate|finite|nonnegative|number|bool"):
+        collect(sdk_manifest(tmp_path, sdk_event(total_cost_usd=aggregate)))
+
+
+def test_sdk_aggregate_cost_mismatch_cannot_lose_durable_outcome(tmp_path):
+    from howhard import Engine
+    engine = Engine(directory=tmp_path)
+    engine.observe("task", "fixture-model", "high", "loud", native=True, id="execution")
+    original = deepcopy(engine.evidence("execution", raw=True))
+    manifest = sdk_manifest(tmp_path, sdk_event(total_cost_usd=.13))
+    with pytest.raises(HowHardError, match="cost|aggregate|reconcile|scope"):
+        engine.attach_usage("execution", manifest, id="cost-usage")
+    restored = Engine(directory=tmp_path)
+    assert restored.evidence("execution", raw=True) == original
+    assert len(restored.raw_rows) == len(restored.rows) == 1
+
+
+def test_sdk_model_client_cost_supported_without_aggregate_or_with_rounding(tmp_path):
+    event = sdk_event()
+    event.pop("total_cost_usd")
+    usage = collect(sdk_manifest(tmp_path, event))
+    assert usage["segments"][0]["estimated_cost"]["usd"] == .12
+    event["total_cost_usd"] = .120000001
+    rounded = collect(sdk_manifest(tmp_path, event))
+    assert rounded["segments"][0]["estimated_cost"]["usd"] == .12
+
+
+@pytest.mark.parametrize("host_version,supported", [("0.3.239", False), ("2.1.318", True)])
+def test_sdk_requires_verified_underlying_claude_runtime_not_package_version(tmp_path, host_version, supported):
+    manifest = sdk_manifest(tmp_path, host_version=host_version)
+    if not supported:
+        with pytest.raises(HowHardError, match="host_version|runtime|schema|version"):
+            collect(manifest)
+        return
+    usage = collect(manifest)
+    assert usage["status"] == "complete"
+    assert usage["provenance"]["host_version"] == "2.1.318"
+    assert usage["segments"][0]["estimated_cost"]["usd"] == .12

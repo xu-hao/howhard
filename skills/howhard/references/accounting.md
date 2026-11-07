@@ -23,9 +23,11 @@ is not a completed invocation. Preserve the original artifact on failure and nev
 second task merely to manufacture usage for the first.
 
 Supported source schemas are `0.166.0` for both Codex adapters,
-`2.1.318` for Claude sessions, and `2.1.318` (CLI serialized
-SDK events) or `0.3.239` for the SDK adapter. Set `host_version` to the exact supported
-schema identity after verifying the installed version; another version is refused,
+`2.1.318` for Claude sessions, and the verified underlying Claude Code runtime
+`2.1.318` for the SDK adapter. An SDK package version does not prove the runtime's
+cumulative accounting behavior; do not supply an SDK package version as `host_version`.
+Verify the actual underlying Claude Code runtime even when the SDK package version
+differs. Set `host_version` to the exact supported runtime identity; another version is refused,
 not silently parsed. A successful command alone does not prove supported telemetry.
 
 For `claude-sdk-v1`, also capture the session's cumulative `modelUsage` immediately
@@ -34,7 +36,8 @@ before the invocation. Supply `baseline: {"session_id": "EXACT_EMITTED_SESSION_I
 resumed session instead needs its actual prior per-model counters and cost. Missing
 baseline makes usage unavailable; decreasing counters or mismatched identity are refused.
 The result UUID identifies the invocation. Always supply `included_sessions`, even an
-empty list when the host attests that no children were included.
+empty list when no independent host sessions were included. Native Claude children
+sharing the parent session use the separate exact `included_agents` mapping below.
 
 For an already running session, use `codex-session-v1` or `claude-session-v1` only when
 the host exposes the exact owned session artifact and an exclusive byte span. Save its
@@ -77,8 +80,34 @@ Offsets on different artifact coordinates cannot establish disjoint ownership fo
 same session. A newly created output file starts at zero; obtain its final
 length with `wc -c < /tmp/EXECUTION_ID-codex.jsonl`. The collector permits at most a 16 MiB
 span in a source no larger than 32 MiB. Keep host/schema identity explicit. The SDK's
-child-inclusive result needs `scope: "inclusive"` plus exact `included_sessions` identities;
-do not also record those children as separate executions. For an exact owned Claude sidechain, `agent_id` must match the artifact's `agentId`
+child-inclusive result needs `scope: "inclusive"` and explicit ownership identities.
+Use `included_sessions` only for actual independent host session IDs. Native Claude
+sidechains retain the parent's `sessionId` and have their own `agentId`; record those
+exact child IDs in `included_agents`, never as session aliases. For example:
+
+```json
+{
+  "adapter": "claude-sdk-v1",
+  "host_version": "2.1.318",
+  "session_id": "EXACT_PARENT_SESSION_ID",
+  "scope": "inclusive",
+  "included_sessions": [],
+  "included_agents": ["EXACT_CHILD_AGENT_ID"],
+  "baseline": {"session_id": "EXACT_PARENT_SESSION_ID", "modelUsage": {}}
+}
+```
+
+These fields extend the full manifest with SDK-specific ownership; the empty baseline is still valid only
+for an explicitly fresh session. An `included_agents` child claim uses the canonical
+identity `EXACT_PARENT_SESSION_ID:agent:EXACT_CHILD_AGENT_ID`, matching a separately
+bound Claude-session artifact with `session_id: "EXACT_PARENT_SESSION_ID"`,
+`agent_id: "EXACT_CHILD_AGENT_ID"`, `isSidechain: true` and that exact `agentId`.
+This prevents attachment of the same child under another execution in either order.
+A flat `included_sessions: ["EXACT_CHILD_AGENT_ID"]` claims a different host session;
+it never implicitly maps a native agent. Both child arrays require distinct actual IDs;
+nonempty arrays require inclusive scope. Without exact parent/agent evidence, leave
+child ownership and usage unknown. Do not also record included children as separate
+executions. For an exact owned Claude sidechain, `agent_id` must match the artifact's `agentId`
 and its parent `sessionId`; never infer either identity. Do not claim inclusion when
 the host cannot expose child identities. The store refuses overlapping source/session
 claims across effective original runs, including separate command invocations. Clear or
@@ -125,7 +154,11 @@ Run memory learning for the current event after usage corrections as described i
 
 ## Supply explicit prices and category forecasts
 
-Measured tokens need no prices. Client/SDK `total_cost_usd` is an estimate;
+Measured tokens need no prices. Client/SDK `total_cost_usd` is an estimate. If an SDK
+aggregate and all per-model costs are known, their totals must reconcile; a mismatch
+is refused as an unsupported cost scope. Preserve the outcome, report the discrepancy
+and park collection after its bounded retry; do not silently omit or invent fees.
+An absent aggregate still permits supported per-model client estimates.
 `billed_cost` needs an authoritative billing record tied to this execution, with
 `authoritative: true`, `execution_id`, `receipt_id`, `source`, `version`, and `usd`.
 The source/receipt ID identifies a unique billing line within the envelope and across
