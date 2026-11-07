@@ -2,29 +2,33 @@
 
 You need Python 3.11+, Git and a current Codex, Claude Code or Antigravity client
 with native plugin support. No parameter tuning or Node/npm setup is
-required by howhard. From your project directory, install the Python backend from source:
+required by howhard. Once the `v2.0.0` GitHub tag is published, install the Python
+backend from that tagged source in your project directory. Before publication, use
+the verified local-checkout alternative below.
 
 ```sh
 python3 -m venv .venv-howhard
 . .venv-howhard/bin/activate
-python -m pip install "git+https://github.com/xu-hao/howhard.git@v1.0.0"
+python -m pip install "git+https://github.com/xu-hao/howhard.git@v2.0.0"
 howhard --version
 ```
 
-Expect `howhard 1.0.0`. Read the [upgrade guide](upgrading-1.0.md) when moving
-from 0.6.x. This is a source installation, not a PyPI release
-claim. Keep this environment active and start your coding agent from the same shell so
+Expect `howhard 2.0.0`. Read the [2.0 upgrade guide](upgrading-2.0.md) when moving
+from 1.0; upgrades from 0.6.x also need the [1.0 compatibility changes](upgrading-1.0.md).
+This command installs from GitHub source and does not require a PyPI release.
+Keep this environment active and start your coding agent from the same shell so
 it can find `howhard`. Install the skill through **your agent's native plugin manager**;
 choose the matching block below.
 An existing GUI session may need the absolute path to `.venv-howhard/bin/howhard`
 in your project; reopening a GUI alone does not activate this terminal's environment.
 
-The pinned command above installs the published 1.0 backend. Portable execution
-accounting and category rate cards are available in the 2.0 source candidate described
-in the [2.0 upgrade guide](upgrading-2.0.md). To try that candidate from a verified
-local checkout instead, use `python -m pip install /path/to/howhard` and check for
-`howhard 2.0.0`; load the native plugin from that same checkout. This does not assert a
-published 2.0 tag, release or package. See the {ref}`accounting contract <portable-execution-accounting>`
+Version 2.0.0 adds portable execution accounting and category rate cards. Before the
+tag is published, install from a verified local checkout with
+`python -m pip install /path/to/howhard` and check for `howhard 2.0.0`. Load the native
+plugin from that same checkout: substitute its path for the repository source in the
+commands below. A source version or changelog entry does not assert publication.
+GitHub release assets and their checksums are separate from PyPI publication.
+See the {ref}`accounting contract <portable-execution-accounting>`
 for `usage collect`, `usage attach` and `observe --execution-usage` availability.
 
 Codex:
