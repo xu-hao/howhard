@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Update the quickstart to install the published PyPI backend and explain the current
+  plugin, real-task, feedback and memory workflow without release-history setup notes.
+
 ## 2.0.0 — 2026-11-07
 
 This source version prepares the 2.0.0 release. Until the corresponding GitHub release
