@@ -33,7 +33,7 @@ def parser():
             command.add_argument("--project-context", metavar="PATH", help="JSON snapshot or project parameter overrides")
         if name in ("pick", "summary", "context"):
             command.add_argument("--risk", help="optional risk policy override")
-            command.add_argument("--candidates", required=True, metavar="FILE", help="JSON native model/effort inventory, with optional usd_per_mtok")
+            command.add_argument("--candidates", required=True, metavar="FILE", help="JSON native model/effort inventory, with optional category rate_card or legacy usd_per_mtok")
         if name == "evidence":
             command.add_argument("id")
             command.add_argument("--raw", action="store_true", help="return the exact recorded row rather than current effective evidence")
@@ -47,6 +47,7 @@ def parser():
             command.add_argument("outcome", nargs="?", choices=("clean", "loud", "silent"))
             command.add_argument("--decision", metavar="ID_OR_PATH", help="use the original task text and project snapshot")
             command.add_argument("--cause", choices=("depth", "capability", "unrecorded"))
+            command.add_argument("--execution-usage", metavar="FILE", help="normalized execution usage envelope")
             command.add_argument("--measurement-corrections", metavar="FILE", help="amendment-only JSON map of tokens/seconds/cost_usd replacements; null clears to unknown")
             for option, kind in (("tokens", int), ("seconds", float), ("cost-usd", float), ("ticket", str), ("note", str), ("amends", str), ("date", str), ("id", str)):
                 command.add_argument(f"--{option}", type=kind)
@@ -55,6 +56,15 @@ def parser():
             command.add_argument("--file", required=True, help="response/queries JSON file")
         if name == "decide":
             command.add_argument("--seed", type=int)
+    usage = commands.add_parser("usage", help="collect or attach explicitly owned execution usage offline")
+    operations = usage.add_subparsers(dest="usage_command", required=True)
+    for name in ("collect", "attach"):
+        command = operations.add_parser(name)
+        common(command)
+        command.add_argument("--manifest", required=True)
+        if name == "attach":
+            command.add_argument("execution_id")
+            command.add_argument("--id", required=True, help="stable append-only amendment ID")
     memory = commands.add_parser("memory", help="inspect and manage persistent semantic memory")
     operations = memory.add_subparsers(dest="memory_command", required=True)
     for name in ("list", "read", "search", "add", "edit", "remove", "restore", "merge", "split", "history", "apply", "beliefs", "learn", "learn-context"):
@@ -180,6 +190,11 @@ def memory_command(engine, args):
 def main(argv=None):
     args = parser().parse_args(argv)
     try:
+        if args.command == "usage" and args.usage_command == "collect":
+            from .accounting import collect
+            result = collect(read_json(args.manifest))
+            print(json.dumps(result, allow_nan=False, sort_keys=True))
+            return 0
         config = load_config(args.config, directory=Path.cwd(), state_directory=args.state_dir)
         native_candidates = None
         if args.command in ("pick", "summary", "context"):
@@ -218,8 +233,13 @@ def main(argv=None):
         elif args.command == "report":
             from .report import report
             result = report(engine)
+        elif args.command == "usage":
+            result = {"observed": engine.attach_usage(args.execution_id, read_json(args.manifest), id=args.id),
+                      "memory_update": engine.last_memory_update}
         elif args.command == "observe":
             options = {key: getattr(args, key) for key in ("cause", "tokens", "seconds", "cost_usd", "ticket", "note", "amends", "date", "id") if getattr(args, key) is not None}
+            if args.execution_usage is not None:
+                options["execution_usage"] = read_json(args.execution_usage)
             if args.measurement_corrections is not None:
                 options["measurement_corrections"] = read_json(args.measurement_corrections)
             if args.effort is None and args.outcome is None:

@@ -8,7 +8,7 @@ major for incompatible public interfaces. While below 1.0, document any incompat
 change explicitly. Receipt and request format versions are separate compatibility contracts.
 Keep the version fields in the portable, Claude Code and Antigravity plugin manifests
 in sync with that Python version; distribution validation checks them in the source archive.
-The [1.0 upgrade guide](upgrading-1.0.md) records the current compatibility boundary;
+The [2.0 upgrade guide](upgrading-2.0.md) records the current compatibility boundary;
 the published 0.6.1 maintenance release has its own retained changelog section.
 
 Before release:

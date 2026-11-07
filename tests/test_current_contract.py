@@ -52,7 +52,7 @@ def test_receipts_require_identity_inventory_and_cost_policy(tmp_path, missing):
         load(engine.config, value)
 
 
-@pytest.mark.parametrize("version", ["howhard-decision-v1", "howhard-decision-v2", "howhard-decision-v3"])
+@pytest.mark.parametrize("version", ["howhard-decision-v1", "howhard-decision-v2", "howhard-decision-v3", "howhard-decision-v4"])
 def test_superseded_receipt_formats_are_refused(tmp_path, version):
     engine = Engine(directory=tmp_path)
     decision = engine.pick("task", native_candidates=INVENTORY, seed=1)
@@ -96,7 +96,7 @@ def test_prepared_requests_require_current_format_and_worktree_binding(tmp_path)
     prepared = engine.prepare("task", native_candidates=INVENTORY)
     path = engine.config.state_root / "requests" / f"{prepared['request_id']}.json"
     value = json.loads(path.read_bytes())
-    assert value["format"] == "howhard-agent-request-v3"
+    assert value["format"] == "howhard-agent-request-v4"
     for changed, match in (({**value, "format": "howhard-agent-request-v1"}, "format"),
                            ({k: v for k, v in value.items() if k != "project_root"}, "project_root")):
         request_id = digest(changed)

@@ -43,24 +43,29 @@ def load(config, source, *, for_scoring=False):
         if re.fullmatch(r"[0-9a-f]{64}", source) and digest(value) != source:
             raise HowHardError("decision: receipt content does not match its ID")
     if for_scoring and isinstance(value, dict) and value.get("format") in {
-        "howhard-decision-v1", "howhard-decision-v2", "howhard-decision-v3"
+        "howhard-decision-v1", "howhard-decision-v2", "howhard-decision-v3", "howhard-decision-v4"
     }:
         return None  # Preserve old evidence without replaying a removed predictor.
     keys(value, ["format", "project", "project_identity", "task_type", "risk_class", "chosen", "seed", "context", "cost_policy", "native_candidates", "semantic"], where="decision")
     if value["format"] != DECISION_FORMAT:
         raise HowHardError("decision.format: unsupported version")
     policy = value["cost_policy"]
-    keys(policy, ["worker_money_included", "unknown_price_models", "comparison"], where="decision.cost_policy")
+    keys(policy, ["worker_money_included", "unknown_price_models", "comparison", "basis"], where="decision.cost_policy")
     if type(policy["worker_money_included"]) is not bool or not isinstance(policy["unknown_price_models"], list):
         raise HowHardError("decision.cost_policy: invalid worker money policy")
     for model_id in policy["unknown_price_models"]:
         text(model_id, "decision.cost_policy.unknown_price_models")
     included = policy["worker_money_included"]
-    if included != (not policy["unknown_price_models"]) or policy["comparison"] != ("full-cost" if included else "risk-and-time-excluding-worker-money"):
+    if (included and policy["unknown_price_models"]) or policy["comparison"] != ("full-cost" if included else "risk-and-time-excluding-worker-money"):
         raise HowHardError("decision.cost_policy: inconsistent comparison")
     from .native import validate
     inventory = validate(value["native_candidates"])
-    unknown = sorted({c["model"] for c in inventory if c.get("usd_per_mtok") is None})
+    def priced(c):
+        return all(v is not None for v in c["rate_card"]["rates"].values()) if "rate_card" in c else c.get("usd_per_mtok") is not None
+    unknown = sorted({c["model"] for c in inventory if not priced(c)})
+    bases = {"estimate:" + c["rate_card"]["basis"] if "rate_card" in c else "legacy-unspecified" for c in inventory if priced(c)}
+    if policy["basis"] != (next(iter(bases)) if len(bases) == 1 else "mixed") or included != (not unknown and len(bases) == 1):
+        raise HowHardError("decision.cost_policy: inconsistent money basis")
     if unknown != policy["unknown_price_models"]:
         raise HowHardError("decision.cost_policy: does not match its native inventory")
     if value["project"] != config.data["project"]:
@@ -90,4 +95,11 @@ def load(config, source, *, for_scoring=False):
     if "semantic" in value:
         from .semantic import validate_receipt
         validate_receipt(value["semantic"])
+        from .semantic import panel_lookup
+        for panel in value["semantic"]["worlds"].values():
+            lookup = panel_lookup(panel)
+            for c in inventory:
+                spec = config.data["models"][c["model"]]
+                if "rate_card" in c and "token_usage" not in lookup[spec["family"], c["effort"]]:
+                    raise HowHardError("decision.semantic: category rate card requires token_usage forecasts")
     return value

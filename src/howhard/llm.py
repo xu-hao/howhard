@@ -87,6 +87,8 @@ class ClaudeCLI:
                      **{k: {"type": "number", "minimum": 0, "maximum": 1} for k in ("clean", "loud", "silent")},
                      **{k: {"type": "number", "minimum": 0} for k in ("tokens", "seconds")}},
                     "required": ["family", "effort", "clean", "loud", "silent", "tokens", "seconds"], "additionalProperties": False}
+        from .accounting import CATEGORIES
+        forecast["properties"]["token_usage"] = {"type": "object", "properties": {k: {"type": "number", "minimum": 0} for k in CATEGORIES}, "required": list(CATEGORIES), "additionalProperties": False}
         if request["kind"] == "learn":
             properties = {"operations": {"type": "array", "items": {"type": "object", "properties": {"op": {"type": "string", "enum": ["add", "edit", "remove", "restore", "merge", "split"]}}, "required": ["op"], "additionalProperties": True}}, "reason": {"type": "string"}}
             schema = {"type": "object", "properties": properties, "required": ["operations", "reason"], "additionalProperties": False}
@@ -117,7 +119,7 @@ class ClaudeCLI:
         if not isinstance(value, dict):
             raise LLMError("Claude CLI result did not contain a JSON object")
         self.last_usage = {"seconds": elapsed, "cost_usd": envelope.get("total_cost_usd"),
-                           "models": sorted(envelope.get("modelUsage", {})), "tokens": envelope.get("usage"), "cost_source": "claude-cli-reported"}
+                           "models": sorted(envelope.get("modelUsage", {})), "tokens": envelope.get("usage"), "cost_source": "claude-client-estimate", "cost_basis": "estimate"}
         return value
 
 

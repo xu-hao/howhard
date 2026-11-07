@@ -84,14 +84,15 @@ def test_removed_statistical_configuration_is_rejected(tmp_path, setting):
     assert not (tmp_path / ".howhard").exists()
 
 
-def test_legacy_receipts_do_not_block_evidence_memory_or_reports(tmp_path):
+@pytest.mark.parametrize("version", ["howhard-decision-v3", "howhard-decision-v4"])
+def test_legacy_receipts_do_not_block_evidence_memory_or_reports(tmp_path, version):
     from howhard.context import canonical, digest
     from howhard.decisions import load
     from howhard.validation import HowHardError
     engine = Engine(directory=tmp_path, llm=FixtureLLM())
     choice = engine.pick("task", native_candidates=INVENTORY, seed=1)
     legacy = load(engine.config, choice["decision_id"])
-    legacy["format"] = "howhard-decision-v3"
+    legacy["format"] = version
     legacy.pop("semantic")
     legacy_id = digest(legacy)
     legacy_path = engine.config.state_root / "decisions" / f"{legacy_id}.json"
