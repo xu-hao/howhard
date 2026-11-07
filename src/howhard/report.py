@@ -59,9 +59,10 @@ def report(engine):
     known_inference = sum(e["cost_usd"] for e in events if e["cost_usd"] is not None)
     known_worker = sum(row["cost_usd"] for row in engine.rows if row["cost_usd"] is not None)
     unknown_worker = sum(row["cost_usd"] is None for row in engine.rows)
-    return {"project": engine.config.data["project"], "runs": len(engine.rows), "outcomes": {k: outcomes[k] for k in OUTCOMES},
+    from .accounting import summary
+    return {"execution_accounting": summary(engine.rows), "project": engine.config.data["project"], "runs": len(engine.rows), "outcomes": {k: outcomes[k] for k in OUTCOMES},
             "forecast_metrics": metrics, "missing_receipts": missing, "unsupported_receipts": unsupported,
-            "worker_cost": {"known_usd": known_worker, "unknown_runs": unknown_worker, "total_usd": known_worker if not unknown_worker else None},
+            "worker_cost": {"basis": "legacy-unspecified", "known_usd": known_worker, "unknown_runs": unknown_worker, "total_usd": known_worker if not unknown_worker else None},
             "inference": {"calls": len(measured), "failed_calls": sum(e["status"] == "failed" for e in measured),
                           "seconds": sum(e["seconds"] for e in measured), "known_usd": known_inference,
                           "external_submissions": len(external), "external_cost_and_latency": "unknown" if external else "none",

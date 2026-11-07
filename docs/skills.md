@@ -3,7 +3,8 @@
 All three hosts support the common Agent Skills format: a `SKILL.md` with `name` and
 `description` frontmatter and a Markdown workflow. The routing skill is
 `skills/howhard/SKILL.md`, with progressive `references/hosts.md` and
-`references/workflow.md`. The companion `skills/attribute-failure/SKILL.md`
+`references/workflow.md`. The [portable accounting workflow](https://github.com/xu-hao/howhard/blob/main/skills/howhard/references/accounting.md)
+covers explicit source ownership, bounded collectors, category forecasts and cost bases. The companion `skills/attribute-failure/SKILL.md`
 investigates escaped defects and connects supported findings to original executions.
 Thin native plugin manifests discover both folders under `skills/`. howhard implements
 no skill copier or plugin installer.
@@ -100,7 +101,9 @@ metadata. If no resolved identity is returned, note acceptance and completion as
 provenance, not backend/provider attestation, and use the matched receipt. Otherwise,
 match only on exact reported actual model/effort; use raw feedback for a known different
 cell and leave feedback unscored only when neither accepted overrides nor an exact
-reported identity/control establishes a match. Usage stays measured-only.
+reported identity/control establishes a match. Usage stays measured-only. Record the outcome first, then use `usage collect` and
+`usage attach` on an explicitly owned artifact. No capture hook is installed; missing
+exact child-session binding leaves child usage unknown.
 The independent baseline forecast inside howhard is part of routing; do not
 recursively route that forecast through howhard.
 ```

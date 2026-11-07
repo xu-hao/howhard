@@ -30,7 +30,7 @@ with tarfile.open(sdist) as archive:
     assert f"howhard-{expected}/tests/conftest.py" in archive.getnames()
     for name in ("__init__.py", "rule_retrieval.py", "bench_rule_retrieval.py", "rule_cases.json"):
         assert f"howhard-{expected}/benchmarks/{name}" in archive.getnames()
-    for name in ("SKILL.md", "references/hosts.md", "references/workflow.md"):
+    for name in ("SKILL.md", "references/hosts.md", "references/workflow.md", "references/accounting.md"):
         assert f"howhard-{expected}/skills/howhard/{name}" in archive.getnames()
     assert f"howhard-{expected}/skills/attribute-failure/SKILL.md" in archive.getnames()
     for name in ("plugin.json", ".claude-plugin/plugin.json", ".antigravity-plugin/plugin.json"):
@@ -80,4 +80,22 @@ with tempfile.TemporaryDirectory(prefix="howhard-wheel-") as directory:
     assert json.loads(subprocess.check_output(observation, cwd=root, env=environment, text=True))["observed"] == first
     evidence = json.loads(subprocess.check_output([str(command), "evidence", "wheel-execution", "--json"], cwd=root, env=environment, text=True))
     assert evidence["model"] == "wheel-native-model"
+    # Synthetic telemetry proves the installed collector and append-only attachment path.
+    events = root / "owned-codex.jsonl"
+    events.write_text(json.dumps({"type": "thread.started", "thread_id": "wheel-session"}) + "\n" +
+                      json.dumps({"type": "turn.completed", "usage": {"input_tokens": 100,
+                                  "cached_input_tokens": 40, "output_tokens": 20}}) + "\n")
+    manifest = root / "usage-manifest.json"
+    manifest.write_text(json.dumps({"format": "howhard-usage-manifest-v1", "execution_id": "wheel-execution",
+                                   "host_version": "0.166.0", "adapter": "codex-exec-v1", "source": str(events),
+                                   "session_id": "wheel-session", "scope": "self", "start": 0,
+                                   "end": events.stat().st_size, "completed": True, "provider": "fixture",
+                                   "model": "wheel-native-model", "service_tier": None}))
+    collected = json.loads(subprocess.check_output([str(command), "usage", "collect", "--manifest", str(manifest), "--json"], cwd=root, env=environment, text=True))
+    assert collected["status"] == "complete" and collected["segments"][0]["reported_tokens"] == 120
+    attach = [str(command), "usage", "attach", "wheel-execution", "--manifest", str(manifest), "--id", "wheel-usage", "--json"]
+    first_usage = json.loads(subprocess.check_output(attach, cwd=root, env=environment, text=True))["observed"]
+    assert json.loads(subprocess.check_output(attach, cwd=root, env=environment, text=True))["observed"] == first_usage
+    effective = json.loads(subprocess.check_output([str(command), "evidence", "wheel-execution", "--json"], cwd=root, env=environment, text=True))
+    assert effective["tokens"] == 120 and effective["outcome"] == "clean"
 print(f"Verified howhard {expected} source distribution and clean installed wheel")

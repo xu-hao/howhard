@@ -45,7 +45,7 @@ def validate_measurement(value, key, where):
 
 
 def validate_row(row, config, where):
-    keys(row, ROW_KEYS, ["task_text", "project_context", "context_encoder", "decision_id", "measurement_corrections"], where=where)
+    keys(row, ROW_KEYS, ["task_text", "project_context", "context_encoder", "decision_id", "measurement_corrections", "execution_usage"], where=where)
     try:
         if not isinstance(row["observed_at"], str) or datetime.fromisoformat(row["observed_at"]).utcoffset() is None:
             raise ValueError
@@ -87,16 +87,29 @@ def validate_row(row, config, where):
         raise HowHardError(f"{where}.cause: expected depth, capability or unrecorded")
     for key in ("tokens", "seconds", "cost_usd"):
         validate_measurement(row[key], key, where)
+    if "execution_usage" in row:
+        if row["amends"] is not None:
+            raise HowHardError("execution_usage: amendments use measurement_corrections")
+        if row["execution_usage"] is not None:
+            from .accounting import validate
+            validate(row["execution_usage"])
+            if row["execution_usage"]["execution_id"] != row["id"]:
+                raise HowHardError("execution_usage.execution_id: must match original row ID")
     if "measurement_corrections" in row:
         corrections = row["measurement_corrections"]
         location = f"{where}.measurement_corrections"
         if row["amends"] is None:
             raise HowHardError(f"{location}: only permitted on amendments")
-        keys(corrections, [], ["tokens", "seconds", "cost_usd"], where=location)
+        keys(corrections, [], ["tokens", "seconds", "cost_usd", "execution_usage"], where=location)
         if not corrections:
             raise HowHardError(f"{location}: expected at least one corrected measurement")
         for key, value in corrections.items():
-            validate_measurement(value, key, location)
+            if key == "execution_usage":
+                if value is not None:
+                    from .accounting import validate
+                    validate(value)
+            else:
+                validate_measurement(value, key, location)
     if row["amends"] is not None:
         if any(row[k] is not None for k in ("tokens", "seconds", "cost_usd")):
             raise HowHardError(f"{where}.amends: amendments require null tokens, seconds and cost_usd")
@@ -152,6 +165,8 @@ def parse_rows(blobs, config):
         for item in reversed(chain):
             ordered.append(item)
             done.add(item["id"])
+    from .accounting import duplicates
+    duplicates(effective_rows(config, ordered))
     return ordered
 
 
@@ -176,6 +191,10 @@ def effective_rows(config, rows):
             originals[root]["outcome"] = row["outcome"]
             originals[root]["cause"] = row["cause"]
             originals[root].update(row.get("measurement_corrections", {}))
+    for row in originals.values():
+        usage = row.get("execution_usage")
+        if usage is not None and usage["provenance"].get("completed") and usage["segments"] and all(s.get("reported_tokens") is not None for s in usage["segments"]):
+            row["tokens"] = sum(s["reported_tokens"] for s in usage["segments"])
     return [originals[key] for key in sorted(originals)]
 
 
@@ -192,8 +211,8 @@ def append_bytes(path, blob):
         os.fsync(handle.fileno())
 
 
-def observe(config, task_type, model, effort, outcome, *, _automatic_context=(), native=False, **options):
-    allowed = {"cause", "tokens", "seconds", "cost_usd", "ticket", "note", "amends", "date", "id", "task_text", "project_context", "decision_id", "risk_class", "measurement_corrections"}
+def observe(config, task_type, model, effort, outcome, *, _automatic_context=(), native=False, _preserve_outcome=False, **options):
+    allowed = {"cause", "tokens", "seconds", "cost_usd", "ticket", "note", "amends", "date", "id", "task_text", "project_context", "decision_id", "risk_class", "measurement_corrections", "execution_usage"}
     unknown = options.keys() - allowed
     if unknown:
         raise HowHardError(f"observe: unknown keys {sorted(unknown)}")
@@ -211,6 +230,12 @@ def observe(config, task_type, model, effort, outcome, *, _automatic_context=(),
             old_models, updated = native_registry.plan(config, [{"model": model, "effort": effort}])
             validation_config = deepcopy(config)
             native_registry.apply(validation_config, updated)
+        if _preserve_outcome:
+            target = next((r for r in effective_rows(config, current_rows) if r["id"] == options.get("amends")), None)
+            if target is None:
+                raise HowHardError("usage attach: target original is unavailable")
+            outcome = target["outcome"]
+            options["cause"] = target["cause"]
         registry = validation_config.data["models"].get(model)
         if registry is None:
             raise HowHardError(f"model: unknown model id {model!r}; add it to the registry or use native actual feedback")
@@ -221,6 +246,8 @@ def observe(config, task_type, model, effort, outcome, *, _automatic_context=(),
                    outcome=outcome, cause=options.get("cause", None if outcome == "clean" else "unrecorded"),
                    tokens=options.get("tokens"), seconds=options.get("seconds"), cost_usd=options.get("cost_usd"),
                    note=options.get("note", ""), amends=options.get("amends"))
+        if "execution_usage" in options:
+            row["execution_usage"] = deepcopy(options["execution_usage"])
         if "measurement_corrections" in options:
             row["measurement_corrections"] = deepcopy(options["measurement_corrections"])
         if row["amends"] is None:

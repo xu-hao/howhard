@@ -19,7 +19,8 @@ the host's actual tools execute the task.
 2. Follow [the native decision workflow](references/workflow.md). Write the observed
    candidate list to a temporary JSON input and pass `--candidates` to `context` or
    `pick`. Unknown identities receive separate identity labels automatically;
-   no model assumptions or statistical settings are required. Omit worker prices unless actually known:
+   no model assumptions or statistical settings are required. Read [portable accounting](references/accounting.md) for explicit rate cards and
+   category forecasts when prices are known. Omit worker prices unless actually known:
    if any are unknown, the backend compares all cells without worker money and labels
    that limit. Do not supply zero or an API list price for unknown host charges.
 3. Run commands from the current project. `howhard paths --json` exposes the
@@ -63,6 +64,9 @@ the host's actual tools execute the task.
    provenance note, without attaching the unexecuted decision. If neither accepted
    controls nor exact reported identity establishes a match and the actual cell is
    unknown, leave it unscored and report that; do not fabricate a registration.
+   Record the outcome before collecting usage. Read [portable accounting](references/accounting.md)
+   to collect an explicitly owned artifact and attach it with a stable amendment ID.
+   Missing binding or usage remains unknown; host-control acceptance is not token evidence.
 7. Append changed feedback to clean/loud/silent with `amends`, preserving original
    context and measurements. Use `memory learn-context` and its full `outcome_history`
    to consider original and correction notes. Apply the writer response with the exact

@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+## 2.0.0 — 2026-11-07
+
+This source version is a release candidate; no distribution publication is implied.
+
+- Add portable, bounded, offline usage collection for explicitly owned Codex exec/session
+  and Claude SDK/session artifacts. Append usage to an existing execution through
+  idempotent measurement amendments; preserve the original outcome on collection failure.
+- Normalize nonoverlapping token categories, retain unknown coverage and provenance,
+  refuse duplicate source claims including exact native parent-session/agent mappings, and keep client cost estimates separate from billed
+  charges and historical costs with an unspecified basis. Keep task outcome, token
+  coverage, bounded client estimates and authoritative billing independently recorded.
+- Accept explicit category rate cards and prospective token-category forecasts. Omit
+  worker money uniformly for unknown or mixed price bases; never infer host charges.
+- Require decision v5, agent request v4 and semantic state v3. Older receipts cannot
+  be replayed, while historical raw observations remain retained. Synchronize backend
+  and native plugin versions at 2.0.0; see the [upgrade guide](https://github.com/xu-hao/howhard/blob/main/docs/upgrading-2.0.md).
+- Extend the host skill with owned artifact capture, rate-card provenance, honest
+  partial usage, attachment retries and explicit child-session binding limits.
+
 ## 1.0.0 — 2026-10-31
 
 ### Compatibility
