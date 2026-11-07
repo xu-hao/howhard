@@ -17,7 +17,7 @@ J = C_run + P_loud * C_loud + P_silent * C_silent + lambda_per_hour * T
 ```
 
 The host supplies 1–32 distinct actual cells through `--candidates FILE` or Python
-`native_candidates`. Each has `model`, `effort` and optional `usd_per_mtok`. No-effort,
+`native_candidates`. Each has `model`, `effort` and optional `usd_per_mtok` or `rate_card`. No-effort,
 null and `model_default` controls are refused. Unknown identities receive distinct
 opaque family labels for protocol bookkeeping, without model assumptions or effects.
 Configured identities retain their declared labels and evidence weights. Historical
@@ -51,10 +51,82 @@ component explanations or the policy that excluded them.
 Prices belong to the host inventory. If any candidate is unpriced, worker money is
 omitted uniformly from every candidate's objective. Known `C_run` remains visible;
 unknown values stay null, and `cost_policy` labels the partial risk/time comparison.
-Fully priced inventories use the full objective. Never substitute provider API prices
+Fully priced inventories with a uniform money basis use the full objective. Never substitute provider API prices
 for unknown host charges. Tokens include cached/uncached input and output; T is hours.
 Actual `tokens`, `seconds` and `cost_usd` remain null unless measured. Observations
 update memory predictive evidence, not a separate fitted statistical model.
+
+(portable-execution-accounting)=
+## Portable execution accounting
+
+Execution accounting is evidence about an actual invocation, independent of its outcome.
+An optional `execution_usage` envelope (`howhard-execution-usage-v1`) belongs to the
+existing observation store; no second ledger is created. `usage collect --manifest FILE`
+reads only explicitly owned artifacts with an explicit adapter version and execution
+span. It never discovers transcripts, retains prompt/code text, or contacts providers.
+`usage attach EXECUTION_ID --manifest FILE --id AMENDMENT_ID` appends a measurement
+correction after the outcome is durable. Failed collection leaves that outcome intact;
+retry the same execution once with the same amendment ID, then report the unavailable
+measurement and park collection. Later evidence can amend the same execution.
+
+Tokens are nonoverlapping `input`, `output`, `cache_read`, `cache_write`,
+`cache_write_5m`, and `cache_write_1h` categories. Unknown is null. Codex input includes
+cached input, which is subtracted once; reasoning output is already included in output.
+Claude input excludes cache reads/writes; cache creation TTL buckets partition total
+cache creation. A known aggregate never supplies a guessed partition. Optional segment `reported_tokens`
+retains a measured inclusive aggregate when category coverage is partial; effective scalar
+`tokens` uses it only when every segment aggregate and the completed boundary are known.
+An interrupted boundary never becomes a complete scalar total. Collector sources
+retain host/schema version, content hash, coordinate and span/source identity, provider,
+model and tier. Supported schemas are Codex `0.166.0`, Claude sessions
+`2.1.318`, and Claude SDK `2.1.318` or `0.3.239`; unknown
+versions are refused. A manifest's optional `coordinate_id` preserves append-only artifact
+identity across moves; different coordinate offsets cannot establish disjoint spans
+for one session. Explicit Claude `agent_id` must match the sidechain's `agentId` and
+parent session identity.
+Claude SDK cumulative results require a same-session pre-invocation `modelUsage` baseline
+(an empty map explicitly means a fresh session), result UUID and declared child identities.
+Missing SDK baseline is unavailable; counter resets are refused. A resumed Codex session
+span requires raw measured starting cumulative usage in `baseline`; missing baseline
+or unreconciled cumulative/last-frame deltas keeps it partial. Explicit event identities
+and exclusive execution spans prevent inherited/forked usage
+from becoming new evidence. Child-inclusive result scopes cannot also be counted as
+separate executions. Duplicate source identities across effective original runs are
+refused. Clearing or replacing a wrongly attributed effective claim permits attachment
+to its truthful owner; raw history remains intact. Amendments replace usage, never add
+another execution.
+
+Accounting completeness is independent of task outcome. Claude SDK `success`,
+`error_max_turns`, and `error_max_budget_usd` results have a bounded terminal usage
+boundary when `is_error` agrees with the subtype. A bounded failed task can therefore
+have complete measured usage. Contradictory or untyped error flags are refused;
+uncertain execution/crash results remain partial. Source provenance and its primary
+ownership claim must agree, and a changed source during collection is refused.
+
+`estimated_cost` records a client estimate or rate-card calculation with its source.
+A client estimate may be known at a completed source boundary while token categories
+remain partial. Rate-card calculation still requires the category measurements it
+prices; an incomplete boundary cannot claim a complete client estimate.
+`billed_cost` requires an explicitly authoritative billing record tied to the execution,
+with `authoritative: true`, `execution_id`, `receipt_id`, source, version and USD amount;
+client `total_cost_usd` and telemetry cost metrics are estimates. Authoritative billing
+is independent of token coverage and source boundary completeness: a bound unique
+receipt remains valid with partial or unknown tokens. Billed report totals are known
+when every segment has its authoritative receipt; partial tokens alone do not make a
+known bill unknown. Subscription execution
+may have no per-run billed charge. Measured tokens do not require prices. Historical
+`cost_usd` retains an unspecified basis and is never relabeled billed. Reports show these
+bases separately and preserve unknown coverage instead of treating missing values as zero.
+
+Native candidates may provide an explicit versioned `rate_card` with source, effective
+date, provider/model/tier, cost basis and category rates in USD per million tokens.
+Rates must come from a known applicable source; there are no built-in price assumptions.
+Category forecasts use `token_usage` alongside their consistent scalar `tokens` total;
+a rate-card candidate requires the category forecast. Legacy blended `usd_per_mtok`
+remains a total-token forecast with unspecified money basis. Comparisons omit worker
+money uniformly when prices are unknown or their bases differ. Current request, receipt
+and semantic format versions exclude older predictors from replay while retaining raw
+historical evidence.
 
 ## Records and amendments
 
@@ -110,7 +182,7 @@ acyclic dependency graph. Dependency ordering keeps amendments valid when flushi
 them into the first log ahead of a target in an additional log.
 
 An amendment may additionally carry `measurement_corrections`, a nonempty object with
-only `tokens`, `seconds` and/or `cost_usd`. Values follow the corresponding base-field
+only `tokens`, `seconds`, `cost_usd` and/or `execution_usage`. Values follow the corresponding base-field
 types and ranges; null explicitly clears a value to unknown. Original rows refuse this
 field, and ordinary amendment `tokens`, `seconds` and `cost_usd` must still be null.
 For example, `Engine.observe(..., amends="run-id", measurement_corrections={"tokens": 100,
@@ -120,8 +192,8 @@ as usual, including when only usage changes. No forecast is created retrospectiv
 Worker-cost totals and predictive memory evidence use the corrected original
 once. Writer `observation` contains current effective usage; `outcome_history` preserves
 the raw original and correction maps as an audit trail, never extra runs or additive usage.
-Matching correction-ID retries remain idempotent and different maps conflict. This is
-an additive row-semantics expansion; readers without this field's support refuse such rows.
+Matching correction-ID retries remain idempotent and different maps conflict. The usage envelope is replaced as a whole; `{"execution_usage": null}` clears it.
+Readers without this field's support refuse such rows.
 
 `flush` validates all files before writing. Duplicate refusals list every duplicate and
 leave log and journal unchanged. It appends, fsyncs the log, then truncates and fsyncs the
@@ -146,8 +218,8 @@ or memory writes. All receipts require that identity and their native inventory/
 policy. The resolved state subtree is excluded from capture and
 `project.read`, including symlink aliases; a state root equal to or containing the capture
 root is refused. Prepared calling-agent requests bind the worktree and reject sibling
-retrieve/decide. Requests use `howhard-agent-request-v3` and receipts use
-`howhard-decision-v4`, with required LLM forecasts.
+retrieve/decide. Requests use `howhard-agent-request-v4` and receipts use
+`howhard-decision-v5`, with required LLM forecasts.
 Earlier formats are refused; prepare a fresh request and decision.
 Frozen-receipt observations and learning share the store across that project's worktrees.
 
@@ -159,8 +231,8 @@ current worktree, native inventory, effective evidence and memory revision; stal
 must be prepared again. Calling-agent submissions are audited with unknown external
 inference costs and latency rather than being counted as free provider calls.
 
-Receipts use `howhard-decision-v4`, requests `howhard-agent-request-v3`, semantic state
-`howhard-semantic-v2`. Older receipts and requests are refused for execution/feedback;
+Receipts use `howhard-decision-v5`, requests `howhard-agent-request-v4`, semantic state
+`howhard-semantic-v3`. Older receipts and requests are refused for execution/feedback;
 old receipt forecasts are excluded from replay/report scoring. Existing raw observations
 and semantic memories remain stored. Old posterior/prior artifacts are unused and left
 untouched. Removed interfaces include `--llm`, `HOWHARD_LLM`, `--cache`, `Engine(cache_path=...)`,

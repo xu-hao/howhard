@@ -43,9 +43,9 @@ def test_corrections_replace_only_explicit_measurements_for_one_run(project):
                    measurement_corrections={"seconds": None, "cost_usd": None})
     effective = engine.evidence("cleared")
     assert (effective["tokens"], effective["seconds"], effective["cost_usd"], effective["outcome"]) == (100, None, None, "loud")
-    assert report(engine)["worker_cost"] == {"known_usd": 0, "unknown_runs": 1, "total_usd": None}
+    assert report(engine)["worker_cost"] == {"basis": "legacy-unspecified", "known_usd": 0, "unknown_runs": 1, "total_usd": None}
     engine.observe("Y", "claude-opus-5-5", "high", "clean", id="other", cost_usd=.2)
-    assert report(engine)["worker_cost"] == {"known_usd": .2, "unknown_runs": 1, "total_usd": None}
+    assert report(engine)["worker_cost"] == {"basis": "legacy-unspecified", "known_usd": .2, "unknown_runs": 1, "total_usd": None}
     engine.flush()
     assert Engine(config).evidence("cleared") == effective
 
@@ -99,7 +99,7 @@ def test_corrected_usage_reaches_writer_and_scores_original_forecast_once(projec
     assert writer["outcome_history"][1]["measurement_corrections"]["tokens"] == 10000
     assert expert(engine, memory)["evidence_count"] == 1
     assert expert(engine, memory)["log_score"] != before_score
-    assert report(engine)["worker_cost"] == {"known_usd": .1, "unknown_runs": 0, "total_usd": .1}
+    assert report(engine)["worker_cost"] == {"basis": "legacy-unspecified", "known_usd": .1, "unknown_runs": 0, "total_usd": .1}
     assert all(m["runs"] == 1 for m in report(engine)["forecast_metrics"].values())
     with pytest.raises(HowHardError, match="evidence changed"):
         engine.apply_memory_learning("original", {"operations": [], "reason": "stale"},

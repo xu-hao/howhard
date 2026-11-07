@@ -35,6 +35,14 @@ choose the matching block below.
 An existing GUI session may need the absolute path to `.venv-howhard/bin/howhard`
 in your project; reopening a GUI alone does not activate this terminal's environment.
 
+The pinned command above installs the published 1.0 backend. Portable execution
+accounting and category rate cards are available in the 2.0 source candidate described
+in the [2.0 upgrade guide](docs/upgrading-2.0.md). To try that candidate from a verified
+local checkout instead, use `python -m pip install /path/to/howhard` and check for
+`howhard 2.0.0`; load the native plugin from that same checkout. This does not assert a
+published 2.0 tag, release or package. See the [accounting contract](docs/reference.md#portable-execution-accounting)
+for `usage collect`, `usage attach` and `observe --execution-usage` availability.
+
 Codex:
 
 ```sh

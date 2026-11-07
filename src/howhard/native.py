@@ -14,7 +14,7 @@ def validate(candidates):
         raise HowHardError("candidates: expected between 1 and 32 native model/effort cells")
     result, seen = [], set()
     for cell in candidates:
-        keys(cell, ["model", "effort"], ["usd_per_mtok"], "native candidate")
+        keys(cell, ["model", "effort"], ["usd_per_mtok", "rate_card"], "native candidate")
         model = text(cell["model"], "candidate.model")
         effort = text(cell["effort"], "candidate.effort", label=True)
         if len(model) > 256 or any(ord(c) < 32 for c in model) or len(effort) > 64 or effort == "model_default":
@@ -23,10 +23,15 @@ def validate(candidates):
         if pair in seen:
             raise HowHardError("candidates: duplicate native model/effort cell")
         seen.add(pair)
+        if "rate_card" in cell:
+            from .accounting import rate_card
+            rate_card(cell["rate_card"])
+            if "usd_per_mtok" in cell or cell["rate_card"]["model"] != model:
+                raise HowHardError("candidate.rate_card: model must match and blended price is exclusive")
         price = cell.get("usd_per_mtok")
         if price is not None:
             price = number(price, "candidate.usd_per_mtok", nonnegative=True)
-        result.append({"model": model, "effort": effort, **({"usd_per_mtok": price} if "usd_per_mtok" in cell else {})})
+        result.append({"model": model, "effort": effort, **({"usd_per_mtok": price} if "usd_per_mtok" in cell else {}), **({"rate_card": deepcopy(cell["rate_card"])} if "rate_card" in cell else {})})
     return sorted(result, key=lambda c: (c["model"], c["effort"]))
 
 
