@@ -20,21 +20,20 @@ INVENTORY = [
 
 def configure(directory, candidates=INVENTORY):
     path = directory / "howhard.toml"
-    lines = ['on_cap_unmet = "flag-review"']
-    if not candidates:
-        lines.append("candidates = []")
+    lines = ['on_cap_unmet = "flag-review"', '[inventories]', 'router = [']
     for cell in candidates:
-        lines.append("\n[[candidates]]")
-        lines.extend(f"{key} = {json.dumps(value)}" for key, value in cell.items())
+        fields = ', '.join(f'{key} = {json.dumps(value)}' for key, value in cell.items())
+        lines.append('  { ' + fields + ' },')
+    lines.append(']')
     path.write_text("\n".join(lines) + "\n")
     return path
 
 
 @pytest.mark.parametrize("method", ["prepare", "pick", "summary"])
-def test_python_selection_uses_configured_cross_provider_list(tmp_path, method):
+def test_python_selection_uses_explicitly_named_cross_provider_list(tmp_path, method):
     configure(tmp_path)
     engine = Engine(directory=tmp_path, llm=FixtureLLM())
-    result = getattr(engine, method)("bookkeeping", "Repair transaction ordering")
+    result = getattr(engine, method)("bookkeeping", "Repair transaction ordering", inventory="router")
     cells = result["baseline_request"]["cells"] if method == "prepare" else result["cells"]
     assert {c["model"] for c in cells} == {c["model"] for c in INVENTORY}
     assert len({c["family"] for c in cells}) == 2
@@ -43,11 +42,42 @@ def test_python_selection_uses_configured_cross_provider_list(tmp_path, method):
         assert load(engine.config, result["decision_id"])["native_candidates"] == INVENTORY
 
 
-@pytest.mark.parametrize("command", ["context", "pick", "summary"])
-def test_cli_uses_configured_list_and_file_replaces_it(tmp_path, monkeypatch, capsys, command):
+@pytest.mark.parametrize("method", ["prepare", "pick", "summary"])
+def test_saved_inventories_never_replace_host_supplied_availability(tmp_path, method):
+    configure(tmp_path)
+    engine = Engine(directory=tmp_path, llm=FixtureLLM())
+    with pytest.raises(HowHardError, match="candidates"):
+        getattr(engine, method)("bookkeeping")
+    native = [{"model": "native-host/model", "effort": "low"}]
+    result = getattr(engine, method)("bookkeeping", native_candidates=native)
+    cells = result["baseline_request"]["cells"] if method == "prepare" else result["cells"]
+    assert [c["model"] for c in cells] == [native[0]["model"]]
+    with pytest.raises(HowHardError, match="cannot combine"):
+        getattr(engine, method)("bookkeeping", native_candidates=native, inventory="router")
+
+
+def test_cli_requires_explicit_inventory_selection_even_with_saved_lists(tmp_path, monkeypatch):
     configure(tmp_path)
     monkeypatch.chdir(tmp_path)
-    assert main([command, "bookkeeping", "--json"]) == 0
+    with pytest.raises(SystemExit) as error:
+        main(["context", "bookkeeping"])
+    assert error.value.code == 2
+    assert not (tmp_path / ".howhard").exists()
+
+
+def test_cli_unknown_inventory_is_rejected_before_state_creation(tmp_path, monkeypatch, capsys):
+    configure(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    assert main(["context", "bookkeeping", "--inventory", "missing"]) == 2
+    assert "unknown name" in capsys.readouterr().err
+    assert not (tmp_path / ".howhard").exists()
+
+
+@pytest.mark.parametrize("command", ["context", "pick", "summary"])
+def test_cli_explicitly_selects_named_list_or_available_file(tmp_path, monkeypatch, capsys, command):
+    configure(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    assert main([command, "bookkeeping", "--inventory", "router", "--json"]) == 0
     result = json.loads(capsys.readouterr().out)
     cells = result["baseline_request"]["cells"] if command == "context" else result["cells"]
     assert {c["model"] for c in cells} == {c["model"] for c in INVENTORY}
@@ -60,13 +90,13 @@ def test_cli_uses_configured_list_and_file_replaces_it(tmp_path, monkeypatch, ca
     assert [c["model"] for c in cells] == [available[0]["model"]]
 
 
-def test_availability_override_is_complete_and_receipt_feedback_survives_config_change(tmp_path):
+def test_supplied_availability_is_complete_and_receipt_feedback_survives_config_change(tmp_path):
     path = configure(tmp_path)
     first = Engine(directory=tmp_path, llm=FixtureLLM())
     choice = first.pick("bookkeeping", native_candidates=[INVENTORY[0]], seed=3)
     configure(tmp_path, [INVENTORY[1]])
     later = Engine(path, llm=FixtureLLM())
-    result = later.pick("bookkeeping", seed=3)
+    result = later.pick("bookkeeping", inventory="router", seed=3)
     assert result["chosen"]["model"] == INVENTORY[1]["model"]
     assert result["native_candidates"] == [INVENTORY[1]]
     observed = later.observe_decision(choice["decision_id"], "clean", id="earlier-run")
@@ -100,7 +130,7 @@ def test_explicit_empty_cli_list_does_not_fall_back_or_create_state(tmp_path, mo
 def test_changing_configured_availability_invalidates_pending_request(tmp_path):
     configure(tmp_path)
     first = Engine(directory=tmp_path)
-    pending = first.prepare("bookkeeping")
+    pending = first.prepare("bookkeeping", inventory="router")
     response = FixtureLLM().complete(pending["baseline_request"])
     response["memory_forecasts"] = []
     configure(tmp_path, [INVENTORY[1]])

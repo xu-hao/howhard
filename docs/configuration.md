@@ -5,21 +5,26 @@ when present; `--config PATH` chooses another file. Paths are relative to that f
 An explicit config must state `on_cap_unmet`; other settings overlay packaged defaults.
 Unknown keys are refused. This reference is for integrators, not a user setup checklist.
 
-## Candidate lists for external routers
+(external-router-inventories)=
+## Inventories for external routers
 
-A routing application can use howhard for selection and learning while owning provider
-access and task execution. Configure its available options with `[[candidates]]`:
+Native agent use remains the ordinary workflow: the installed skill inspects the host's
+live delegation tools and exposed settings and supplies its available model/control
+list through `--candidates FILE`. The backend does not detect the native agent or
+enumerate its inventory. Missing model/control capabilities are reported as unavailable.
+Saved configuration never replaces the host-supplied list automatically.
+
+A separate routing application can use howhard for selection and learning while owning
+provider access and execution. Save explicitly named inventories in `howhard.toml`:
 
 ```toml
 on_cap_unmet = "flag-review"
 
-[[candidates]]
-model = "provider-a/model-x"
-effort = "high"
-
-[[candidates]]
-model = "provider-b/model-y"
-effort = "low"
+[inventories]
+router = [
+  { model = "provider-a/model-x", effort = "high" },
+  { model = "provider-b/model-y", effort = "low" },
+]
 ```
 
 These are illustrative identities, not claims about any provider's model catalog or
@@ -29,19 +34,21 @@ separate; howhard treats it as an opaque identity and returns it unchanged. The 
 owns its mapping to provider requests. Every candidate needs an exact, enforceable
 effort/control identity. No access or control values are inferred from a name.
 
-The configured list supplies defaults for Python `pick`, `summary` and `prepare`, and
-CLI `pick`, `summary` and `context`. For example:
+Select a saved list explicitly with Python `inventory="router"` or CLI
+`--inventory router`. Python `pick`, `summary` and `prepare`, and CLI `pick`, `summary`
+and `context` support this selector. For example:
 
 ```sh
-howhard context specified-implementation --text "Repair transaction ordering" --json
+howhard context specified-implementation --inventory router --text "Repair transaction ordering" --json
 ```
 
-Pass Python `native_candidates=[...]` or CLI `--candidates FILE` when availability
-changes. That list replaces the configured list completely for that request. An
-explicitly empty list is an error, not a request to use defaults. Without either list,
-selection remains unavailable. The same 1–32-cell validation and optional pricing
-fields apply to both sources; invalid configured lists fail before creating state.
-The `[models]` registry describes identities and evidence weights, not availability.
+When availability changes, pass Python `native_candidates=[...]` or CLI
+`--candidates FILE` instead. Supplied lists and named inventories are mutually exclusive;
+there is no union or fallback between them. An empty list or unknown inventory name is
+an error. Without an explicit list or inventory selector, the backend refuses selection
+even when saved lists exist. The same 1–32-cell validation and optional pricing fields
+apply to both sources; invalid configured lists fail before creating state. The
+`[models]` registry describes identities and evidence weights, not availability.
 Previously observed models never become candidates merely because they are in history.
 
 An application with a stateless forecast adapter can use the Python API directly:
@@ -51,8 +58,7 @@ from howhard import Engine
 
 # forecast_adapter and router are supplied by your application.
 engine = Engine("howhard.toml", llm=forecast_adapter)
-decision = engine.pick("specified-implementation", task_text,
-                       native_candidates=currently_available)
+decision = engine.pick("specified-implementation", task_text, inventory="router")
 selected = decision["chosen"]
 result = router.execute(model=selected["model"], effort=selected["effort"], task=task_text)
 engine.observe_decision(decision["decision_id"], result.outcome,
@@ -60,7 +66,6 @@ engine.observe_decision(decision["decision_id"], result.outcome,
                         seconds=result.seconds, cost_usd=result.cost_usd)
 ```
 
-Here `currently_available` is the current list, or `None` to use configured defaults.
 The adapter implements `identity` and `complete(request) -> dict` for independent
 baseline forecasts, memory-conditioned forecasts and memory updates. Its inference
 provider is separate from the execution providers in the candidate list. The router
@@ -68,14 +73,14 @@ must honor review requirements and verify that the selected identity/control act
 ran before attaching receipt feedback. Outcomes use `clean`, `loud` or `silent`; usage
 fields stay `None` unless measured. With the adapter supplied, observation also invokes
 the memory writer. Alternatively, use the
-[calling-agent protocol](semantic-memory.md#calling-agent-and-provider-interfaces)
-to supply forecasts and writer responses explicitly without a native plugin.
+{ref}`calling-agent protocol <calling-agent-provider-interfaces>` to supply forecasts and
+writer responses explicitly without a native plugin.
 
 All providers' runs and lessons in the same project store can inform later selections,
 including selections where the source model is unavailable. Each actual result stays
 bound to its executed model/control; predictions for unrun options are not observations.
-Use consistent configuration/state paths across callers and inspect
-`howhard paths --json` to confirm the store. Separate project stores are not automatically synchronized.
+Use consistent configuration/state paths across callers and inspect `howhard paths --json`
+to confirm the store. Separate project stores are not automatically synchronized.
 Configured-list changes require a new engine/config load; prepared decisions retain
 their frozen inventory, and pending requests reject changed configuration.
 
@@ -166,8 +171,8 @@ An explicit mapping labels the model's protocol cells and supplies its evidence 
 it does not inherit learned family effects. Omitted evidence weight means 1.0. Unknown
 native identities need no configuration and receive distinct opaque identity labels.
 Every `pick`, `summary` and `context` request uses an explicit inventory through
-`--candidates FILE` (Python: `native_candidates`) or configured `[[candidates]]`
-defaults. Registry entries do not activate candidates. Supply known worker prices as
+`--candidates FILE` (Python: `native_candidates`) or an explicitly selected saved list
+with `--inventory NAME` (Python: `inventory`). Registry entries do not activate candidates. Supply known worker prices as
 optional `usd_per_mtok` in that inventory;
 unknown prices remain omitted/null. Family selection flags, model default efforts,
 component API prices and token-mix configuration are not accepted.
