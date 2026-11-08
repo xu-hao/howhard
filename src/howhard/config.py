@@ -105,7 +105,7 @@ def load_config(path=None, *, directory=None, state_directory=None):
     else:
         data = default
     keys(data, ["project", "on_cap_unmet", "journal", "logs", "classes", "models"],
-         ["task_types", "retrieval"], "config")
+         ["task_types", "retrieval", "candidates"], "config")
     validate_retrieval(data.get("retrieval", {"reranker": "fast"}))
     for key in ("classes", "models", "task_types"):
         table(data.get(key, {}), f"config.{key}")
@@ -147,6 +147,9 @@ def load_config(path=None, *, directory=None, state_directory=None):
         if cls not in data["classes"]:
             raise HowHardError(f"task_types.{task}: unknown class {cls!r}")
     config = Config(data, base, path is not None)
+    if "candidates" in data:
+        from .native import preflight
+        data["candidates"] = preflight(config, data["candidates"])
     from .state import roots
     project = Path(directory).resolve() if directory is not None else base
     # Explicit configuration owns its relative data paths and supplemental store.

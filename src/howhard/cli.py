@@ -33,7 +33,7 @@ def parser():
             command.add_argument("--project-context", metavar="PATH", help="JSON snapshot or project parameter overrides")
         if name in ("pick", "summary", "context"):
             command.add_argument("--risk", help="optional risk policy override")
-            command.add_argument("--candidates", required=True, metavar="FILE", help="JSON native model/effort inventory, with optional category rate_card or legacy usd_per_mtok")
+            command.add_argument("--candidates", metavar="FILE", help="JSON model/effort inventory replacing configured candidates, with optional category rate_card or legacy usd_per_mtok")
         if name == "evidence":
             command.add_argument("id")
             command.add_argument("--raw", action="store_true", help="return the exact recorded row rather than current effective evidence")
@@ -188,7 +188,8 @@ def memory_command(engine, args):
 
 
 def main(argv=None):
-    args = parser().parse_args(argv)
+    argument_parser = parser()
+    args = argument_parser.parse_args(argv)
     try:
         if args.command == "usage" and args.usage_command == "collect":
             from .accounting import collect
@@ -199,7 +200,9 @@ def main(argv=None):
         native_candidates = None
         if args.command in ("pick", "summary", "context"):
             from .native import preflight
-            native_candidates = preflight(config, read_json(args.candidates))
+            if args.candidates is None and "candidates" not in config.data:
+                argument_parser.error("--candidates FILE or configured [[candidates]] is required")
+            native_candidates = preflight(config, read_json(args.candidates) if args.candidates is not None else None)
         engine = Engine(config, journal_path=args.journal)
         context_options = {}
         if args.command in ("pick", "summary", "observe", "context"):
