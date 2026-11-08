@@ -211,7 +211,9 @@ Readers without this field's support refuse such rows.
 
 `flush` validates all files before writing. Duplicate refusals list every duplicate and
 leave log and journal unchanged. It appends, fsyncs the log, then truncates and fsyncs the
-journal. A shared advisory lock serializes storage commands within a project. A crash
+journal. Backend-owned [FIFO write admission](concurrency.md) serializes mutations per
+store with bounded waiting, automatic release and observable queue status. Data locks
+preserve consistent reads without making readers join the write queue. A crash
 between append and truncate can leave duplicate rows, which are refused on the next read;
 there is no claim of an atomic transaction across two files. Preserve a copy and remove
 the already-flushed journal entries after comparing their ids with the log.
@@ -272,4 +274,7 @@ Calling-agent `prepare`/`retrieve`/`decide` never invoke a provider. A fresh eng
 observations return pending learning; apply an external writer response or call
 `memory_learn` explicitly. An engine already holding a provider adapter runs its writer
 after durable observation. `refresh()` reloads external evidence; no fitting occurs.
+`Engine(write_timeout=30, write_cancel=callback)` bounds admission and supports
+cancellation. `write_status()` and CLI `writes --json` expose contention. See
+[concurrent clients](concurrency.md) for boundaries, typed errors and stable-ID retries.
 Python 3.11+ and POSIX are required; runtime dependencies are limited to NumPy.

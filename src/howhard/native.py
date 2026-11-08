@@ -97,7 +97,7 @@ def preflight(config, candidates):
 def register(config, candidates):
     from .storage import locked
     candidates = preflight(config, candidates)
-    with locked(config):
+    with locked(config, operation="native registration"):
         from .state import check
         check(config)
         models, updated = plan(config, candidates)

@@ -16,13 +16,15 @@ def common(command):
     command.add_argument("--journal", metavar="PATH", help=argparse.SUPPRESS)
     command.add_argument("--state-dir", metavar="PATH", help="explicit durable state directory; current project capture stays separate")
     command.add_argument("--json", action="store_true")
+    command.add_argument("--write-timeout", type=float, default=30.0,
+                         help="maximum seconds to wait per store admission (default: 30)")
 
 
 def parser():
     root = argparse.ArgumentParser(prog="howhard", description="Choose a model and effort, then learn from the outcome. No setup required.")
     root.add_argument("--version", action="version", version=f"howhard {__version__}")
     commands = root.add_subparsers(dest="command", required=True)
-    for name in ("pick", "summary", "observe", "flush", "context", "decide", "retrieve", "report", "evidence", "paths"):
+    for name in ("pick", "summary", "observe", "flush", "context", "decide", "retrieve", "report", "evidence", "paths", "writes"):
         command = commands.add_parser(name)
         common(command)
         if name in ("pick", "summary", "observe", "context"):
@@ -198,11 +200,15 @@ def main(argv=None):
             print(json.dumps(result, allow_nan=False, sort_keys=True))
             return 0
         config = load_config(args.config, directory=Path.cwd(), state_directory=args.state_dir)
+        if args.command == "writes":
+            from .writes import status
+            print(json.dumps(status(config.state_root), sort_keys=True))
+            return 0
         native_candidates = None
         if args.command in ("pick", "summary", "context"):
             from .native import resolve
             native_candidates = resolve(config, read_json(args.candidates) if args.candidates is not None else None, args.inventory)
-        engine = Engine(config, journal_path=args.journal)
+        engine = Engine(config, journal_path=args.journal, write_timeout=args.write_timeout)
         context_options = {}
         if args.command in ("pick", "summary", "observe", "context"):
             if args.text_file is not None:
@@ -258,6 +264,15 @@ def main(argv=None):
             result = {"moved": len(ids), "ids": ids}
         print(json.dumps(result, allow_nan=False, sort_keys=True) if args.json else render(result))
         return 0
+    except KeyboardInterrupt:
+        from .writes import WriteCancelled
+        error = WriteCancelled(args.state_dir or Path.cwd(), args.command, "interrupted")
+        print(json.dumps({"error": error.as_dict()}) if args.json else f"howhard: {error}", file=sys.stderr)
+        return 130
     except (HowHardError, OSError) as exc:
+        from .writes import WriteError
+        if args.json and isinstance(exc, WriteError):
+            print(json.dumps({"error": exc.as_dict()}), file=sys.stderr)
+            return 2
         print(f"howhard: {exc}", file=sys.stderr)
         return 2

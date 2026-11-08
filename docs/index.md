@@ -3,6 +3,8 @@
 - [Quickstart](quickstart.md) — install, choose, record an outcome and learn, with no setup.
 - [Model and storage contracts](reference.md) — LLM forecasts, cost/risk selection, strict rows,
   reproducibility and storage.
+- [Concurrent clients](concurrency.md) — backend-owned FIFO write admission, bounded waits,
+  cancellation, queue status and safe retries across worktrees.
 - [Task text and changing project context](context.md) — original task/project text, immutable
   snapshots and decision receipts.
 - [LLM reasoning and writable semantic memory](semantic-memory.md) — reader/writer
@@ -30,6 +32,7 @@
 
 quickstart
 reference
+concurrency
 context
 semantic-memory
 retrieval
