@@ -68,6 +68,8 @@ def apply(config, models):
 
 
 def preflight(config, candidates):
+    if candidates is None:
+        candidates = config.data.get("candidates")
     candidates = validate(candidates)
     # Validate every configured identity/control before persisting anything.
     pairs = set()

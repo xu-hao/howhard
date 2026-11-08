@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Accept optional `[[candidates]]` defaults in `howhard.toml` for Python and CLI
+  selection. Per-request inventories replace those defaults completely. Document
+  external-router integration, distinct provider route identities and shared project
+  learning across providers while retaining observed model/control attribution.
+
 - Update the quickstart to install the published PyPI backend and explain the current
   plugin, real-task, feedback and memory workflow without release-history setup notes.
 

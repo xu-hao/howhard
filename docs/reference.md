@@ -16,9 +16,13 @@ For each supplied native model and effort/control cell, minimize
 J = C_run + P_loud * C_loud + P_silent * C_silent + lambda_per_hour * T
 ```
 
-The host supplies 1–32 distinct actual cells through `--candidates FILE` or Python
-`native_candidates`. Each has `model`, `effort` and optional `usd_per_mtok` or `rate_card`. No-effort,
-null and `model_default` controls are refused. Unknown identities receive distinct
+The caller supplies 1–32 distinct actual cells through `--candidates FILE`, Python
+`native_candidates`, or optional `[[candidates]]` defaults in `howhard.toml`. An explicit
+list replaces the defaults completely; an empty list is refused. Each has `model`,
+`effort` and optional `usd_per_mtok` or `rate_card`. External routers can use stable
+provider-qualified model IDs; execution and provider access belong to the caller.
+See [candidate configuration](configuration.md#candidate-lists-for-external-routers).
+No-effort, null and `model_default` controls are refused. Unknown identities receive distinct
 opaque family labels for protocol bookkeeping, without model assumptions or effects.
 Configured identities retain their declared labels and evidence weights. Historical
 identity metadata does not activate candidates in a later request.
