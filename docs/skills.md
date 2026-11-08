@@ -167,6 +167,12 @@ separate identity labels; generic categorical controls such as ultra remain exac
 rather than mapping to max/default. Missing candidate model/control values remain a
 capability gap. A separate resolved worker identity need not be returned after execution
 when accepted explicit overrides and task completion establish attribution as above.
+Concurrent clients rely on [backend-owned write admission](concurrency.md). The skill
+instructs agents to submit normal calls, inspect `writes --json` for contention and
+retry with stable IDs after a timeout. Agents must not create a writer-window or
+acquire/release protocol in their conversation channels. Stale writer patches still
+require fresh context and a regenerated response.
+
 No project bridge, model mapping, statistical settings, lock feature or extra audit
 ledger is needed. Native manifests and the stateful Python backend remain separate.
 

@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## 2.2.0 — 2026-11-08
+
+- Coordinate concurrent writes inside howhard with per-store FIFO admission, finite
+  waits, cancellation, automatic crash release and `writes --json` queue inspection.
+  CLI `--write-timeout` and Python cancellation/error types expose contention without
+  requiring agent-channel writer windows or a separate coordinator.
+- Admit requests, receipts, evidence, usage amendments, memory and cache publication
+  through the same store queue. Keep model calls and embedding outside write turns,
+  let readers bypass waiting writers, and preserve independent store concurrency.
+- Recheck evidence, memory revisions and learning events after admission. Preserve
+  append-only evidence and matching stable-ID retries; refuse stale forecasts and
+  conflicting patches. Unrelated historical model admission leaves disjoint inventories
+  usable. Document concurrency boundaries and update native skill guidance.
+
 ## 2.1.0 — 2026-11-08
 
 - Accept explicitly named `[inventories]` in `howhard.toml`, selected through Python

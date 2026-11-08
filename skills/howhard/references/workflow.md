@@ -225,3 +225,21 @@ with the project. The resolved state subtree is excluded from source capture/ret
 state must not equal or contain the capture root. Do not create symlink/config wrappers to stitch
 state together, and do not copy memory between projects. Native identity metadata,
 receipts, outcomes and writer events are owned by the backend.
+
+Concurrent clients submit normal operations. The backend queues mutations per store
+in FIFO registration order, including preparation/retrieval artifacts, receipts,
+observations, usage attachments and memory updates. It releases ownership on completion,
+error or process death. Do not invent writer windows, acquire/return messages, scratch
+ledgers or an external broker. Independent model calls and embedding run outside the
+write turn; readers bypass waiting writers and independent stores have separate queues.
+
+`howhard writes --json` reports live tickets, positions and operations without waiting
+for a write turn. Admission defaults to 30 seconds; `--write-timeout SECONDS` changes
+it per command. Python uses `Engine(write_timeout=..., write_cancel=callback)` and
+`write_status()`. Timeouts withdraw the ticket and do not write later. The CLI returns
+exit 2, or 130 for Ctrl-C; JSON admission errors on stderr have `write_timeout`,
+`write_cancelled` or `write_dependency_failed` codes. Retry a transient failure once
+through the same normal operation, preserving stable IDs and inputs. Earlier steps
+may already be durable: inspect evidence after ambiguous feedback. Admission still
+rechecks identity, evidence and expected revisions; refresh and regenerate a stale
+forecast or writer patch instead of silently rebasing it. Report repeated failure.

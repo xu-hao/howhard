@@ -157,6 +157,8 @@ HNSW graph. Changes in the indexed content or embedding identity rebuild the cur
 graph while reusing unchanged vectors. Graph and mapping publication is transactional;
 corrupt graph bytes are rebuilt. These caches never replace `memory.sqlite3` or outcome
 logs. Removed lessons are excluded unless the caller explicitly requests archives.
+Cache transactions use the store's [write queue](concurrency.md). Embedding, graph
+construction and reranking run outside admission; only cache publication is serialized.
 Prepared requests retain candidate IDs, scores, stage identities and selected IDs;
 receipts freeze the selected evidence and forecast inputs.
 

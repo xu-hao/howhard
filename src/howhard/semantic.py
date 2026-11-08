@@ -306,7 +306,7 @@ def call(engine, payload):
         number(usage["cost_usd"], "LLM usage.cost_usd", nonnegative=True)
     record = {"request_hash": digest(payload), "at_utc": datetime.now(timezone.utc).isoformat(), "kind": payload["kind"], "phase": payload.get("phase"),
               "status": "failed" if error else "completed", "backend": str(getattr(engine.llm, "identity", type(engine.llm).__name__)), **usage}
-    with locked(engine.config):
+    with locked(engine.config, operation="inference event"):
         append_bytes(engine.config.state_root / "inference.jsonl", canonical(record) + b"\n")
     engine.last_inference_usage = record
     if error is not None:
@@ -321,7 +321,7 @@ def external_submission(engine, payload):
               "kind": payload["kind"], "phase": "calling-agent", "status": "completed",
               "backend": "calling-agent", "external": True, "seconds": None,
               "cost_usd": None, "tokens": None, "models": []}
-    with locked(engine.config):
+    with locked(engine.config, operation="external inference event"):
         append_bytes(engine.config.state_root / "inference.jsonl", canonical(record) + b"\n")
     return record
 
@@ -388,7 +388,9 @@ def complete(engine, payload, snapshot):
         usage = {"seconds": seconds, "cost_usd": cost, "backend": identity, "calls": calls}
         cached = {"request": original, "final_request": current, "response": response, "usage": usage}
         cached["integrity"] = digest(cached)
-        atomic_write(path, canonical(cached) + b"\n")
+        from .storage import locked
+        with locked(engine.config, operation="inference cache"):
+            atomic_write(path, canonical(cached) + b"\n")
         return response, current, {**usage, "cached": False, "call_seconds": seconds, "call_cost_usd": usage["cost_usd"]}
     raise LLMError("LLM did not return forecasts")
 
@@ -602,7 +604,7 @@ def apply_learning(engine, evidence_id, response, *, expected_revision, event_ke
     if usage is None:
         usage = external_submission(engine, current)
     from .storage import locked, snapshot, effective_rows
-    with locked(engine.config):
+    with locked(engine.config, operation="memory learning"):
         current_rows, _ = snapshot(engine.config)
         root_id = current["observation"]["id"]
         latest = next((row for row in effective_rows(engine.config, current_rows) if row["id"] == root_id), None)
