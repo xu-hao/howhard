@@ -4,6 +4,7 @@ Indexes and embeddings are disposable caches. Ranking never changes outcome evid
 """
 
 from copy import deepcopy
+from contextlib import contextmanager
 import hashlib
 import json
 import re
@@ -139,16 +140,37 @@ class QwenReranker:
                                   show_progress_bar=False).tolist()
 
 
+@contextmanager
+def cache_db(path, admission):
+    """Only cache reads/writes are admitted; embedding and graph construction are not."""
+    from .writes import WriteDependencyError
+    with admission():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        db = None
+        try:
+            db = sqlite3.connect(path, timeout=0)
+            yield db
+            db.commit()
+        except sqlite3.Error as exc:
+            if db is not None:
+                db.rollback()
+            raise WriteDependencyError(path.parent, "retrieval cache", str(exc)) from exc
+        finally:
+            if db is not None:
+                db.close()
+
+
 class BM25Index:
     """SQLite's standard FTS5 BM25; no application-written lexical ranking model."""
     identity = "sqlite-fts5-bm25-v1"
 
-    def __init__(self, path):
+    def __init__(self, path, admission=None):
+        from .writes import admit
         self.path = path
+        self.admission = admission or (lambda: admit(path.parent, operation="lexical cache"))
 
     def search(self, documents, query, *, limit):
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(self.path, timeout=180) as db:
+        with cache_db(self.path, self.admission) as db:
             db.execute("CREATE TABLE IF NOT EXISTS lexical_meta (fingerprint TEXT)")
             db.execute("CREATE VIRTUAL TABLE IF NOT EXISTS search USING fts5(key UNINDEXED, text)")
             fingerprint = digest([(d["key"], d["text"]) for d in documents])
@@ -171,54 +193,55 @@ class HNSWIndex:
     """USearch HNSW with persistent, content-addressed vectors and atomic graph cache."""
     identity = "usearch-hnsw-cos-f32-v1"
 
-    def __init__(self, path):
+    def __init__(self, path, admission=None):
+        from .writes import admit
         self.path = path
+        self.admission = admission or (lambda: admit(path.parent, operation="dense cache"))
 
     def search(self, documents, query, *, embedder, limit):
         # USearch exposes native symbols globally; importing ONNX afterwards can
         # segfault. Initialize inference first, only when dense search is needed.
         import onnxruntime
         from usearch.index import Index
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(self.path, timeout=180) as db:
+        keys = [digest([embedder.identity, d["text"]]) for d in documents]
+        identity = digest([self.identity, embedder.identity, [(d["key"], k) for d, k in zip(documents, keys)]])
+        with cache_db(self.path, self.admission) as db:
             db.execute("CREATE TABLE IF NOT EXISTS vectors (key TEXT PRIMARY KEY, vector BLOB NOT NULL)")
             db.execute("CREATE TABLE IF NOT EXISTS indexes (identity TEXT PRIMARY KEY, graph BLOB NOT NULL, checksum TEXT NOT NULL)")
-            db.execute("BEGIN IMMEDIATE")
-            keys = [digest([embedder.identity, d["text"]]) for d in documents]
-            identity = digest([self.identity, embedder.identity, [(d["key"], k) for d, k in zip(documents, keys)]])
-            index = Index(ndim=embedder.dimensions, metric="cos", dtype="f32", expansion_search=max(256, limit))
             cached = db.execute("SELECT graph, checksum FROM indexes WHERE identity=?", (identity,)).fetchone()
-            loaded = False
-            if cached is not None and hashlib.sha256(cached[0]).hexdigest() == cached[1]:
-                try:
-                    index.load(cached[0])
-                    loaded = len(index) == len(documents) and index.ndim == embedder.dimensions
-                except (RuntimeError, ValueError):
-                    pass
-            if not loaded:
-                vectors, missing = {}, {}
-                for key, document in zip(keys, documents):
-                    row = db.execute("SELECT vector FROM vectors WHERE key=?", (key,)).fetchone()
-                    vector = np.frombuffer(row[0], dtype=np.float32) if row is not None and len(row[0]) == 4 * embedder.dimensions else None
-                    if vector is None or not np.isfinite(vector).all() or not np.linalg.norm(vector):
-                        missing[key] = document["text"]
-                    else:
-                        vectors[key] = vector
-                if missing:
-                    encoded = _vectors(embedder.encode(list(missing.values())), len(missing), embedder.dimensions)
-                    for key, vector in zip(missing, encoded):
-                        vectors[key] = vector
-                        db.execute("INSERT OR REPLACE INTO vectors VALUES (?,?)", (key, vector.tobytes()))
-                matrix = np.asarray([vectors[k] for k in keys], dtype=np.float32)
-                index = Index(ndim=embedder.dimensions, metric="cos", dtype="f32", expansion_search=max(256, limit))
-                index.add(np.arange(len(documents), dtype=np.uint64), matrix, threads=1)
-                graph = index.save()
+            stored = {key: db.execute("SELECT vector FROM vectors WHERE key=?", (key,)).fetchone() for key in set(keys)}
+        index = Index(ndim=embedder.dimensions, metric="cos", dtype="f32", expansion_search=max(256, limit))
+        loaded = False
+        if cached is not None and hashlib.sha256(cached[0]).hexdigest() == cached[1]:
+            try:
+                index.load(cached[0])
+                loaded = len(index) == len(documents) and index.ndim == embedder.dimensions
+            except (RuntimeError, ValueError):
+                pass
+        if not loaded:
+            vectors, missing = {}, {}
+            for key, document in zip(keys, documents):
+                row = stored[key]
+                vector = np.frombuffer(row[0], dtype=np.float32) if row is not None and len(row[0]) == 4 * embedder.dimensions else None
+                if vector is None or not np.isfinite(vector).all() or not np.linalg.norm(vector):
+                    missing[key] = document["text"]
+                else:
+                    vectors[key] = vector
+            if missing:
+                encoded = _vectors(embedder.encode(list(missing.values())), len(missing), embedder.dimensions)
+                vectors.update(zip(missing, encoded))
+            matrix = np.asarray([vectors[k] for k in keys], dtype=np.float32)
+            index = Index(ndim=embedder.dimensions, metric="cos", dtype="f32", expansion_search=max(256, limit))
+            index.add(np.arange(len(documents), dtype=np.uint64), matrix, threads=1)
+            graph = index.save()
+            with cache_db(self.path, self.admission) as db:
+                db.executemany("INSERT OR REPLACE INTO vectors VALUES (?,?)", [(key, vectors[key].tobytes()) for key in missing])
                 # Only one current graph is necessary; corpus vectors survive edits.
                 db.execute("DELETE FROM indexes")
                 db.execute("INSERT INTO indexes VALUES (?,?,?)", (identity, graph, hashlib.sha256(graph).hexdigest()))
-            vector = _vectors(embedder.encode([query], query=True), 1, embedder.dimensions)[0]
-            matches = index.search(vector, count=min(limit, len(documents)), threads=1)
-            return [documents[int(i)]["key"] for i in matches.keys]
+        vector = _vectors(embedder.encode([query], query=True), 1, embedder.dimensions)[0]
+        matches = index.search(vector, count=min(limit, len(documents)), threads=1)
+        return [documents[int(i)]["key"] for i in matches.keys]
 
 
 def _vectors(values, count, dimensions):
@@ -259,7 +282,11 @@ class RetrievalPipeline:
             reranker = QwenReranker(config.state_root / "models", **options)
         else:
             reranker = FastEmbedReranker(config.state_root / "models", **options)
-        return cls(config.state_root, reranker=reranker)
+        from .storage import locked
+        admission = lambda: locked(config, operation="retrieval cache")
+        path = config.state_root / "retrieval.sqlite3"
+        return cls(config.state_root, reranker=reranker,
+                   lexical=BM25Index(path, admission), dense=HNSWIndex(path, admission))
 
     def search(self, documents, query, *, limit=KEEP):
         if not isinstance(query, str) or type(limit) is not int or not 1 <= limit <= CANDIDATES:

@@ -18,14 +18,19 @@ from . import semantic
 
 
 class Engine:
-    def __init__(self, config=None, *, directory=None, state_directory=None, journal_path=None, llm=None, retrieval=None):
+    def __init__(self, config=None, *, directory=None, state_directory=None, journal_path=None, llm=None, retrieval=None,
+                 write_timeout=30.0, write_cancel=None):
         if llm is not None and not callable(getattr(llm, "complete", None)):
             raise LLMError("llm: expected an adapter with complete(request)")
         self.config = config if isinstance(config, Config) else load_config(config, directory=directory, state_directory=state_directory)
+        from .writes import WritePolicy
+        from copy import copy, deepcopy
+        self.config = copy(self.config)
+        self.config.data = deepcopy(self.config.data)
+        self.config.native_models = deepcopy(self.config.native_models)
+        self.config.write_policy = WritePolicy(write_timeout, write_cancel)
         if isinstance(config, Config) and (directory is not None or state_directory is not None):
-            from copy import deepcopy
             from .state import roots
-            self.config = deepcopy(config)
             project, store, identity_path, identity = roots(directory or config.project_root, explicit=config.explicit,
                                               state_directory=state_directory or config.state_root)
             self.config.project_root, self.config.state_root, self.config.identity_path, self.config.project_identity = project, store, identity_path, identity
@@ -43,17 +48,24 @@ class Engine:
 
     def refresh(self):
         config = self.config
-        with storage.locked(config):
+        claimed = (config.state_root / "store.json").exists()
+        boundary = storage.reading(config) if claimed else storage.locked(config, operation="store initialize")
+        with boundary:
             from . import native, state
             state.check(config)
             native.apply(config, native.read(config))
             raw_rows, _ = storage.snapshot(config)
-            state.claim(config)
+            if not claimed:
+                state.claim(config)
         self.raw_rows = raw_rows
         self.rows = storage.effective_rows(config, raw_rows)
-        self.evidence_key = digest({"config": config.data, "rows": self.raw_rows,
-                                    "native_models": config.native_models})
-        self._summaries.clear()
+        # Historical identity admission does not change forecasts for a disjoint
+        # inventory. Its actual cells are bound separately in every request.
+        configured = {k: v for k, v in config.data["models"].items() if not v.get("native")}
+        evidence_key = digest({"config": {**config.data, "models": configured}, "rows": self.raw_rows})
+        if evidence_key != getattr(self, "evidence_key", None):
+            self._summaries.clear()
+        self.evidence_key = evidence_key
 
     def _inference(self):
         if self.llm is None:
@@ -63,6 +75,10 @@ class Engine:
     @property
     def paths(self):
         return {"project_root": str(self.config.project_root), "state_root": str(self.config.state_root)}
+
+    def write_status(self):
+        from .writes import status
+        return status(self.config.state_root)
 
     def evidence(self, evidence_id, *, raw=False):
         from copy import deepcopy
@@ -75,10 +91,8 @@ class Engine:
 
     def _register(self, native_candidates):
         from .native import register
-        previous = self.config.native_models
         inventory = register(self.config, native_candidates)
-        if previous != self.config.native_models:
-            self.refresh()
+        self.refresh()
         return inventory
 
     def _prepared(self, task_type, risk, task_text="", project_context=None, native_candidates=None):
@@ -102,7 +116,9 @@ class Engine:
         try:
             result = self._pick(task_type, task_text, project_context=project_context, risk=risk, seed=seed, native_candidates=native_candidates)
         except Exception as exc:
-            self._decision_event(None, task_type, started, error=type(exc).__name__)
+            from .writes import WriteError
+            if not isinstance(exc, WriteError):
+                self._decision_event(None, task_type, started, error=type(exc).__name__)
             raise
         self._decision_event(result, task_type, started)
         return result
@@ -115,21 +131,30 @@ class Engine:
                  "backend": result.get("backend", self.backend) if result else self.backend}
         if result and "semantic" in result:
             result["routing_overhead"]["end_to_end_seconds"] = event["seconds"]
-        with storage.locked(self.config):
+        with storage.locked(self.config, operation="decision event"):
             storage.append_bytes(self.config.state_root / "decision-events.jsonl", canonical(event) + b"\n")
 
     def _pick(self, task_type, task_text="", *, project_context=None, risk=None, seed=None, native_candidates=None):
         if seed is not None and (type(seed) is not int or seed < 0):
             raise HowHardError("seed: expected a non-negative integer")
         inventory = self._register(native_candidates)
+        evidence_key = self.evidence_key
         prepared = self._semantic_prepared(self._prepared(task_type, risk, task_text, project_context, inventory))
         seed = secrets.randbits(64) if seed is None else seed
         parts = semantic.sample(prepared, seed)
         result = choose(prepared, self.config, seed, parts)
-        result["decision_id"] = decisions.save(self.config, result)
+        with storage.locked(self.config, operation="decision commit"):
+            self._validate_state(evidence_key, prepared[0]["semantic"]["memory_revision"])
+            result["decision_id"] = decisions.save(self.config, result)
         return result
 
+    def _validate_state(self, evidence_key, revision):
+        self.refresh()
+        if evidence_key != self.evidence_key or revision != self.memory.snapshot()["revision"]:
+            raise HowHardError("request_id: stale evidence or memory; prepare a new decision")
+
     def _semantic_prepared(self, prepared, response=None, payload=None, snapshot=None):
+        evidence_key = self.evidence_key
         if payload is None:
             payload, snapshot = semantic.request(self, prepared)
         if response is None:
@@ -139,12 +164,15 @@ class Engine:
             response = semantic.validate_response(response, payload, snapshot)
             semantic.external_submission(self, payload)
             usage = {"backend": "calling-agent", "seconds": 0.0, "cost_usd": None, "calls": [], "cached": False, "call_seconds": 0.0, "call_cost_usd": None}
+        with storage.reading(self.config):
+            self._validate_state(evidence_key, snapshot["revision"])
         return semantic.augment(self, prepared, response, payload, snapshot, usage)
 
     def memory_beliefs(self):
         return semantic.beliefs(self)
 
     def memory_learn(self, evidence_id):
+        self.refresh()
         self._inference()
         self.last_memory_update = semantic.learn(self, evidence_id)
         return self.last_memory_update
@@ -162,7 +190,9 @@ class Engine:
     def _save_request(self, bundle):
         from .files import atomic_write
         request_id = digest(bundle)
-        atomic_write(self.config.state_root / "requests" / f"{request_id}.json", canonical(bundle) + b"\n")
+        with storage.locked(self.config, operation="request commit"):
+            self._validate_state(bundle["evidence_key"], bundle["snapshot"]["revision"])
+            atomic_write(self.config.state_root / "requests" / f"{request_id}.json", canonical(bundle) + b"\n")
         return {"request_id": request_id, "request": semantic.visible_request(bundle["payload"]), "baseline_request": semantic.baseline_request(bundle["payload"])}
 
     def _load_request(self, request_id):
@@ -201,7 +231,9 @@ class Engine:
         try:
             result = self._decide(request_id, response, seed=seed)
         except Exception as exc:
-            self._decision_event(None, "calling-agent", started, error=type(exc).__name__)
+            from .writes import WriteError
+            if not isinstance(exc, WriteError):
+                self._decision_event(None, "calling-agent", started, error=type(exc).__name__)
             raise
         self._decision_event(result, result["task_type"], started)
         return result
@@ -218,10 +250,13 @@ class Engine:
             raise HowHardError("seed: expected non-negative integer")
         parts = semantic.sample(prepared, seed)
         result = choose(prepared, self.config, seed, parts)
-        result["decision_id"] = decisions.save(self.config, result)
+        with storage.locked(self.config, operation="decision commit"):
+            self._validate_state(bundle["evidence_key"], bundle["snapshot"]["revision"])
+            result["decision_id"] = decisions.save(self.config, result)
         return result
 
     def memory_learning_context(self, evidence_id):
+        self.refresh()
         request, event_key = semantic.learning_request(self, evidence_id)
         return {"request": request, "event_key": event_key, "memory_revision": request["memory_revision"]}
 

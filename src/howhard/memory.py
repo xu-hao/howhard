@@ -18,6 +18,7 @@ def strings(value, where):
 
 class MemoryStore:
     def __init__(self, config, evidence=None, retrieval=None):
+        self.config = config
         self.path = config.state_root / "memory.sqlite3"
         self._evidence = evidence or (lambda: set())
         if retrieval is None:
@@ -27,15 +28,47 @@ class MemoryStore:
 
     @contextmanager
     def _db(self):
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        db = sqlite3.connect(self.path, timeout=10)
-        db.row_factory = sqlite3.Row
-        try:
-            if db.execute("PRAGMA user_version").fetchone()[0] not in (0, 1):
+        from .storage import locked
+        # Initialization is a mutation too; ordinary reads perform no schema writes.
+        if not self.path.exists():
+            with locked(self.config, operation="memory initialize"):
+                with self._connection() as db:
+                    self._initialize(db)
+        with self._connection() as db:
+            version = db.execute("PRAGMA user_version").fetchone()[0]
+        if version == 0:
+            with locked(self.config, operation="memory initialize"):
+                with self._connection() as db:
+                    self._initialize(db)
+            version = 1
+        with self._connection() as db:
+            if version != 1:
                 raise HowHardError("memory database: unsupported schema version")
-            db.executescript("""
-                PRAGMA foreign_keys = ON;
-                PRAGMA user_version = 1;
+            yield db
+
+    @contextmanager
+    def _connection(self):
+        from .writes import WriteDependencyError
+        db = None
+        try:
+            db = sqlite3.connect(self.path, timeout=0)
+            db.row_factory = sqlite3.Row
+            db.execute("PRAGMA foreign_keys = ON")
+            yield db
+        except sqlite3.Error as exc:
+            if db is not None:
+                db.rollback()
+            raise WriteDependencyError(self.config.state_root, "memory database", str(exc)) from exc
+        finally:
+            if db is not None:
+                db.close()
+
+    @staticmethod
+    def _initialize(db):
+        if db.execute("PRAGMA user_version").fetchone()[0] not in (0, 1):
+            raise HowHardError("memory database: unsupported schema version")
+        db.executescript("""
+                BEGIN IMMEDIATE;
                 CREATE TABLE IF NOT EXISTS memories (
                     id TEXT PRIMARY KEY, version INTEGER NOT NULL, active INTEGER NOT NULL);
                 CREATE TABLE IF NOT EXISTS versions (
@@ -47,13 +80,9 @@ class MemoryStore:
                     targets TEXT NOT NULL, operation TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS learned (
                     event_key TEXT PRIMARY KEY, revision INTEGER NOT NULL);
+                PRAGMA user_version = 1;
+                COMMIT;
             """)
-            yield db
-        except sqlite3.Error as exc:
-            db.rollback()
-            raise HowHardError(f"memory database: {exc}") from exc
-        finally:
-            db.close()
 
     @staticmethod
     def _revision(db):
@@ -111,8 +140,16 @@ class MemoryStore:
         text(actor, "memory.actor")
         if expected_revision is not None and (type(expected_revision) is not int or expected_revision < 0):
             raise HowHardError("memory.expected_revision: expected non-negative integer")
-        with self._db() as db:
+        from .storage import locked, snapshot
+        from . import native
+        with locked(self.config, operation="memory apply"), self._db() as db:
+            evidence = self._evidence
             try:
+                # Evidence admission must use current durable rows, not the engine's
+                # potentially old snapshot from before a queue wait.
+                native.apply(self.config, native.read(self.config))
+                rows, _ = snapshot(self.config)
+                self._evidence = lambda: {r["id"] for r in rows}
                 db.execute("BEGIN IMMEDIATE")
                 revision = self._revision(db)
                 if event_key is not None and db.execute("SELECT 1 FROM learned WHERE event_key = ?", (event_key,)).fetchone():
@@ -128,6 +165,8 @@ class MemoryStore:
             except BaseException:
                 db.rollback()
                 raise
+            finally:
+                self._evidence = evidence
 
     def _content(self, title, body, scope, evidence_ids):
         text(title, "memory.title")

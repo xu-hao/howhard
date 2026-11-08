@@ -1,8 +1,7 @@
 """Strict append-only JSONL, amendments and a durable pending journal."""
 
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 from datetime import date, datetime, timezone
-import fcntl
 import json
 import os
 from pathlib import Path
@@ -16,18 +15,53 @@ ROW_KEYS = ("id", "date", "ticket", "task_type", "risk_class", "model", "effort"
 
 
 @contextmanager
-def locked(config):
-    from .state import identity_locked, check
-    with identity_locked(config):
-        path = config.path(config.data["journal"]).with_suffix(".lock")
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a+b") as handle:
-            fcntl.flock(handle, fcntl.LOCK_EX)
+def locked(config, *, operation="storage write"):
+    from .state import check
+    from .writes import admit, current, file_lock
+    check(config)
+    paths = {config.state_root / "storage.lock", config.path(config.data["journal"]).with_suffix(".lock").resolve()}
+    paths = sorted(paths, key=lambda p: (p != config.state_root / "storage.lock", str(p)))
+    previous = current(config.state_root)
+    if previous is not None and all(p in previous.storage_locks for p in paths):
+        yield
+        return
+    with admit(config.state_root, config.write_policy, operation=operation) as wait:
+        with ExitStack() as stack:
+            acquired = []
+            for path in paths:
+                if path not in wait.storage_locks:
+                    stack.enter_context(file_lock(path, wait))
+                    acquired.append(path)
+            check(config)
+            wait.storage_locks.update(acquired)
             try:
-                check(config)
                 yield
             finally:
-                fcntl.flock(handle, fcntl.LOCK_UN)
+                wait.storage_locks.difference_update(acquired)
+
+
+@contextmanager
+def reading(config):
+    """Consistent JSONL snapshots bypass queued writers, waiting only on mutation."""
+    from .state import check
+    from .writes import current, file_lock, Wait, WriteDependencyError
+    check(config)
+    previous = current(config.state_root)
+    paths = [config.state_root / "storage.lock", config.path(config.data["journal"]).with_suffix(".lock").resolve()]
+    if previous is not None and all(p in previous.storage_locks for p in paths):
+        check(config)
+        yield
+        return
+    wait = Wait(config.state_root, config.write_policy, "storage read")
+    try:
+        with ExitStack() as stack:
+            for path in dict.fromkeys(paths):
+                if previous is None or path not in previous.storage_locks:
+                    stack.enter_context(file_lock(path, wait, shared=True))
+            check(config)
+            yield
+    except OSError as exc:
+        raise WriteDependencyError(config.state_root, "storage read", str(exc)) from exc
 
 
 def read_bytes(path):
@@ -218,7 +252,7 @@ def observe(config, task_type, model, effort, outcome, *, _automatic_context=(),
         raise HowHardError(f"observe: unknown keys {sorted(unknown)}")
     if native and (options.get("amends") is not None or options.get("decision_id") is not None):
         raise HowHardError("native: actual identity admission is only for original raw feedback without a decision")
-    with locked(config):
+    with locked(config, operation="observe"):
         from . import native as native_registry
         from .state import check
         from copy import deepcopy
@@ -263,6 +297,8 @@ def observe(config, task_type, model, effort, outcome, *, _automatic_context=(),
                 raise HowHardError(f"observe.id: conflicting project for {row['id']!r}")
             recorded = {k: v for k, v in existing.items() if k != "project"}
             comparable = dict(row)
+            if _preserve_outcome:
+                comparable.update(outcome=recorded["outcome"], cause=recorded["cause"])
             for field in _automatic_context:
                 comparable[field] = recorded[field]
             comparable["observed_at"] = recorded["observed_at"]
@@ -282,7 +318,7 @@ def observe(config, task_type, model, effort, outcome, *, _automatic_context=(),
 
 
 def flush(config):
-    with locked(config):
+    with locked(config, operation="flush"):
         _, blobs = snapshot(config)  # Validate everything before either file is changed.
         journal, project, pending = blobs[-1]
         # Amendment references can point into the logs, so take ids directly from the
