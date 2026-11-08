@@ -1,7 +1,6 @@
 """Project capture and durable project state have independent roots."""
 
 import json
-import fcntl
 from contextlib import contextmanager
 import re
 import secrets
@@ -29,6 +28,7 @@ def validate_store(path):
     known = {"pending.jsonl", "pending.lock", "outcomes.jsonl", "posterior.npz", "memory.sqlite3",
              "decisions", "requests", "llm-cache", "inference.jsonl", "decision-events.jsonl",
              "imported-prior.json", "native-models.json", "store.json", "project.json", "project.lock"}
+    known.update({"write-queue", "write-queue.lock", "storage.lock", "retrieval.sqlite3", "models"})
     if names and not names & known:
         raise HowHardError(f"state: refusing unrelated existing directory {path}")
     if "memory.sqlite3" in names and "store.json" not in names:
@@ -89,24 +89,21 @@ def identity_locked(config):
     # A project anchor is independent of custom stores. The shared identity lock
     # serializes first use even when callers choose different new state directories.
     check(config)
+    from .writes import current, Wait, file_lock
+    wait = current(config.state_root) or Wait(config.state_root, config.write_policy, "project identity")
     path = config.identity_path.with_suffix(".lock")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a+b") as handle:
-        fcntl.flock(handle, fcntl.LOCK_EX)
-        try:
-            check(config)
-            yield
-        finally:
-            fcntl.flock(handle, fcntl.LOCK_UN)
+    with file_lock(path, wait):
+        check(config)
+        yield
 
 
 def claim(config):
-    """Called after data validation, under both project identity and storage locks."""
+    """Called after data validation under store admission; anchor only during claim."""
     from .files import atomic_write
-    check(config)
-    if not config.project_identity:
-        config.project_identity = secrets.token_hex(16)
-        atomic_write(config.identity_path, (json.dumps({"format": "howhard-project-v1", "id": config.project_identity}, sort_keys=True) + "\n").encode())
-    path = config.state_root / "store.json"
-    if not path.exists():
-        atomic_write(path, (json.dumps({"format": "howhard-store-v2", "project": config.project_identity}, sort_keys=True) + "\n").encode())
+    with identity_locked(config):
+        if not config.project_identity:
+            config.project_identity = secrets.token_hex(16)
+            atomic_write(config.identity_path, (json.dumps({"format": "howhard-project-v1", "id": config.project_identity}, sort_keys=True) + "\n").encode())
+        path = config.state_root / "store.json"
+        if not path.exists():
+            atomic_write(path, (json.dumps({"format": "howhard-store-v2", "project": config.project_identity}, sort_keys=True) + "\n").encode())

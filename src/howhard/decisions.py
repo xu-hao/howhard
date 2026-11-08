@@ -21,11 +21,16 @@ def save(config, result):
     value["cost_policy"] = result["cost_policy"]
     value["native_candidates"] = result["native_candidates"]
     decision_id = digest(value)
-    atomic_write(receipt_path(config, decision_id), canonical(value) + b"\n")
+    from .storage import locked
+    with locked(config, operation="receipt commit"):
+        atomic_write(receipt_path(config, decision_id), canonical(value) + b"\n")
     return decision_id
 
 
 def load(config, source, *, for_scoring=False):
+    from . import state, native
+    state.check(config)
+    native.apply(config, native.read(config))
     if isinstance(source, dict):
         if "decision_id" in source:
             source = source["decision_id"]

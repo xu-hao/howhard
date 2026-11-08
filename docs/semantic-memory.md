@@ -71,8 +71,12 @@ and the corresponding fields. For example:
 ]
 ```
 
-Batches are transactional: one invalid operation changes nothing. Writer edits carry
-the revision they read and reject concurrent stale writes. Evidence IDs must refer to
+Batches are transactional: one invalid operation changes nothing. Writer edits retain
+their expected revision through the backend's [write queue](concurrency.md). Memory
+mutations share admission with observations, amendments, receipts and cache publication;
+revision and evidence-event checks run after waiting. Clients do not coordinate writer
+windows through conversation channels. The queue never silently rebases a stale patch.
+Evidence IDs must refer to
 recorded runs. Edits create new content versions and receive no inherited predictive
 credit. Merge and split create new IDs and preserve parent/evidence links without
 combining old scores. Remove stops active use; archived versions, evidence and audit

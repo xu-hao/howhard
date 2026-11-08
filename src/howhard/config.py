@@ -8,6 +8,7 @@ import re
 import tomllib
 
 from .validation import HowHardError, keys, number, table, text
+from .writes import WritePolicy
 
 
 def merge(base, changes):
@@ -67,6 +68,7 @@ class Config:
     identity_path: Path | None = None
     project_identity: str = ""
     native_models: dict = field(default_factory=dict)
+    write_policy: WritePolicy = field(default_factory=WritePolicy)
 
     def path(self, value):
         relative = Path(text(value, "path"))
@@ -85,6 +87,9 @@ class Config:
         paths = [self.path(name).resolve() for name in names]
         if len(set(paths)) != len(paths):
             raise HowHardError("config paths: logs, journal and lock files must be distinct")
+        reserved = {self.state_root / "storage.lock", self.state_root / "write-queue.lock"}
+        if any(p in reserved or p.is_relative_to(self.state_root / "write-queue") for p in paths):
+            raise HowHardError("config paths: logs and journal must not overlap backend write coordination")
 
 
 def load_config(path=None, *, directory=None, state_directory=None):
