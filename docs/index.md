@@ -15,7 +15,8 @@
   with pytest-probability, separate from field routing-quality evidence.
 - [Real-project evaluation](evaluation.md) — chronological field trials and genuine
   observed outcomes, with implementation fixtures kept separate.
-- [Advanced configuration](configuration.md) — optional registry, policies and data locations.
+- [Advanced configuration](configuration.md) — external-router candidate lists, optional
+  registry, policies and data locations.
 - [Upgrading to 2.0](upgrading-2.0.md) — portable execution accounting and explicit money bases.
 - [Upgrading to 1.0](upgrading-1.0.md) — breaking interfaces, backend/skill updates and
   preserved historical state.

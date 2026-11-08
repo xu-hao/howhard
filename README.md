@@ -84,4 +84,7 @@ howhard report --json
 The [model and storage contracts](docs/reference.md), [semantic-memory guide](docs/semantic-memory.md)
 and [context contract](docs/context.md) describe the CLI/API and evidence boundaries.
 Evaluate routing quality with [genuine project work](docs/evaluation.md).
+External routing applications can [configure explicitly selected inventories](docs/configuration.md#inventories-for-external-routers)
+and use the Python or calling-agent interfaces to select models and share learning
+across providers in the same project store.
 Contributors use [isolated worktrees and the documentation-only exemption](docs/contributing.md).

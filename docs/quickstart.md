@@ -69,7 +69,7 @@ Explicit skill invocation is `$howhard` or `/skills` in Codex, `/howhard:howhard
 Claude Code, and `/howhard` in Antigravity. Codex can also activate the skill when the
 task matches its description. Installing the plugin does not make every worker start
 run it automatically. For persistent use, copy the
-[coordinating-agent instruction](skills.md#require-howhard-before-delegation) into
+{ref}`coordinating-agent instruction <require-howhard-before-delegation>` into
 your host's project instructions.
 
 The agent discovers the host's supported model and effort controls, obtains a baseline
@@ -105,7 +105,7 @@ Accepted explicit native model/effort overrides plus completed execution establi
 match to the selected receipt unless the host reports a launch failure, ignored control,
 substitution or contradictory metadata. Record that as host-API provenance when no
 separate resolved identity is returned. A known different executed cell uses raw native
-feedback; an unknown identity stays unscored. See [feedback attribution](skills.md#skill-capability-boundaries)
+feedback; an unknown identity stays unscored. See {ref}`feedback attribution <skill-capability-boundaries>`
 for the full protocol.
 
 The agent uses the learning context to prepare a writer response containing `operations`

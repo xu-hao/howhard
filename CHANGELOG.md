@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Accept explicitly named `[inventories]` in `howhard.toml`, selected through Python
+  `inventory="NAME"` or CLI `--inventory NAME`. Saved lists never override the native
+  agent's supplied inventory automatically. Document external-router integration,
+  distinct provider route identities and shared project learning across providers
+  while retaining observed model/control attribution.
+
 - Update the quickstart to install the published PyPI backend and explain the current
   plugin, real-task, feedback and memory workflow without release-history setup notes.
 
