@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 2.1.0 — 2026-11-08
+
 - Accept explicitly named `[inventories]` in `howhard.toml`, selected through Python
   `inventory="NAME"` or CLI `--inventory NAME`. Saved lists never override the native
   agent's supplied inventory automatically. Document external-router integration,
