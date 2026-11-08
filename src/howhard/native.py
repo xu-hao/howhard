@@ -67,6 +67,18 @@ def apply(config, models):
                                         "weight": 1.0, "native": True}
 
 
+def resolve(config, candidates=None, inventory=None):
+    """Use only caller-supplied availability or an explicitly named inventory."""
+    if inventory is not None:
+        if candidates is not None:
+            raise HowHardError("inventory: cannot combine a named inventory with native_candidates")
+        text(inventory, "inventory", label=True)
+        if inventory not in config.data.get("inventories", {}):
+            raise HowHardError(f"inventory: unknown name {inventory!r}")
+        candidates = config.data["inventories"][inventory]
+    return preflight(config, candidates)
+
+
 def preflight(config, candidates):
     candidates = validate(candidates)
     # Validate every configured identity/control before persisting anything.

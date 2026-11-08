@@ -88,15 +88,16 @@ class Engine:
             self._summaries[key] = prepare(self.config, task_type, risk, context, native_candidates=native_candidates)
         return self._summaries[key]
 
-    def summary(self, task_type, task_text="", *, project_context=None, risk=None, native_candidates=None):
+    def summary(self, task_type, task_text="", *, project_context=None, risk=None, native_candidates=None, inventory=None):
         from copy import deepcopy
-        inventory = self._register(native_candidates)
-        prepared = self._semantic_prepared(self._prepared(task_type, risk, task_text, project_context, inventory))
+        from .native import resolve
+        candidates = self._register(resolve(self.config, native_candidates, inventory))
+        prepared = self._semantic_prepared(self._prepared(task_type, risk, task_text, project_context, candidates))
         return deepcopy(prepared[0])
 
-    def pick(self, task_type, task_text="", *, project_context=None, risk=None, seed=None, native_candidates=None):
-        from .native import preflight
-        native_candidates = preflight(self.config, native_candidates)
+    def pick(self, task_type, task_text="", *, project_context=None, risk=None, seed=None, native_candidates=None, inventory=None):
+        from .native import resolve
+        native_candidates = resolve(self.config, native_candidates, inventory)
         started = time.monotonic()
         try:
             result = self._pick(task_type, task_text, project_context=project_context, risk=risk, seed=seed, native_candidates=native_candidates)
@@ -148,12 +149,13 @@ class Engine:
         self.last_memory_update = semantic.learn(self, evidence_id)
         return self.last_memory_update
 
-    def prepare(self, task_type, task_text="", *, project_context=None, risk=None, native_candidates=None):
-        inventory = self._register(native_candidates)
-        prepared = self._prepared(task_type, risk, task_text, project_context, inventory)
+    def prepare(self, task_type, task_text="", *, project_context=None, risk=None, native_candidates=None, inventory=None):
+        from .native import resolve
+        candidates = self._register(resolve(self.config, native_candidates, inventory))
+        prepared = self._prepared(task_type, risk, task_text, project_context, candidates)
         payload, snapshot = semantic.request(self, prepared)
         bundle = {"format": "howhard-agent-request-v4", "evidence_key": self.evidence_key, "payload": payload, "snapshot": snapshot}
-        bundle["native_candidates"] = inventory
+        bundle["native_candidates"] = candidates
         bundle["project_root"] = str(self.config.project_root)
         return self._save_request(bundle)
 
