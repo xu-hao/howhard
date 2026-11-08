@@ -10,12 +10,12 @@ Run these commands from the project where you want to use howhard:
 ```sh
 python3 -m venv .venv-howhard
 . .venv-howhard/bin/activate
-python -m pip install "howhard==2.0.0"
+python -m pip install "howhard==2.1.0"
 howhard --version
 ```
 
-Expect `howhard 2.0.0`. The Python package is available on
-[PyPI](https://pypi.org/project/howhard/2.0.0/).
+Expect `howhard 2.1.0`. The Python package is available on
+[PyPI](https://pypi.org/project/howhard/2.1.0/).
 
 Keep this environment active and start your coding agent from the same shell so it
 can find `howhard`. If an existing GUI session cannot find it, configure the absolute
