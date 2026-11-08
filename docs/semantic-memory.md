@@ -42,7 +42,8 @@ uses the task and project, without filtering history to today's available models
 experience from one provider can inform a prospective forecast for another through the
 reader and written lessons. Its actual outcome remains attributed only to the executed
 model/control, and predictive support requires a later observed forecast exposure.
-An external router can supply or [configure its candidate list](configuration.md#candidate-lists-for-external-routers)
+An external router can supply a list or explicitly select a
+{ref}`configured inventory <external-router-inventories>`
 and use this learning without a native agent plugin.
 
 ```sh
@@ -185,6 +186,7 @@ Raw `observe --native` records a different verified execution without attaching 
 unexecuted forecast. State is shared automatically across fresh Git worktrees, with
 current project capture kept separate; inspect `paths` for the resolved roots.
 
+(calling-agent-provider-interfaces)=
 ## Calling-agent and provider interfaces
 
 An agent that already has an LLM can use howhard as a stateful tool backend:
