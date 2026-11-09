@@ -1,4 +1,5 @@
 """Portable public-boundary mechanics, not routing-quality evidence."""
+from conftest import forecast_request
 
 from copy import deepcopy
 import json
@@ -26,6 +27,7 @@ def test_native_candidates_precede_baseline_and_survive_feedback_reload(tmp_path
     assert {(c["model"], c["effort"]) for c in cells} == {("host-model-a", "high"), ("host-model-b", "ultra")}
     assert len({c["family"] for c in cells}) == 2
     assert not {"haiku", "sonnet", "opus", "fable"} & {c["family"] for c in cells}
+    request = forecast_request(engine, request)
     response = FixtureLLM().complete(request["baseline_request"])
     response["memory_forecasts"] = []
     choice = engine.decide(request["request_id"], response, seed=3)
@@ -60,6 +62,7 @@ def test_any_unpriced_candidate_omits_worker_money_for_every_candidate(tmp_path)
 def test_matching_retry_is_idempotent_conflict_is_refused_and_correction_writer_replays(tmp_path):
     engine = Engine(directory=tmp_path)
     request = engine.prepare("task", "Repair rollback", native_candidates=[native()])
+    request = forecast_request(engine, request)
     response = FixtureLLM().complete(request["baseline_request"])
     response["memory_forecasts"] = []
     choice = engine.decide(request["request_id"], response, seed=3)

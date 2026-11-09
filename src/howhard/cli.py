@@ -122,15 +122,16 @@ def render(result):
     if "chosen" in result:
         chosen = result["chosen"]
         lines.append(f"{chosen['model']} ({chosen['family']}) effort={chosen['effort']} seed={result['seed']}")
-        lines.append(f"Silent cap: {'met' if result['cap_met'] else 'UNMET'}")
+        lines.append(f"Accepted-result silent cap: {'met' if result['cap_met'] else 'UNMET'}")
+        lines.append(f"Exploration: {result['exploration']['reason']}")
         lines.append(f"Decision: {result['decision_id']} (record with: howhard observe {result['decision_id']} clean)")
         if result["needs_review"]:
             lines.append("Independent review is required before release.")
     lines.append(f"Task: {result['task_type']}  Risk: {result['risk_class']}  Constants: {json.dumps(result['constants'], sort_keys=True)}")
-    lines.append("family/effort  P_clean [95%]  P_loud [95%]  P_silent [95%]  run USD  time h  J USD  sampled J  admissible")
+    lines.append("family/effort  P_clean [95%]  P_loud [95%]  P_silent [95%]  P_silent accepted [95%]  run USD  time h  J* USD  sampled J*  admissible")
     for row in result["cells"]:
         fields = [f"{row['family']}/{row['effort']}"]
-        for name in ("P_clean", "P_loud", "P_silent"):
+        for name in ("P_clean", "P_loud", "P_silent", "P_silent_accepted"):
             p = row[name]
             fields.append(f"{p['mean']:.3f} [{p['lower']:.3f}, {p['upper']:.3f}]")
         fields.extend((f"{row['C_run']:.4f}" if row["C_run"] is not None else "unknown", f"{row['T']:.4f}", f"{row['J']:.4f}",

@@ -22,6 +22,9 @@ INVENTORY = [{"model": "claude-opus-5-5", "effort": "high"}]
 
 
 def _response(request):
+    if request["kind"] == "filter":
+        from conftest import fixture_filter
+        return fixture_filter(request)
     return {"forecasts": [dict(family=c["family"], effort=c["effort"], clean=.8,
                               loud=.19, silent=.01, tokens=100, seconds=1)
                           for c in request["cells"]], "memory_forecasts": [], "reason": "protocol double"}

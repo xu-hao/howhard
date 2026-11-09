@@ -5,8 +5,9 @@ experience, and reason with persistent semantic memories. Feedback updates predi
 weights and gives an LLM writer an opportunity to add, revise, remove, merge, split or
 restore memories. There is no fixed list of semantic concepts or fixed-size memory bank.
 
-Forecasts come only from the independent no-memory LLM and memory-conditioned overrides.
-No statistical model competes with them or adds a risk floor. Task and project inputs
+Fine forecasts come from the independent no-memory LLM and memory-conditioned overrides.
+A [coarse threshold reader](capability.md) first learns a task-specific fit band from
+the same execution store and predictive weights. It adds no floor to fine-forecast risk. Task and project inputs
 remain their original text.
 
 ## Provider and calling-agent use
@@ -19,8 +20,10 @@ no configured provider and do not start nested inference.
 
 ```sh
 howhard context specified-implementation --candidates /tmp/host-candidates.json --text "Make transaction rollback safe" --json
-# Evaluate baseline_request independently; then supply forecasts and memory overrides:
-howhard decide REQUEST_ID --file /tmp/forecasts.json --json
+# Evaluate the filter baseline independently, then add memory_filters:
+howhard decide FILTER_REQUEST_ID --file /tmp/filter.json --json
+# Evaluate the returned forecast baseline independently, then add memory_forecasts:
+howhard decide FORECAST_REQUEST_ID --file /tmp/forecasts.json --json
 howhard observe DECISION_ID clean --id EXECUTION_ID --json
 howhard memory learn-context EXECUTION_ID --json
 ```
@@ -102,7 +105,8 @@ require a fresh decision. Retrieved text is saved in the receipt so later feedba
 not read today's replacement file. Project text and notes are treated as data, not
 instructions to execute commands.
 
-A separate stateless call produces the no-memory forecast. Its request contains only
+Separate stateless calls produce the task-specific capability prior and the fine
+no-memory forecast for the retained band. Its request contains only
 the current task/project, candidate identities and policy constants: no memories,
 historical evidence, learned probability table or prior conversation. A memory reader
 cannot rewrite that baseline. Category rate-card cells carry `forecast_format: "category-v1"`
@@ -176,8 +180,8 @@ failure leaves the outcome durable and does not create a second execution.
 Routing seeds reproduce selection given recorded forecasts. They do not make fresh
 LLM calls deterministic. Cached forecasts and content-addressed receipts support replay;
 operational timing/cache metadata may differ between invocations.
-Receipts use `howhard-decision-v5` with required LLM forecasts. Requests use
-`howhard-agent-request-v4` and semantic state uses `howhard-semantic-v3`. Older
+Receipts use `howhard-decision-v6` with capability and accepted-result selection state.
+Requests use `howhard-agent-request-v5` and semantic state uses `howhard-semantic-v4`. Older
 receipts cannot be used for new feedback or predictive scoring; raw evidence remains intact.
 
 Native host selection supplies `--candidates FILE` to `context` or `pick` before any
@@ -198,16 +202,20 @@ An agent that already has an LLM can use howhard as a stateful tool backend:
 ```sh
 howhard context specified-implementation --text-file task.txt --candidates /tmp/host-candidates.json --json
 howhard retrieve REQUEST_ID --file retrieval-queries.json --json
-howhard decide REQUEST_ID --file forecasts.json --seed 42 --json
+howhard decide FILTER_REQUEST_ID --file filter.json --json
+howhard decide FORECAST_REQUEST_ID --file forecasts.json --seed 42 --json
 howhard memory learn-context RUN_ID --json
 howhard memory learn RUN_ID --file writer-response.json \
   --expected-revision N --event-key EVENT_KEY --json
 ```
 
-`context` returns a saved request and a separate clean `baseline_request`. For a genuine
-no-memory ablation, evaluate that baseline in a separate model context. The response for
-`decide` has `forecasts`, `memory_forecasts` and `reason`, as described in the request's
-contract. Retrieval returns a new request ID including frozen results. Stale evidence or
+`context` returns `stage=filter` with a clean `baseline_request` and a separate memory
+request. Evaluate the baseline in a separate model context, then submit
+`{filter, memory_filters, reason}`. `decide` returns a new `stage=forecast` request ID
+for calibrated rows over the fit band. Evaluate that clean baseline independently and
+submit `{forecasts, memory_forecasts, reason}`. Handle explicit re-filter or stronger-only
+widening requests until a decision ID is returned. The full inventory remains bound
+throughout; follow-up commands never replace it. Retrieval returns a new request ID including frozen results. Stale evidence or
 memory requires preparing again. This protocol never claims the calling agent's model
 calls are free: externally supplied forecasts and updates are audited separately, with
 unknown model cost and latency. The host can retain its own measured usage alongside
@@ -238,3 +246,23 @@ evaluation arms; custom adapters should document the meaning of their reported c
 reports log loss/Brier scores and measured cost/latency, and accounts for amendments.
 These descriptive scores cannot recover unrun alternatives' outcomes or establish
 routing superiority. Follow the [real-project evaluation protocol](evaluation.md).
+
+
+## Two readers and accepted-result selection
+
+Stage-1 prior/memory experts join the existing belief replay under `filter:` keys.
+Their frozen binary clean/non-clean predictions are log-scored against the fine
+independent forecast coarsened to the same binary outcome. Stage 2 retains ternary
+outcome and measured resource scores. The same temperature, recency, prior weights
+and evidence-count machinery serves both, normalized over each reader's participants.
+The threshold posterior applies the retrieved censored likelihood to the weighted
+stage-1 prior; it has no independent observation store or feedback path.
+
+Fine selection charges expected same-cell retries to an accepted result. Its silent
+cap uses joint-expert accepted-result defect ratios. Sampling uses envelope/spread and
+recorded expert exposures to calibrate bounded Dirichlet concentration. Mean-cost and
+cost-uncertainty bands restrict exploration; an unmet cap disables all draws and
+requires review. Receipts preserve the formula, constants, calibration and explanation.
+A consistency disagreement compares raw stage-2 `P_clean` with stage-1 `P_clear`; it
+does not substitute the accepted-result risk ratio or silently alter the chosen cell.
+See [capability filtering](capability.md) and {ref}`selection <accepted-result-selection>`.

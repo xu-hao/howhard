@@ -46,7 +46,7 @@ When availability changes, pass Python `native_candidates=[...]` or CLI
 `--candidates FILE` instead. Supplied lists and named inventories are mutually exclusive;
 there is no union or fallback between them. An empty list or unknown inventory name is
 an error. Without an explicit list or inventory selector, the backend refuses selection
-even when saved lists exist. The same 1–32-cell validation and optional pricing fields
+even when saved lists exist. The same nonempty, unbounded inventory validation and optional pricing fields
 apply to both sources; invalid configured lists fail before creating state. The
 `[models]` registry describes identities and evidence weights, not availability.
 Previously observed models never become candidates merely because they are in history.
@@ -188,3 +188,50 @@ model/control cells through `--candidates`, and the backend owns their minimal h
 metadata. Native price omission means unknown. `--state-dir` redirects standard `.howhard/` data paths while honoring custom
 configured paths, and keeps current project capture separate. Explicit configuration
 without that override retains its existing data locations and policies.
+
+
+## Capability and sampling policy
+
+Defaults work without configuration. These optional application-owned settings control
+forecast work and approximate inference; reader/retrieval messages cannot change them.
+
+```toml
+[capability]
+max_forecast_cells = 12
+widening_rounds = 2
+min_clear_probability = 0.5
+reliability_probability = 0.9
+overpowered_gain_margin = 0.05
+consistency_margin = 0.2
+observation_noise = 0.05
+order_penalty = 0.15
+loud_weight = 0.75
+silent_weight = 1.0
+unknown_cause_weight = 0.5
+
+[sampling]
+min_concentration = 8.0
+max_concentration = 1000000.0
+prior_strength = 8.0
+explore_within = 0.10
+uncertainty_multiplier = 1.0
+```
+
+The full inventory has no size bound. An oversized fit band gets one re-filter round
+and then a clear error; it is never truncated. Widening forecasts the next stronger
+overpowered cell per round, within the same total forecast budget.
+
+`max_forecast_cells` is a positive integer; widening rounds are nonnegative integers.
+Require `0 < min_clear_probability < reliability_probability < 1` and observation noise
+in `(0,0.5)`. Probability/strength margins are in `[0,1]`; order penalty is nonnegative.
+Concentration bounds satisfy `1 <= min <= max`, prior strength and uncertainty multiplier
+are positive, and sampling `explore_within` lies in `[0,1]`. A risk class's optional
+`explore_within` further narrows that fraction. The supported uncertainty allowance is
+`uncertainty_multiplier * (sd_best + sd_candidate)` using delta-method retry-cost
+standard deviations; a candidate must satisfy both that allowance and the mean fraction.
+No exploration occurs when no cell passes the accepted-result silent cap.
+
+`C_loud` now prices extra overhead for each loud failure on top of its redo. Epsilon
+caps defects among accepted non-loud results, not the raw per-attempt silent rate.
+Review these meanings when upgrading a custom policy. See [estimator assumptions](capability.md)
+and the {ref}`selection objective <accepted-result-selection>`.

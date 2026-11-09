@@ -5,18 +5,21 @@ contract](semantic-memory.md) for retrieval, isolated forecasts and predictive w
 The [retrieval stages](retrieval.md) select execution precedents and written lessons
 before support is normalized over participating forecasts. Observed runs retain their
 joint model/effort, outcome and measured usage; no unrun action is labeled retrospectively.
-There is no fitted outcome regression, token/time regression, lexical predictor,
-statistical safety floor or generic prior transfer.
+The [coarse reader](capability.md) learns a task-specific capability threshold from the
+same observed runs. Fine forecasts retain their independent LLM and memory protocol;
+there is no token/time regression, lexical outcome predictor or statistical risk floor.
 
+(accepted-result-selection)=
 ## Selection
 
 For each supplied native model and effort/control cell, minimize
 
 ```text
-J = C_run + P_loud * C_loud + P_silent * C_silent + lambda_per_hour * T
+J = (C_run + lambda_per_hour * T + C_loud * P_loud + C_silent * P_silent)
+    / max(probability_floor, 1 - P_loud)
 ```
 
-The caller supplies 1–32 distinct actual cells through `--candidates FILE` or Python
+The caller supplies any nonempty number of distinct actual cells through `--candidates FILE` or Python
 `native_candidates`. External routers can explicitly select a saved list from
 `howhard.toml` with `--inventory NAME` or Python `inventory="NAME"` instead. Neither
 option is implicit, and the two sources cannot be combined. An empty list is refused. Each has `model`,
@@ -28,7 +31,8 @@ opaque family labels for protocol bookkeeping, without model assumptions or effe
 Configured identities retain their declared labels and evidence weights. Historical
 identity metadata does not activate candidates in a later request.
 
-An independent stateless LLM forecasts every cell using the task and project alone.
+A [task-specific capability filter](capability.md) first reads the full inventory.
+An independent stateless LLM then forecasts only the fit band using the task and project alone.
 The reader supplies conditional overrides for memories it has seen; omitted cells and
 unretrieved memories use the independent LLM forecast. No learned probability table
 or synthetic forecast is supplied to either call. Provider absence, invalid forecasts
@@ -37,29 +41,46 @@ and provider failures are explicit errors; none produces a routing recommendatio
 Probability means are weighted by predictive expert support. Lower/upper bounds use
 the weighted 2.5%/97.5% forecast quantiles expanded to include the mean. This is a
 heuristic forecast envelope, not a Bayesian credible interval or calibrated guarantee.
-Admissibility compares the silent-failure upper envelope to the risk class epsilon.
+Admissibility compares the accepted-result defect envelope to the risk class epsilon.
+For each expert, transform its joint row to `P_silent / max(probability_floor, 1-P_loud)`
+before taking envelope quantiles, then include the ratio of weighted means. This retains
+the expert's loud/silent relationship instead of dividing unrelated marginal bounds.
 There is no additional statistical risk floor.
 
-`pick` samples one expert by its weight, samples outcome probabilities around that
-expert's forecast using the packaged Dirichlet concentration, and chooses the admissible
-cell with the smallest sampled cost. Tokens and time come directly from the forecast.
+`pick` samples one expert by its weight and draws outcome probabilities using an
+evidence-calibrated Dirichlet. The concentration uses the maximum of between-expert
+variance, squared envelope width divided by `3.92²`, and
+`p*(1-p)/(prior_strength + expert_evidence_count + 1)`. Moment-matching gives
+`p*(1-p)/variance - 1`; take the most conservative outcome and apply configured bounds.
+Agreeing, well-observed experts tighten; weak priors and disagreement stay wider.
+Selection admits exploration only inside both the mean-J fraction and a delta-method
+cost-uncertainty band. Receipts retain concentrations, evidence counts, variance sources,
+the seed and the reason for a sampled non-best choice. Tokens and time come directly from the forecast.
 `summary` returns the same means and envelope without sampling a selection. A fixed
 seed reproduces selection given frozen forecasts; it does not make inference deterministic.
 
-When no cell meets the cap, `flag-review` selects by sampled cost and requires review;
-`lowest-bound` selects the lowest silent upper envelope. `explore_within`, if supplied,
-limits eligible cells by expected total cost. Cheaper alternatives include signed cost
+Loud attempts are retried on the same cell until a non-loud result is accepted.
+`1/(1-P_loud)` charges the expected attempts; `C_loud` is extra detection/rework overhead
+per loud failure, in addition to the repeated time/money. The probability floor keeps
+a near-certain loud failure finite but very costly. Retry-on-another-cell is not assumed.
+
+If the cap is unmet after stronger-only capability widening, no expert or probability
+sample is drawn. `flag-review` chooses the minimum mean J; `lowest-bound` chooses the
+lowest accepted-result silent upper envelope, with mean J breaking ties. Both require
+review. `exploration.reason` records `disabled-cap-unmet`. Risk-class `explore_within`
+can further tighten the default sampling band; it cannot permit exploration outside
+the uncertainty-supported band. Cheaper alternatives include signed cost
 component explanations or the policy that excluded them.
 
 ## Prices and measurements
 
-Prices belong to the host inventory. If any candidate is unpriced, worker money is
+Prices belong to the host inventory. If any forecasted band/widened candidate is unpriced, worker money is
 omitted uniformly from every candidate's objective. Known `C_run` remains visible;
 unknown values stay null, and `cost_policy` labels the partial risk/time comparison.
 Fully priced inventories with a uniform money basis use the full objective. Never substitute provider API prices
 for unknown host charges. Tokens include cached/uncached input and output; T is hours.
 Actual `tokens`, `seconds` and `cost_usd` remain null unless measured. Observations
-update memory predictive evidence, not a separate fitted statistical model.
+update both the threshold reader and shared predictive evidence from one stored row.
 
 (portable-execution-accounting)=
 ## Portable execution accounting
@@ -234,8 +255,8 @@ or memory writes. All receipts require that identity and their native inventory/
 policy. The resolved state subtree is excluded from capture and
 `project.read`, including symlink aliases; a state root equal to or containing the capture
 root is refused. Prepared calling-agent requests bind the worktree and reject sibling
-retrieve/decide. Requests use `howhard-agent-request-v4` and receipts use
-`howhard-decision-v5`, with required LLM forecasts.
+retrieve/decide. Requests use `howhard-agent-request-v5` and receipts use
+`howhard-decision-v6`, with required capability and accepted-result selection state.
 Earlier formats are refused; prepare a fresh request and decision.
 Frozen-receipt observations and learning share the store across that project's worktrees.
 
@@ -247,8 +268,8 @@ current worktree, native inventory, effective evidence and memory revision; stal
 must be prepared again. Calling-agent submissions are audited with unknown external
 inference costs and latency rather than being counted as free provider calls.
 
-Receipts use `howhard-decision-v5`, requests `howhard-agent-request-v4`, semantic state
-`howhard-semantic-v3`. Older receipts and requests are refused for execution/feedback;
+Receipts use `howhard-decision-v6`, requests `howhard-agent-request-v5`, semantic state
+`howhard-semantic-v4`. Older receipts and requests are refused for execution/feedback;
 old receipt forecasts are excluded from replay/report scoring. Existing raw observations
 and semantic memories remain stored. Old posterior/prior artifacts are unused and left
 untouched. Removed interfaces include `--llm`, `HOWHARD_LLM`, `--cache`, `Engine(cache_path=...)`,

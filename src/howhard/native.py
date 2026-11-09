@@ -10,8 +10,8 @@ FORMAT = "howhard-native-v1"
 
 
 def validate(candidates):
-    if not isinstance(candidates, list) or not 1 <= len(candidates) <= 32:
-        raise HowHardError("candidates: expected between 1 and 32 native model/effort cells")
+    if not isinstance(candidates, list) or not candidates:
+        raise HowHardError("candidates: expected at least one native model/effort cell")
     result, seen = [], set()
     for cell in candidates:
         keys(cell, ["model", "effort"], ["usd_per_mtok", "rate_card"], "native candidate")

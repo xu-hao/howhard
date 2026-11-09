@@ -5,7 +5,7 @@ import json
 import math
 import pytest
 
-from conftest import inventory
+from conftest import inventory, fixture_filter
 from howhard import Engine
 from howhard.decisions import load
 from howhard.llm import LLMError
@@ -30,6 +30,12 @@ class FixtureLLM:
             operations = deepcopy(self.writer_operations)
             self.writer_operations = []
             return {"operations": operations, "reason": "Protocol fixture operation"}
+        if request["kind"] == "filter":
+            if request["phase"] == "baseline":
+                result = fixture_filter(request)
+                result.pop("memory_filters")
+                return result
+            return {"memory_filters": [], "reason": "Synthetic capability memory fixture"}
         if request["phase"] == "baseline":
             return {"forecasts": [{"family": c["family"], "effort": c["effort"], "clean": .5, "loud": .45, "silent": .05, "tokens": 10000., "seconds": 30.} for c in request["cells"]], "reason": "Independent baseline fixture"}
         if self.retrieve and not any(r["request"]["tool"] == "project.read" for r in request["retrieval"]):
@@ -51,20 +57,20 @@ def test_independent_baseline_and_original_semantic_inputs_are_preserved(project
     engine = Engine(project(), llm=provider)
     memory = engine.memory.add("Migration", "Preserve transaction ordering across service boundaries.")
     result = engine.pick("Y", "Preserve τ-ordering; never commit a partial distributed transaction", seed=42, native_candidates=inventory())
-    baseline, reader = provider.calls
+    baseline, reader = [r for r in provider.calls if r["kind"] == "predict"]
     assert baseline["phase"] == "baseline"
     assert not {"memories", "beliefs", "evidence", "retrieval"} & baseline.keys()
     assert set(baseline["cells"][0]) == {"model", "family", "effort"}
     assert reader["context"]["task_text"] == result["context"]["task_text"]
     assert reader["memories"][0]["body"] == memory["body"]
     receipt = load(engine.config, result["decision_id"])
-    assert receipt["format"] == "howhard-decision-v5"
+    assert receipt["format"] == "howhard-decision-v6"
     assert receipt["semantic"]["memories"][0]["body"] == memory["body"]
     again = engine.pick("Y", result["context"]["task_text"], seed=42, native_candidates=inventory())
     assert again["chosen"] == result["chosen"]
     assert again["decision_id"] == result["decision_id"]
     assert again["backend"]["inference_cached"]
-    assert len(provider.calls) == 2
+    assert len(provider.calls) == 4
 
 
 def test_feedback_changes_weight_amendment_replaces_it_and_edit_resets(project):
@@ -265,7 +271,7 @@ def test_corrupted_inference_cache_is_recomputed(project):
     data["response"]["reason"] = "Tampered result"
     cache.write_text(json.dumps(data))
     second = engine.pick("Y", "Task", seed=3, native_candidates=inventory())
-    assert len(provider.calls) == 2
+    assert len(provider.calls) == 3
     assert second["semantic"]["reason"] == first["semantic"]["reason"]
     assert not second["backend"]["inference_cached"]
 

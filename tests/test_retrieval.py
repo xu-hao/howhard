@@ -111,7 +111,7 @@ def test_amendment_replaces_execution_expert_without_duplicating_run(project):
 def test_execution_experts_learn_only_from_later_observed_joint_actions(project):
     from test_semantic import FixtureLLM
     engine = Engine(project(rows=[row(1, task="Y", task_text="Repair transaction ordering")]), llm=FixtureLLM())
-    before = next(e for e in engine.memory_beliefs()["experts"] if "execution:run-1:" in e["key"])
+    before = next(e for e in engine.memory_beliefs()["experts"] if e["key"].startswith("memory:execution:run-1:"))
     assert before["evidence_count"] == 0
     choice = engine.pick("Y", "Repair transaction ordering", native_candidates=inventory([("opus", "high")]), seed=1)
     engine.observe_decision(choice["decision_id"], "clean", id="future-run")

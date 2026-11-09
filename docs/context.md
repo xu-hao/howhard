@@ -1,8 +1,9 @@
 # Task text and changing project context
 
 The LLM receives original task text and bounded project text, together with observable
-project attributes. No lexical feature hashing, pretrained local encoder, contextual
-regression or statistical task representation is used. Historical observations preserve
+project attributes. The independent LLM uses no lexical feature hashing or contextual regression.
+Retrieval represents earlier task/project text, and the coarse threshold reader uses
+its relevance scores; it does not replace the original task text. Historical observations preserve
 the task and snapshot captured for the actual execution.
 
 ## Capturing project state
@@ -61,3 +62,21 @@ available and accepts `--text` or `--text-file`; without a receipt it captures c
 at observation time. Use a receipt when the task changed project state. A receipt can
 also be passed to `Engine.observe(..., decision=...)`. Amendments always retain the
 original run's text, project snapshot and usage measurements.
+
+
+## Two reader stages in a frozen request
+
+`context` first returns a capability-filter baseline and memory request over the full
+inventory. Its task-specific order is recomputed for each decision. Submitting the
+filter to `decide` returns a new request ID for calibrated forecasts over the fit band.
+Both stages keep the original task and project snapshot and independently reject stale
+evidence or memory. Retrieval, one explicit re-filter, and each stronger-only widening
+round also return bound request IDs. Follow the returned `stage` until a `decision_id`
+is produced. Neither clean baseline includes earlier execution evidence or memories.
+
+The receipt freezes full inventory coverage, capability positions/classes, prior-only
+placement labels, learned threshold probabilities, widening, cross-reader disagreements,
+and stage-2 forecasts/selection. Stage 2 records same-cell retry cost, accepted-result
+silent-risk bounds, calibrated uncertainty and exploration status. One later observation
+uses this original receipt to update both readers. See [capability filtering](capability.md)
+and [upgrading to 3.0](upgrading-3.0.md).

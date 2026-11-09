@@ -1,5 +1,5 @@
-format = "howhard-semantic-v3"
-prompt_version = "semantic-reader-v4"
+format = "howhard-semantic-v4"
+prompt_version = "semantic-reader-v5"
 writer_version = "semantic-writer-v1"
 memory_limit = 8
 evidence_limit = 8
@@ -16,4 +16,3 @@ resource_noise_sd = 1.5 # Broad fixed log-usage likelihood for approximate evide
 probability_floor = 0.0001 # Bound the influence of an overconfident forecast.
 memory_prior = 0.25 # New/revised memories start with limited predictive weight.
 llm_prior = 1.0 # The LLM without a specific memory is the reference expert.
-sample_concentration = 12.0 # Approximate uncertainty around semantic forecasts.

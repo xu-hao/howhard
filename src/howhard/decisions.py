@@ -18,6 +18,8 @@ def save(config, result):
              "project_identity": config.project_identity,
              **{key: result[key] for key in ("task_type", "risk_class", "chosen", "seed", "context")}}
     value["semantic"] = result["semantic"]
+    value["capability"] = result["capability"]
+    value["selection"] = result["selection"]
     value["cost_policy"] = result["cost_policy"]
     value["native_candidates"] = result["native_candidates"]
     decision_id = digest(value)
@@ -48,12 +50,12 @@ def load(config, source, *, for_scoring=False):
         if re.fullmatch(r"[0-9a-f]{64}", source) and digest(value) != source:
             raise HowHardError("decision: receipt content does not match its ID")
     if for_scoring and isinstance(value, dict) and value.get("format") in {
-        "howhard-decision-v1", "howhard-decision-v2", "howhard-decision-v3", "howhard-decision-v4"
+        "howhard-decision-v1", "howhard-decision-v2", "howhard-decision-v3", "howhard-decision-v4", "howhard-decision-v5"
     }:
         return None  # Preserve old evidence without replaying a removed predictor.
-    keys(value, ["format", "project", "project_identity", "task_type", "risk_class", "chosen", "seed", "context", "cost_policy", "native_candidates", "semantic"], where="decision")
-    if value["format"] != DECISION_FORMAT:
-        raise HowHardError("decision.format: unsupported version")
+    if not isinstance(value, dict) or value.get("format") != DECISION_FORMAT:
+        raise HowHardError("decision.format: unsupported version; prepare a new capability-filtered decision")
+    keys(value, ["format", "project", "project_identity", "task_type", "risk_class", "chosen", "seed", "context", "cost_policy", "native_candidates", "semantic", "capability", "selection"], where="decision")
     policy = value["cost_policy"]
     keys(policy, ["worker_money_included", "unknown_price_models", "comparison", "basis"], where="decision.cost_policy")
     if type(policy["worker_money_included"]) is not bool or not isinstance(policy["unknown_price_models"], list):
@@ -67,12 +69,16 @@ def load(config, source, *, for_scoring=False):
     inventory = validate(value["native_candidates"])
     def priced(c):
         return all(v is not None for v in c["rate_card"]["rates"].values()) if "rate_card" in c else c.get("usd_per_mtok") is not None
-    unknown = sorted({c["model"] for c in inventory if not priced(c)})
-    bases = {"estimate:" + c["rate_card"]["basis"] if "rate_card" in c else "legacy-unspecified" for c in inventory if priced(c)}
+    from .semantic import validate_receipt as validate_semantic
+    validate_semantic(value["semantic"])
+    forecast_pairs = {(c["family"], c["effort"]) for c in value["semantic"]["worlds"]["llm"]}
+    priced_inventory = [c for c in inventory if (config.data["models"].get(c["model"], {}).get("family"), c["effort"]) in forecast_pairs]
+    unknown = sorted({c["model"] for c in priced_inventory if not priced(c)})
+    bases = {"estimate:" + c["rate_card"]["basis"] if "rate_card" in c else "legacy-unspecified" for c in priced_inventory if priced(c)}
     if policy["basis"] != (next(iter(bases)) if len(bases) == 1 else "mixed") or included != (not unknown and len(bases) == 1):
         raise HowHardError("decision.cost_policy: inconsistent money basis")
     if unknown != policy["unknown_price_models"]:
-        raise HowHardError("decision.cost_policy: does not match its native inventory")
+        raise HowHardError("decision.cost_policy: does not match its forecasted native inventory")
     if value["project"] != config.data["project"]:
         raise HowHardError("decision.project: does not match this project")
     identity = value["project_identity"]
@@ -98,13 +104,15 @@ def load(config, source, *, for_scoring=False):
     validate_text(value["context"]["task_text"])
     validate_project(value["context"]["project_context"])
     if "semantic" in value:
-        from .semantic import validate_receipt
-        validate_receipt(value["semantic"])
+        from .capability import validate_receipt as validate_capability
+        validate_capability(value["capability"], inventory, value["semantic"], value["chosen"])
+        from .success import validate_selection
+        validate_selection(value["selection"], value["semantic"], value["capability"], value["cost_policy"])
         from .semantic import panel_lookup
         for panel in value["semantic"]["worlds"].values():
             lookup = panel_lookup(panel)
             for c in inventory:
                 spec = config.data["models"][c["model"]]
-                if "rate_card" in c and "token_usage" not in lookup[spec["family"], c["effort"]]:
+                if "rate_card" in c and (spec["family"], c["effort"]) in lookup and "token_usage" not in lookup[spec["family"], c["effort"]]:
                     raise HowHardError("decision.semantic: category rate card requires token_usage forecasts")
     return value
