@@ -61,6 +61,13 @@ with tempfile.TemporaryDirectory(prefix="howhard-wheel-") as directory:
     inventory = root / "candidates.json"
     inventory.write_text(json.dumps([{"model": "wheel-native-model", "effort": "ultra"}]))
     prepared = json.loads(subprocess.check_output([str(command), "context", "bookkeeping", "--candidates", str(inventory), "--text", "repair spelling", "--json"], cwd=root, env=environment, text=True))
+    assert prepared["stage"] == "filter"
+    order = [c["key"] for c in prepared["baseline_request"]["cells"]]
+    filter_response = root / "filter.json"
+    filter_response.write_text(json.dumps({"filter": {"order": order, "lower": order[0], "upper": order[-1]},
+                                            "memory_filters": [], "reason": "installed synthetic filter fixture"}))
+    prepared = json.loads(subprocess.check_output([str(command), "decide", prepared["request_id"], "--file", str(filter_response), "--json"], cwd=root, env=environment, text=True))
+    assert prepared["stage"] == "forecast"
     forecasts = [{"family": c["family"], "effort": c["effort"], "clean": .9, "loud": .09, "silent": .01, "tokens": 1000, "seconds": 10} for c in prepared["baseline_request"]["cells"]]
     response = root / "forecasts.json"
     response.write_text(json.dumps({"forecasts": forecasts, "memory_forecasts": [], "reason": "installed protocol fixture"}))

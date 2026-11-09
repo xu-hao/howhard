@@ -153,7 +153,7 @@ def test_one_provider_experience_informs_another_without_counterfactual_credit(t
 
     class Reader(FixtureLLM):
         def complete(self, request):
-            if request.get("phase") != "memory":
+            if request["kind"] == "filter" or request.get("phase") != "memory":
                 return super().complete(request)
             forecasts = [{"family": c["family"], "effort": c["effort"], "clean": .98,
                           "loud": .015, "silent": .005, "tokens": 5000., "seconds": 15.}

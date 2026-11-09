@@ -49,7 +49,9 @@ def beliefs(engine, snapshot=None):
     snapshot = memory_snapshot(engine) if snapshot is None else snapshot
     priors = SETTINGS["belief"]
     entries = {"llm": priors["llm_prior"],
-               **{memory_key(m): priors["memory_prior"] for m in snapshot["memories"]}}
+               **{memory_key(m): priors["memory_prior"] for m in snapshot["memories"]},
+               "filter:llm": priors["llm_prior"],
+               **{"filter:"+memory_key(m): priors["memory_prior"] for m in snapshot["memories"]}}
     evidence = {key: [] for key in entries}
     unscored = 0
     latest = {}
@@ -89,6 +91,17 @@ def beliefs(engine, snapshot=None):
                         base_residual = observed - math.log(max(1, reference[field]))
                         score += priors["resource_weight"] * (base_residual ** 2 - residual ** 2) / (2 * priors["resource_noise_sd"] ** 2)
                 evidence[key].append(row["weight"] * score)
+        from .capability import cell_key
+        actual = cell_key(row)
+        for key, probabilities in receipt["capability"]["worlds"].items():
+            if key not in entries:
+                continue
+            p = probabilities[actual]
+            if key != "filter:llm" and p == receipt["capability"]["worlds"]["filter:llm"][actual]:
+                continue
+            reference = panel_lookup(state["worlds"]["llm"])[cell]["clean"]
+            p, reference = (p, reference) if row["outcome"] == "clean" else (1-p, 1-reference)
+            evidence[key].append(row["weight"] * (math.log(max(floor, p))-math.log(max(floor, reference))))
     scores = {key: math.log(prior) + priors["temperature"] * math.fsum(value * priors["recency"] ** age for age, value in enumerate(reversed(evidence[key]))) for key, prior in entries.items()}
     peak = max(scores.values())
     mass = {key: math.exp(score - peak) for key, score in scores.items()}
@@ -190,7 +203,8 @@ def request(engine, prepared):
 def visible_request(payload):
     """Keep unselected expert bookkeeping out of the model's context."""
     result = deepcopy(payload)
-    visible = {"llm", *(f"memory:{id}:{version}" for id, version in visible_memories(payload))}
+    prefix = "filter:" if payload["kind"] == "filter" else ""
+    visible = {prefix+"llm", *(f"{prefix}memory:{id}:{version}" for id, version in visible_memories(payload))}
     result["beliefs"]["experts"] = [e for e in result["beliefs"]["experts"] if e["key"] in visible]
     normalize_support(result["beliefs"]["experts"])
     return result
@@ -222,6 +236,9 @@ def normalize_support(experts):
 
 
 def baseline_request(payload):
+    if payload["kind"] == "filter":
+        from .capability import baseline_request as filter_baseline
+        return filter_baseline(payload)
     clean = {k: deepcopy(payload[k]) for k in ("kind", "prompt_version", "task_type", "context", "risk_class", "constants")}
     if "cost_policy" in payload:
         clean["cost_policy"] = deepcopy(payload["cost_policy"])
@@ -258,6 +275,9 @@ def validate_panel(panel, allowed, *, complete=True):
 
 
 def validate_response(response, payload, snapshot):
+    if payload["kind"] == "filter":
+        from .capability import validate_response as validate_filter_response
+        return validate_filter_response(response, payload, snapshot)
     keys(response, ["forecasts", "memory_forecasts", "reason"], where="LLM response")
     text(response["reason"], "LLM response.reason")
     allowed = {(c["family"], c["effort"]) for c in payload["cells"]}
@@ -326,6 +346,17 @@ def external_submission(engine, payload):
     return record
 
 
+def combine_usage(earlier, current):
+    """Combine measured reader calls while preserving unknown costs and cache status."""
+    if earlier is None:
+        return deepcopy(current)
+    result = {**current, "calls": earlier["calls"]+current["calls"],
+              "cached": earlier["cached"] and current["cached"]}
+    for field in ("seconds", "call_seconds", "cost_usd", "call_cost_usd"):
+        result[field] = None if earlier[field] is None or current[field] is None else earlier[field]+current[field]
+    return result
+
+
 def complete(engine, payload, snapshot):
     identity = str(getattr(engine.llm, "identity", type(engine.llm).__name__))
     cache_key = digest({"format": FORMAT, "backend": identity, "settings": SETTINGS, "request": payload})
@@ -346,21 +377,28 @@ def complete(engine, payload, snapshot):
     calls = []
     # A genuine no-memory forecast must be a separate stateless call, without
     # historical evidence or beliefs.
+    filtering = payload["kind"] == "filter"
+    field, memory_field = ("filter", "memory_filters") if filtering else ("forecasts", "memory_forecasts")
+    fixed_field = "no_memory_" + field
     baseline_response, usage = call(engine, baseline_request(payload))
-    keys(baseline_response, ["forecasts", "reason"], ["memory_forecasts"], "LLM baseline")
-    if baseline_response.get("memory_forecasts"):
+    keys(baseline_response, [field, "reason"], [memory_field], "LLM baseline")
+    if baseline_response.get(memory_field):
         raise LLMError("LLM baseline cannot reference memories")
-    validate_panel(baseline_response["forecasts"], {(c["family"], c["effort"]) for c in payload["cells"]})
+    if filtering:
+        from .capability import validate_filter
+        validate_filter(baseline_response[field], payload["cells"])
+    else:
+        validate_panel(baseline_response[field], {(c["family"], c["effort"]) for c in payload["cells"]})
     text(baseline_response["reason"], "LLM baseline.reason")
-    current.update(phase="memory", no_memory_forecasts=deepcopy(baseline_response["forecasts"]))
-    current["contract"]["forecasts"] = "Omit this field. The isolated no_memory_forecasts are fixed and must not be changed."
+    current.update(phase="memory", **{fixed_field: deepcopy(baseline_response[field])})
+    current["contract"][field] = "Omit this field. The isolated no_memory value is fixed and must not be changed."
     calls.append(usage)
     for round_number in range(SETTINGS["retrieval_rounds"] + 1):
         if snapshot["memories"]:
             response, usage = call(engine, visible_request(current))
             calls.append(usage)
         else:
-            response = {"memory_forecasts": [], "reason": baseline_response["reason"]}
+            response = {memory_field: [], "reason": baseline_response["reason"]}
         if isinstance(response, dict) and "request_more" in response:
             keys(response, ["request_more"], where="LLM response")
             more = response["request_more"]
@@ -373,9 +411,9 @@ def complete(engine, payload, snapshot):
         if not isinstance(response, dict):
             raise LLMError("LLM memory response must be an object")
         response = deepcopy(response)
-        if "forecasts" in response and response["forecasts"] != current["no_memory_forecasts"]:
+        if field in response and response[field] != current[fixed_field]:
             raise LLMError("Memory reader must not rewrite the isolated baseline forecasts")
-        response["forecasts"] = deepcopy(current["no_memory_forecasts"])
+        response[field] = deepcopy(current[fixed_field])
         response = validate_response(response, current, snapshot)
         if any(item["request"]["tool"] == "project.read" for item in current["retrieval"]):
             from .context import capture_project
@@ -437,14 +475,19 @@ def augment(engine, prepared, response, payload, snapshot, usage):
         row["cost_basis"] = cell["money_basis"]
         row["T"] = seconds / 3600
         c = result["constants"]
-        row["J"] = (row["C_run"] if cell["money_included"] else 0) + c["C_loud"] * row["P_loud"]["mean"] + c["C_silent"] * row["P_silent"]["mean"] + c["lambda_per_hour"] * row["T"]
-        row["admissible"] = row["P_silent"]["upper"] <= c["epsilon"]
+        from .success import cost, denominator, accepted_risk, envelope
+        loud, silent = row["P_loud"]["mean"], row["P_silent"]["mean"]
+        row["expected_attempts"] = 1/denominator(loud)
+        row["J"] = cost(row["C_run"] if cell["money_included"] else 0., row["T"], loud, silent, c)
+        row["P_silent_accepted"] = envelope([(accepted_risk(indexed[k][pair]["loud"], indexed[k][pair]["silent"]), weights[k]) for k in weights], accepted_risk(loud, silent))
+        row["admissible"] = row["P_silent_accepted"]["upper"] <= c["epsilon"]
     result["cells"].sort(key=lambda row: (row["C_run"] if row["C_run"] is not None else float("inf"), row["family"], row["effort"]))
     result["semantic"] = {"format": FORMAT, "prompt_version": SETTINGS["prompt_version"], "backend": usage["backend"],
                           "memory_revision": snapshot["revision"], "memories": deepcopy(snapshot["memories"]),
                           "worlds": worlds, "exposures": exposures, "beliefs": state, "reason": response["reason"], "retrieval": payload["retrieval"],
                           "evidence": deepcopy(payload["evidence"]),
                           "reader_usage": {k: usage[k] for k in ("backend", "seconds", "cost_usd", "calls")}, "interval_kind": "weighted-forecast-envelope"}
+    result["sampling_policy"] = deepcopy(engine.config.data["sampling"])
     result["backend"] = {"mode": "semantic", "name": usage["backend"], "inference_cached": usage["cached"]}
     result["routing_overhead"] = {"seconds": usage["call_seconds"], "cost_usd": usage["call_cost_usd"]}
     return result, cells
@@ -458,28 +501,48 @@ def forecast_cost(row, cell):
 
 
 def sample(prepared, seed):
+    from .success import calibration, denominator
     result, cells = prepared
     state = result["semantic"]
+    parts = {k: np.zeros((1, len(cells))) for k in ("run", "loud", "silent", "time")}
+    constants = result["constants"]
+    if not any(c["admissible"] for c in result["cells"]):
+        # No RNG call is made when the accepted-result cap is unmet.
+        state["sampling"] = {"enabled": False, "reason": "cap-unmet", "policy": deepcopy(result["sampling_policy"]), "cells": []}
+        indexed = panel_lookup(result["cells"])
+        for i, cell in enumerate(cells):
+            row = indexed[cell["family"], cell["effort"]]
+            d = denominator(row["P_loud"]["mean"])
+            parts["run"][0, i] = row["C_run"]/d if cell["money_included"] else 0.
+            parts["loud"][0, i] = constants["C_loud"]*row["P_loud"]["mean"]/d
+            parts["silent"][0, i] = constants["C_silent"]*row["P_silent"]["mean"]/d
+            parts["time"][0, i] = constants["lambda_per_hour"]*row["T"]/d
+        return parts
     experts = state["beliefs"]["experts"]
     rng = np.random.default_rng(seed)
     chosen = str(rng.choice([e["key"] for e in experts], p=[e["weight"] for e in experts]))
     state["sampled_expert"] = chosen
-    panel = panel_lookup(state["worlds"].get(chosen, state["worlds"]["llm"]))
-    c = result["constants"]
-    parts = {k: np.zeros((1, len(cells))) for k in ("run", "loud", "silent", "time")}
+    expert = next(e for e in experts if e["key"] == chosen)
+    panel = panel_lookup(state["worlds"][chosen])
+    calibration_rows = []
     for i, cell in enumerate(cells):
         row = panel[cell["family"], cell["effort"]]
-        p = rng.dirichlet(np.maximum([row[k] for k in OUTCOMES], SETTINGS["belief"]["probability_floor"]) * SETTINGS["belief"]["sample_concentration"])
-        parts["run"][0, i] = forecast_cost(row, cell) if cell["money_included"] else 0.0
-        parts["loud"][0, i] = p[1] * c["C_loud"]
-        parts["silent"][0, i] = p[2] * c["C_silent"]
-        parts["time"][0, i] = row["seconds"] / 3600 * c["lambda_per_hour"]
+        calibrated = calibration(result, state, expert, cell, row)
+        calibration_rows.append(calibrated)
+        p = rng.dirichlet(np.asarray(calibrated["probabilities"])*calibrated["concentration"])
+        d = denominator(p[1])
+        parts["run"][0, i] = forecast_cost(row, cell)/d if cell["money_included"] else 0.
+        parts["loud"][0, i] = p[1]*constants["C_loud"]/d
+        parts["silent"][0, i] = p[2]*constants["C_silent"]/d
+        parts["time"][0, i] = row["seconds"]/3600*constants["lambda_per_hour"]/d
+    state["sampling"] = {"enabled": True, "reason": "evidence-calibrated-dirichlet",
+                         "policy": deepcopy(result["sampling_policy"]), "cells": calibration_rows}
     return parts
 
 
 def validate_receipt(state):
     """Validate portable frozen semantic inputs before they affect feedback weights."""
-    keys(state, ["format", "prompt_version", "backend", "memory_revision", "memories", "worlds", "exposures", "beliefs", "reason", "retrieval", "evidence", "reader_usage", "interval_kind"], ["sampled_expert"], "decision.semantic")
+    keys(state, ["format", "prompt_version", "backend", "memory_revision", "memories", "worlds", "exposures", "beliefs", "reason", "retrieval", "evidence", "reader_usage", "interval_kind", "sampling"], ["sampled_expert"], "decision.semantic")
     if state["format"] != FORMAT or state["prompt_version"] != SETTINGS["prompt_version"]:
         raise HowHardError("decision.semantic: unsupported forecast format or prompt version")
     if type(state["memory_revision"]) is not int or state["memory_revision"] < 0:
@@ -541,6 +604,22 @@ def validate_receipt(state):
             raise HowHardError("decision.semantic.expert.evidence_count: expected non-negative integer")
     if not {"llm"} <= seen or abs(mass - 1) > 1e-6 or set(state["worlds"]) - seen:
         raise HowHardError("decision.semantic.beliefs: expert weights must cover forecasts and sum to one")
+    from .success import validate_policy as validate_sampling
+    sampling = state["sampling"]
+    keys(sampling, ["enabled", "reason", "policy", "cells"], where="decision.semantic.sampling")
+    validate_sampling(sampling["policy"])
+    if type(sampling["enabled"]) is not bool or not isinstance(sampling["cells"], list):
+        raise HowHardError("decision.semantic.sampling: invalid calibration")
+    if sampling["enabled"]:
+        if {(c["family"], c["effort"]) for c in sampling["cells"]} != allowed or len(sampling["cells"]) != len(allowed):
+            raise HowHardError("decision.semantic.sampling: calibration must cover forecasted cells")
+        for c in sampling["cells"]:
+            number(c["concentration"], "sampling concentration", positive=True)
+            number(c["cost_sd"], "sampling cost standard deviation", nonnegative=True)
+            if not sampling["policy"]["min_concentration"] <= c["concentration"] <= sampling["policy"]["max_concentration"]:
+                raise HowHardError("decision.semantic.sampling: concentration outside bounds")
+    elif sampling["cells"] or "sampled_expert" in state:
+        raise HowHardError("decision.semantic.sampling: disabled sampling cannot claim draws")
     if "sampled_expert" in state and state["sampled_expert"] not in seen:
         raise HowHardError("decision.semantic.sampled_expert: unknown expert")
     if not isinstance(state["retrieval"], list) or not isinstance(state["evidence"], list):

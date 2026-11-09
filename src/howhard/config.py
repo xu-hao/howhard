@@ -110,7 +110,13 @@ def load_config(path=None, *, directory=None, state_directory=None):
     else:
         data = default
     keys(data, ["project", "on_cap_unmet", "journal", "logs", "classes", "models"],
-         ["task_types", "retrieval", "inventories"], "config")
+         ["task_types", "retrieval", "inventories", "capability", "sampling"], "config")
+    from .success import DEFAULTS as SAMPLING, validate_policy as validate_sampling
+    table(data.get("sampling", {}), "config.sampling")
+    data["sampling"] = validate_sampling(merge(SAMPLING, data.get("sampling", {})))
+    from .capability import DEFAULTS, validate_policy
+    table(data.get("capability", {}), "config.capability")
+    data["capability"] = validate_policy(merge(DEFAULTS, data.get("capability", {})))
     validate_retrieval(data.get("retrieval", {"reranker": "fast"}))
     for key in ("classes", "models", "task_types"):
         table(data.get(key, {}), f"config.{key}")

@@ -92,6 +92,23 @@ class ClaudeCLI:
         if request["kind"] == "learn":
             properties = {"operations": {"type": "array", "items": {"type": "object", "properties": {"op": {"type": "string", "enum": ["add", "edit", "remove", "restore", "merge", "split"]}}, "required": ["op"], "additionalProperties": True}}, "reason": {"type": "string"}}
             schema = {"type": "object", "properties": properties, "required": ["operations", "reason"], "additionalProperties": False}
+        elif request["kind"] == "filter":
+            filter_schema = {"type": "object", "properties": {
+                "order": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                "lower": {"type": "string"}, "upper": {"type": "string"}},
+                "required": ["order", "lower", "upper"], "additionalProperties": False}
+            if request.get("phase") == "baseline":
+                schema = {"type": "object", "properties": {"filter": filter_schema, "reason": {"type": "string"}},
+                          "required": ["filter", "reason"], "additionalProperties": False}
+            else:
+                schema = {"type": "object", "properties": {
+                    "memory_filters": {"type": "array", "maxItems": 8, "items": {"type": "object", "properties": {
+                        "id": {"type": "string"}, "version": {"type": "integer", "minimum": 1}, "filter": filter_schema},
+                        "required": ["id", "version", "filter"], "additionalProperties": False}},
+                    "reason": {"type": "string"}, "request_more": {"type": "array", "minItems": 1, "maxItems": 3,
+                        "items": {"type": "object", "properties": {k: {"type": "string"} for k in ("tool", "query", "id", "path")},
+                                  "required": ["tool"], "additionalProperties": False}}},
+                    "anyOf": [{"required": ["memory_filters", "reason"]}, {"required": ["request_more"]}], "additionalProperties": False}
         elif request.get("phase") == "baseline":
             schema = {"type": "object", "properties": {"forecasts": {"type": "array", "items": forecast}, "reason": {"type": "string"}}, "required": ["forecasts", "reason"], "additionalProperties": False}
         else:

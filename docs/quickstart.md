@@ -10,12 +10,12 @@ Run these commands from the project where you want to use howhard:
 ```sh
 python3 -m venv .venv-howhard
 . .venv-howhard/bin/activate
-python -m pip install "howhard==2.1.0"
+python -m pip install "howhard @ git+https://github.com/xu-hao/howhard.git@v3.0.0"
 howhard --version
 ```
 
-Expect `howhard 2.1.0`. The Python package is available on
-[PyPI](https://pypi.org/project/howhard/2.1.0/).
+Expect `howhard 3.0.0`. This installs the tagged source release. Earlier PyPI distributions use the older
+protocol; installing 3.0 does not require a PyPI publication.
 
 Keep this environment active and start your coding agent from the same shell so it
 can find `howhard`. If an existing GUI session cannot find it, configure the absolute
@@ -72,9 +72,11 @@ run it automatically. For persistent use, copy the
 {ref}`coordinating-agent instruction <require-howhard-before-delegation>` into
 your host's project instructions.
 
-The agent discovers the host's supported model and effort controls, obtains a baseline
-forecast in a fresh context without memory or history, and considers retrieved
-experience before selecting a worker. It creates temporary protocol inputs and calls
+The agent discovers the full host inventory, obtains a task-specific capability prior
+in a fresh context, and learns a fit band from related executions. It obtains fine
+forecasts only for that band in another independent context and consults retrieved
+experience before selecting a worker. Explicit re-filter/widening requests preserve
+the inventory; no cells are silently dropped. It creates temporary protocol inputs and calls
 the backend directly. You do not need to configure model-family mappings or tune
 parameters. If an independent forecast or required execution control is unavailable,
 the agent reports the limitation instead of inventing a selection.
