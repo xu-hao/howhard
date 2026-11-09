@@ -36,7 +36,7 @@ def test_context_reproducible_and_memoized_by_actual_context(project):
     assert a["decision_id"] == engine.pick("Y", **args, native_candidates=inventory())["decision_id"]
     b = engine.pick("Y", **{**args, "task_text": "repair spelling"}, native_candidates=inventory())
     assert a["decision_id"] != b["decision_id"]
-    assert len(engine._summaries) == 2
+    assert len(engine._summaries) == 4  # Full inventory and fit band for each task.
 
 
 @pytest.mark.parametrize("context", [{"files": -1}, {"coverage": 1.1}, {"unknown": 3}, {"files": True}])

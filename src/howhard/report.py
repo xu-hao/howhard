@@ -60,7 +60,7 @@ def report(engine):
     known_worker = sum(row["cost_usd"] for row in engine.rows if row["cost_usd"] is not None)
     unknown_worker = sum(row["cost_usd"] is None for row in engine.rows)
     from .accounting import summary
-    return {"execution_accounting": summary(engine.rows), "project": engine.config.data["project"], "runs": len(engine.rows), "outcomes": {k: outcomes[k] for k in OUTCOMES},
+    return {"filter_quality": filter_quality(engine), "execution_accounting": summary(engine.rows), "project": engine.config.data["project"], "runs": len(engine.rows), "outcomes": {k: outcomes[k] for k in OUTCOMES},
             "forecast_metrics": metrics, "missing_receipts": missing, "unsupported_receipts": unsupported,
             "worker_cost": {"basis": "legacy-unspecified", "known_usd": known_worker, "unknown_runs": unknown_worker, "total_usd": known_worker if not unknown_worker else None},
             "inference": {"calls": len(measured), "failed_calls": sum(e["status"] == "failed" for e in measured),
@@ -73,3 +73,75 @@ def report(engine):
                           "note": "Decision latency includes reader inference; writer inference is reported separately. Action propensities are unknown."},
             "memory": {"active": len(engine.memory.list()), "operations": dict(Counter(e["operation"]["op"] for e in engine.memory.history(None)))},
             "interpretation": "Observed-action descriptive scores only. These logs do not identify unrun alternatives' outcomes, establish routing superiority, or validate a silent-failure cap. Clean outcomes remain subject to later amendments."}
+
+
+
+def filter_quality(engine):
+    """Describe actual filter outcomes and frozen disagreements, including pending runs."""
+    from .capability import cell_key
+    from .retrieval import records, task_text
+    from datetime import datetime
+    decisions = {}
+    path = engine.config.state_root / "decisions"
+    for file in sorted(path.glob("*.json")):
+        decision = load(engine.config, file.stem, for_scoring=True)
+        if decision is not None:
+            decisions[file.stem] = decision
+    events = engine.config.state_root / "decision-events.jsonl"
+    times = {e["decision_id"]: e["at_utc"] for e in (json.loads(line) for line in events.read_text().splitlines())
+             if e.get("decision_id")} if events.exists() else {}
+    fit = Counter()
+    executions, comparisons = [], []
+    floor = SETTINGS["belief"]["probability_floor"]
+    for row in engine.rows:
+        decision = decisions.get(row.get("decision_id"))
+        if decision is None:
+            continue
+        state = decision["capability"]
+        actual = cell_key(row)
+        c = next(c for c in state["cells"] if c["key"] == actual)
+        if c["classification"] == "fit":
+            fit[row["outcome"]] += 1
+        executions.append({"execution_id": row["id"], "decision_id": row["decision_id"],
+                           "classification": c["classification"], "position": c["position"], "outcome": row["outcome"]})
+        disagreement = next((d for d in state["disagreements"] if d["key"] == actual), None)
+        if disagreement is not None:
+            probabilities = [disagreement["P_clear"], disagreement["P_clean"]]
+            losses = [-math.log(max(floor, p if row["outcome"] == "clean" else 1-p)) for p in probabilities]
+            winner = "tie" if abs(losses[0]-losses[1]) < 1e-12 else "stage1" if losses[0] < losses[1] else "stage2"
+            comparisons.append({"execution_id": row["id"], "key": actual, "stage1_log_loss": losses[0],
+                                "stage2_log_loss": losses[1], "closer": winner})
+    strict = []
+    for decision_id, decision in decisions.items():
+        excluded = {c["key"] for c in decision["capability"]["cells"] if c["classification"] == "underpowered"}
+        created = times.get(decision_id)
+        if not excluded or not created:
+            continue
+        later = [r for r in engine.rows if r["outcome"] == "clean" and cell_key(r) in excluded
+                 and datetime.fromisoformat(r["observed_at"]) > datetime.fromisoformat(created)]
+        if not later:
+            continue
+        query = task_text(decision["task_type"], decision["context"])
+        result = engine.retrieval.search(records(rows=later), query, limit=SETTINGS["evidence_limit"])
+        selected = result["records"]
+        scores = {s["key"]: s["score"] for s in result["trace"]["selected"]}
+        missing = [r for r in selected if scores.get(r["key"]) is None]
+        if missing:
+            values = engine.retrieval.reranker.score(query, [r["text"] for r in missing])
+            scores.update({r["key"]: float(v) for r, v in zip(missing, values)})
+        for item in selected:
+            if scores[item["key"]] > 0:
+                strict.append({"decision_id": decision_id, "execution_id": item["value"]["id"],
+                               "key": cell_key(item["value"]), "similarity_score": scores[item["key"]]})
+    n = len(decisions)
+    widened = sum(bool(d["capability"]["widening"]) for d in decisions.values())
+    total_fit = sum(fit.values())
+    return {"decisions": n, "executions": executions,
+            "fit_failures": {"executed": total_fit, "loud": fit["loud"], "silent": fit["silent"],
+                             "failure_rate": (fit["loud"]+fit["silent"])/total_fit if total_fit else None},
+            "widening": {"decisions": widened, "rate": widened/n if n else None},
+            "underpowered_later_clean": strict,
+            "disagreements": {"count": sum(len(d["capability"]["disagreements"]) for d in decisions.values()),
+                              "resolved": len(comparisons), "closer": dict(Counter(c["closer"] for c in comparisons)),
+                              "comparisons": comparisons},
+            "interpretation": "Task-conditioned observed-action diagnostics; no outcomes are inferred for cells that did not run."}

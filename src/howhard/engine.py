@@ -103,11 +103,10 @@ class Engine:
         return self._summaries[key]
 
     def summary(self, task_type, task_text="", *, project_context=None, risk=None, native_candidates=None, inventory=None):
-        from copy import deepcopy
         from .native import resolve
-        candidates = self._register(resolve(self.config, native_candidates, inventory))
-        prepared = self._semantic_prepared(self._prepared(task_type, risk, task_text, project_context, candidates))
-        return deepcopy(prepared[0])
+        candidates = resolve(self.config, native_candidates, inventory)
+        return self._drive(task_type, task_text, project_context=project_context, risk=risk,
+                           native_candidates=candidates, select=False)
 
     def pick(self, task_type, task_text="", *, project_context=None, risk=None, seed=None, native_candidates=None, inventory=None):
         from .native import resolve
@@ -137,36 +136,25 @@ class Engine:
     def _pick(self, task_type, task_text="", *, project_context=None, risk=None, seed=None, native_candidates=None):
         if seed is not None and (type(seed) is not int or seed < 0):
             raise HowHardError("seed: expected a non-negative integer")
-        inventory = self._register(native_candidates)
-        evidence_key = self.evidence_key
-        prepared = self._semantic_prepared(self._prepared(task_type, risk, task_text, project_context, inventory))
-        seed = secrets.randbits(64) if seed is None else seed
-        parts = semantic.sample(prepared, seed)
-        result = choose(prepared, self.config, seed, parts)
-        with storage.locked(self.config, operation="decision commit"):
-            self._validate_state(evidence_key, prepared[0]["semantic"]["memory_revision"])
-            result["decision_id"] = decisions.save(self.config, result)
-        return result
+        return self._drive(task_type, task_text, project_context=project_context, risk=risk,
+                           seed=seed, native_candidates=native_candidates)
+
+    def _drive(self, task_type, task_text, *, project_context=None, risk=None, seed=None,
+               native_candidates=None, select=True):
+        pending = self.prepare(task_type, task_text, project_context=project_context, risk=risk,
+                               native_candidates=native_candidates)
+        self._inference()
+        while "request_id" in pending:
+            bundle = self._load_request(pending["request_id"])
+            response, payload, usage = semantic.complete(self, bundle["payload"], bundle["snapshot"])
+            bundle["payload"] = payload
+            pending = self._advance(bundle, response, seed=seed, usage=usage, select=select)
+        return pending
 
     def _validate_state(self, evidence_key, revision):
         self.refresh()
         if evidence_key != self.evidence_key or revision != self.memory.snapshot()["revision"]:
             raise HowHardError("request_id: stale evidence or memory; prepare a new decision")
-
-    def _semantic_prepared(self, prepared, response=None, payload=None, snapshot=None):
-        evidence_key = self.evidence_key
-        if payload is None:
-            payload, snapshot = semantic.request(self, prepared)
-        if response is None:
-            self._inference()
-            response, payload, usage = semantic.complete(self, payload, snapshot)
-        else:
-            response = semantic.validate_response(response, payload, snapshot)
-            semantic.external_submission(self, payload)
-            usage = {"backend": "calling-agent", "seconds": 0.0, "cost_usd": None, "calls": [], "cached": False, "call_seconds": 0.0, "call_cost_usd": None}
-        with storage.reading(self.config):
-            self._validate_state(evidence_key, snapshot["revision"])
-        return semantic.augment(self, prepared, response, payload, snapshot, usage)
 
     def memory_beliefs(self):
         return semantic.beliefs(self)
@@ -182,7 +170,11 @@ class Engine:
         candidates = self._register(resolve(self.config, native_candidates, inventory))
         prepared = self._prepared(task_type, risk, task_text, project_context, candidates)
         payload, snapshot = semantic.request(self, prepared)
-        bundle = {"format": "howhard-agent-request-v4", "evidence_key": self.evidence_key, "payload": payload, "snapshot": snapshot}
+        from .capability import request
+        bundle = {"format": "howhard-agent-request-v5", "evidence_key": self.evidence_key,
+                  "payload": request(payload, self.config.data["capability"]), "snapshot": snapshot,
+                  "stage": "filter", "capability": None, "refilter_round": 0,
+                  "forecast_template": payload, "forecast_state": None, "coarse_usage": None}
         bundle["native_candidates"] = candidates
         bundle["project_root"] = str(self.config.project_root)
         return self._save_request(bundle)
@@ -193,7 +185,9 @@ class Engine:
         with storage.locked(self.config, operation="request commit"):
             self._validate_state(bundle["evidence_key"], bundle["snapshot"]["revision"])
             atomic_write(self.config.state_root / "requests" / f"{request_id}.json", canonical(bundle) + b"\n")
-        return {"request_id": request_id, "request": semantic.visible_request(bundle["payload"]), "baseline_request": semantic.baseline_request(bundle["payload"])}
+        return {"request_id": request_id, "stage": bundle["stage"], "refilter_round": bundle["refilter_round"],
+                "capability": bundle["capability"], "request": semantic.visible_request(bundle["payload"]),
+                "baseline_request": semantic.baseline_request(bundle["payload"])}
 
     def _load_request(self, request_id):
         self.refresh()
@@ -206,8 +200,8 @@ class Engine:
         except (OSError, ValueError) as exc:
             raise HowHardError("request_id: unavailable or invalid agent request") from exc
         from .validation import keys
-        keys(bundle, ["format", "evidence_key", "payload", "snapshot", "native_candidates", "project_root"], where="request")
-        if digest(bundle) != request_id or bundle["format"] != "howhard-agent-request-v4":
+        keys(bundle, ["format", "evidence_key", "payload", "snapshot", "native_candidates", "project_root", "stage", "capability", "refilter_round", "forecast_template", "forecast_state", "coarse_usage"], where="request")
+        if digest(bundle) != request_id or bundle["format"] != "howhard-agent-request-v5":
             raise HowHardError("request_id: request integrity or format mismatch")
         if bundle["project_root"] != str(self.config.project_root):
             raise HowHardError("request_id: belongs to another worktree; prepare in the current project")
@@ -235,23 +229,106 @@ class Engine:
             if not isinstance(exc, WriteError):
                 self._decision_event(None, "calling-agent", started, error=type(exc).__name__)
             raise
-        self._decision_event(result, result["task_type"], started)
+        if "decision_id" in result:
+            self._decision_event(result, result["task_type"], started)
         return result
 
     def _decide(self, request_id, response, *, seed=None):
         if seed is not None and (type(seed) is not int or seed < 0):
             raise HowHardError("seed: expected non-negative integer")
-        bundle = self._load_request(request_id)
-        payload = bundle["payload"]
-        prepared = self._prepared(payload["task_type"], payload["risk_class"], payload["context"]["task_text"], payload["context"]["project_context"], bundle["native_candidates"])
-        prepared = self._semantic_prepared(prepared, response, payload, bundle["snapshot"])
+        return self._advance(self._load_request(request_id), response, seed=seed)
+
+    def _forecast_request(self, bundle, requested):
+        from copy import deepcopy
+        from .capability import cell_key
+        bundle["stage"] = "forecast"
+        bundle["payload"] = deepcopy(bundle["forecast_template"])
+        bundle["payload"]["cells"] = [c for c in bundle["payload"]["cells"] if cell_key(c) in requested]
+        all_keys = requested | (set(cell_key(c) for c in bundle["forecast_state"]["cells"]) if bundle["forecast_state"] else set())
+        inventory = [c for c in bundle["native_candidates"] if cell_key(c) in all_keys]
+        p = bundle["payload"]
+        band = self._prepared(p["task_type"], p["risk_class"], p["context"]["task_text"], p["context"]["project_context"], inventory)
+        bundle["payload"]["cost_policy"] = band[0]["cost_policy"]
+        return self._save_request(bundle)
+
+    def _advance(self, bundle, response, *, seed=None, usage=None, select=True):
+        from copy import deepcopy
+        from . import capability
+        payload, snapshot = bundle["payload"], bundle["snapshot"]
+        response = semantic.validate_response(response, payload, snapshot)
+        if usage is None:
+            semantic.external_submission(self, payload)
+            usage = {"backend": "calling-agent", "seconds": 0., "cost_usd": None, "calls": [],
+                     "cached": False, "call_seconds": 0., "call_cost_usd": None}
+        with storage.reading(self.config):
+            self._validate_state(bundle["evidence_key"], snapshot["revision"])
+        if bundle["stage"] == "filter":
+            state = capability.aggregate(self, payload, response)
+            bundle["coarse_usage"] = semantic.combine_usage(bundle["coarse_usage"], usage)
+            state["reader_usage"] = {k: deepcopy(bundle["coarse_usage"][k]) for k in ("backend", "seconds", "cost_usd", "calls")}
+            state["refilter_rounds"] = bundle["refilter_round"]
+            if len(state["band"]) > state["policy"]["max_forecast_cells"]:
+                if bundle["refilter_round"]:
+                    raise HowHardError("capability.max_forecast_cells exceeded after re-filter; provide a tighter capability filter")
+                bundle["refilter_round"] = 1
+                bundle["payload"]["refilter"] = {"reason": "max_forecast_cells exceeded; provide a tighter filter", "previous": response["filter"],
+                                                   "band_cells": len(state["band"]), "max_forecast_cells": state["policy"]["max_forecast_cells"]}
+                return self._save_request(bundle)
+            bundle["capability"] = state
+            return self._forecast_request(bundle, set(state["band"]))
+        # Validate the new panel before combining it with earlier widening rounds.
+        previous = bundle["forecast_state"]
+        combined = deepcopy(response)
+        combined_payload = deepcopy(payload)
+        if previous is not None:
+            combined["forecasts"] = previous["response"]["forecasts"] + combined["forecasts"]
+            items = {(m["id"], m["version"]): deepcopy(m) for m in previous["response"]["memory_forecasts"]}
+            for item in response["memory_forecasts"]:
+                pair = item["id"], item["version"]
+                if pair in items:
+                    items[pair]["forecasts"].extend(item["forecasts"])
+                else:
+                    items[pair] = deepcopy(item)
+            combined["memory_forecasts"] = list(items.values())
+            combined_payload["cells"] = previous["cells"] + combined_payload["cells"]
+            usage = semantic.combine_usage(previous["usage"], usage)
+        forecast_pairs = {(c["family"], c["effort"]) for c in combined["forecasts"]}
+        inventory = [c for c in bundle["native_candidates"] if (self.config.data["models"][c["model"]]["family"], c["effort"]) in forecast_pairs]
+        full = self._prepared(payload["task_type"], payload["risk_class"], payload["context"]["task_text"],
+                              payload["context"]["project_context"], inventory)
+        prepared = deepcopy(full[0]), [deepcopy(c) for c in full[1] if (c["family"], c["effort"]) in forecast_pairs]
+        prepared[0]["native_candidates"] = deepcopy(bundle["native_candidates"])
+        prepared = semantic.augment(self, prepared, combined, combined_payload, snapshot, usage)
+        state = deepcopy(bundle["capability"])
+        state["disagreements"] = capability.disagreements(state, prepared)
+        admissible = any(c["admissible"] for c in prepared[0]["cells"])
+        forecasted = {capability.cell_key(c) for c in prepared[0]["cells"]}
+        stronger = [c["key"] for c in state["cells"] if c["classification"] == "overpowered" and c["key"] not in forecasted]
+        if (not admissible and stronger and len(state["widening"]) < state["policy"]["widening_rounds"]
+                and len(forecasted) < state["policy"]["max_forecast_cells"]):
+            next_cell = stronger[0]
+            state["widening"].append({"round": len(state["widening"])+1, "cells": [next_cell], "trigger": "silent-cap-unmet"})
+            bundle["capability"] = state
+            bundle["forecast_state"] = {"response": combined, "cells": combined_payload["cells"], "usage": usage}
+            return self._forecast_request(bundle, {next_cell})
+        state["widening_stop"] = "cap-met" if admissible else "forecast-budget" if len(forecasted) >= state["policy"]["max_forecast_cells"] else "round-limit" if stronger else "exhausted"
+        prepared[0]["capability"] = state
+        # Include both reader calls in routing overhead; no invented provider costs.
+        coarse = bundle["coarse_usage"]
+        prepared[0]["backend"]["inference_cached"] = prepared[0]["backend"]["inference_cached"] and coarse["cached"]
+        prepared[0]["routing_overhead"]["seconds"] += coarse["call_seconds"]
+        if coarse["call_cost_usd"] is None or prepared[0]["routing_overhead"]["cost_usd"] is None:
+            prepared[0]["routing_overhead"]["cost_usd"] = None
+        else:
+            prepared[0]["routing_overhead"]["cost_usd"] += coarse["call_cost_usd"]
+        if not select:
+            return prepared[0]
         seed = secrets.randbits(64) if seed is None else seed
-        if type(seed) is not int or seed < 0:
-            raise HowHardError("seed: expected non-negative integer")
-        parts = semantic.sample(prepared, seed)
-        result = choose(prepared, self.config, seed, parts)
+        result = choose(prepared, self.config, seed, semantic.sample(prepared, seed))
+        chosen = next(c for c in state["cells"] if (c["model"], c["effort"]) == (result["chosen"]["model"], result["chosen"]["effort"]))
+        result["capability"]["executed"] = {k: chosen[k] for k in ("key", "classification", "position", "P_clear")}
         with storage.locked(self.config, operation="decision commit"):
-            self._validate_state(bundle["evidence_key"], bundle["snapshot"]["revision"])
+            self._validate_state(bundle["evidence_key"], snapshot["revision"])
             result["decision_id"] = decisions.save(self.config, result)
         return result
 

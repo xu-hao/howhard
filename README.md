@@ -6,11 +6,12 @@
 
 `howhard` chooses the model and reasoning effort for a task delegated to an AI
 agent. An LLM reads the actual task, current project and writable semantic memory,
-forecasting clean completion, caught failures, escaped failures, tokens and time for
-each candidate. Recorded outcomes update the predictive support for memories.
+learning a task-specific capability-fit band over the full supplied inventory, then
+forecasting clean/caught/escaped outcomes, tokens and time only for that band. One
+recorded outcome updates both the threshold reader and predictive support for memories.
 
-Selection balances worker cost, expected failure cost and waiting time. Its risk cap
-uses a weighted envelope of LLM forecasts; these estimates are not a calibrated
+Selection minimizes expected cost to an accepted result, including same-cell retries
+after loud failures. Its risk cap applies to defects among accepted results; these estimates are not a calibrated
 failure guarantee. Without a usable LLM forecast, routing stops explicitly.
 
 ## Quickstart
@@ -18,17 +19,16 @@ failure guarantee. Without a usable LLM forecast, routing stops explicitly.
 You need Python 3.11+, a POSIX shell, Git and a current Codex, Claude Code or
 Antigravity client with native plugin support.
 
-Install the Python backend from [PyPI](https://pypi.org/project/howhard/2.1.0/) in your
-project directory:
+Install the 3.0 backend from the tagged GitHub release in your project directory:
 
 ```sh
 python3 -m venv .venv-howhard
 . .venv-howhard/bin/activate
-python -m pip install "howhard==2.1.0"
+python -m pip install "howhard @ git+https://github.com/xu-hao/howhard.git@v3.0.0"
 howhard --version
 ```
 
-Expect `howhard 2.1.0`. Keep the environment active and start your agent from the same
+Expect `howhard 3.0.0`. Keep the environment active and start your agent from the same
 shell so it can find `howhard`. An existing GUI session may need the absolute path to
 `.venv-howhard/bin/howhard` in your project.
 

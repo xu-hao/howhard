@@ -1,4 +1,5 @@
 """Offline public accounting boundaries; synthetic events are not provider claims."""
+from conftest import forecast_request
 from copy import deepcopy
 import json
 
@@ -352,6 +353,7 @@ def test_usage_cli_collect_attach_and_original_envelope(tmp_path, monkeypatch, c
 
 def decide_categories(engine, candidates, *, token_usage=None, scalar=120):
     prepared = engine.prepare("task", "Fixture category pricing", native_candidates=candidates)
+    prepared = forecast_request(engine, prepared)
     usage = counts(input=60, output=20, cache_read=40) if token_usage is None else token_usage
     response = {"forecasts": [{"family": c["family"], "effort": c["effort"], "clean": .99,
                                "loud": .009, "silent": .001, "tokens": scalar, "seconds": 1,
@@ -381,6 +383,7 @@ def test_category_rate_card_requires_category_forecast(tmp_path):
     from howhard import Engine
     engine = Engine(directory=tmp_path)
     prepared = engine.prepare("task", native_candidates=[{"model": "fixture-model", "effort": "high", "rate_card": card()}])
+    prepared = forecast_request(engine, prepared)
     cell = prepared["baseline_request"]["cells"][0]
     response = {"forecasts": [{"family": cell["family"], "effort": cell["effort"], "clean": .99,
                                "loud": .009, "silent": .001, "tokens": 120, "seconds": 1}],

@@ -17,6 +17,14 @@ def offline_llm_by_default(monkeypatch, tmp_path_factory):
 r=json.load(sys.stdin)["request"]
 if r["kind"]=="learn":
  print(json.dumps({"operations":[],"reason":"fixture"}))
+elif r["kind"]=="filter":
+ if r.get("phase")=="baseline":
+  levels={e:i for i,e in enumerate(["low","medium","high","xhigh","max","ultra"])}
+  cells=sorted(r["cells"],key=lambda c:(c["model"],levels.get(c["effort"],99)))
+  order=[c["key"] for c in cells]
+  print(json.dumps({"filter":{"order":order,"lower":order[0],"upper":order[min(len(order),r["filter_policy"]["max_forecast_cells"])-1]},"reason":"fixture filter"}))
+ else:
+  print(json.dumps({"memory_filters":[],"reason":"fixture"}))
 elif r.get("phase")=="baseline":
  print(json.dumps({"forecasts":[{"family":c["family"],"effort":c["effort"],"clean":.5,"loud":.45,"silent":.05,"tokens":10000,"seconds":30} for c in r["cells"]],"reason":"fixture"}))
 else:
@@ -80,3 +88,28 @@ def candidate_file(tmp_path_factory):
     path = tmp_path_factory.mktemp("host-inventory") / "candidates.json"
     path.write_text(json.dumps(inventory()))
     return path
+
+
+
+def forecast_request(engine, pending):
+    """Advance an explicit synthetic filter before testing calibrated forecasting."""
+    if pending["stage"] == "forecast":
+        return pending
+    return engine.decide(pending["request_id"], fixture_filter(pending["baseline_request"]))
+
+
+def fixture_filter(request):
+    from howhard.capability import EFFORT_ORDER
+    cells = sorted(request["cells"], key=lambda c: (c["model"], EFFORT_ORDER.get(c["effort"], 99)))
+    order = [c["key"] for c in cells]
+    return {"filter": {"order": order, "lower": order[0],
+                       "upper": order[min(len(order), request["filter_policy"]["max_forecast_cells"])-1]},
+            "memory_filters": [], "reason": "Synthetic task-local ordinal prior"}
+
+
+@pytest.fixture(autouse=True)
+def offline_capability_relevance(request, monkeypatch):
+    # Existing tests without a supplied retrieval double must not download weights
+    # for the learned reader's new absolute relevance pass on small corpora.
+    if request.path.name not in {"test_fast_reranking.py", "test_retrieval_config.py", "test_retrieval.py", "test_native_startup.py"}:
+        monkeypatch.setattr("howhard.retrieval.FastEmbedReranker.score", lambda self, query, documents: [8.] * len(documents))

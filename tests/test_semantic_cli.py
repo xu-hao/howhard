@@ -1,4 +1,5 @@
 """CLI/adapter protocol checks only, not an evaluation of model quality."""
+from conftest import forecast_request
 
 import json
 import sys
@@ -42,6 +43,7 @@ def test_calling_agent_request_retrieval_decision_and_writer(project):
     assert "memories" not in request["baseline_request"]
     looked_up = engine.retrieve(request["request_id"], [{"tool": "memory.read", "id": entry["id"]}])
     fixture = FixtureLLM()
+    looked_up = forecast_request(engine, looked_up)
     response = fixture.complete(looked_up["baseline_request"])
     response["memory_forecasts"] = []
     picked = engine.decide(looked_up["request_id"], response, seed=4)
@@ -60,6 +62,13 @@ def test_command_adapter_and_cli_integration(tmp_path, monkeypatch, capsys, cand
 r=json.load(sys.stdin)["request"]
 if r["kind"]=="learn":
  print(json.dumps({"operations":[{"op":"add","title":"Learned","body":"Provisional lesson","evidence_ids":[r["observation"]["id"]]}],"reason":"recorded outcome"}))
+elif r["kind"]=="filter":
+ if r.get("phase")=="baseline":
+  levels={e:i for i,e in enumerate(["low","medium","high","xhigh","max","ultra"])}
+  order=[c["key"] for c in sorted(r["cells"],key=lambda c:(c["model"],levels.get(c["effort"],99)))]
+  print(json.dumps({"filter":{"order":order,"lower":order[0],"upper":order[min(len(order),12)-1]},"reason":"fixture filter"}))
+ else:
+  print(json.dumps({"memory_filters":[],"reason":"fixture"}))
 elif r.get("phase")=="baseline":
  print(json.dumps({"forecasts":[{"family":c["family"],"effort":c["effort"],"clean":0.8,"loud":0.15,"silent":0.05,"tokens":1000,"seconds":10} for c in r["cells"]],"reason":"protocol fixture"}))
 else:
@@ -103,18 +112,19 @@ def test_report_scores_observed_actions_and_keeps_unknown_costs(project):
     assert stats["runs"] == 1 and stats["outcomes"]["clean"] == 1
     assert stats["forecast_metrics"]["llm"]["mean_log_loss"] == pytest.approx(-__import__("math").log(.5))
     assert stats["worker_cost"]["total_usd"] == .2
-    assert stats["inference"]["calls"] == 2  # reader + writer, no memories yet
-    assert stats["inference"]["total_usd"] == .002
+    assert stats["inference"]["calls"] == 3  # filter + forecast + writer, no memories yet
+    assert stats["inference"]["total_usd"] == .003
 
 
 def test_calling_agent_costs_and_decisions_are_not_reported_as_free(project):
     engine = Engine(project())
     pending = engine.prepare("Y", "Task", native_candidates=inventory())
+    pending = forecast_request(engine, pending)
     response = FixtureLLM().complete(pending["baseline_request"])
     response["memory_forecasts"] = []
     engine.decide(pending["request_id"], response, seed=1)
     stats = report(engine)
     assert stats["inference"]["calls"] == 0
-    assert stats["inference"]["external_submissions"] == 1
+    assert stats["inference"]["external_submissions"] == 2
     assert stats["inference"]["total_usd"] is None
     assert stats["decisions"]["calls"] == 1

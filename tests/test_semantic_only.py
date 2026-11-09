@@ -1,4 +1,5 @@
 """Public behavior after removal of statistical routing."""
+from conftest import forecast_request
 
 import json
 
@@ -31,7 +32,7 @@ def test_llm_only_forecasts_determine_cap_without_statistical_floor(tmp_path):
     class Confident(FixtureLLM):
         def complete(self, request):
             result = super().complete(request)
-            if request.get("phase") == "baseline":
+            if request["kind"] == "predict" and request.get("phase") == "baseline":
                 for row in result["forecasts"]:
                     row.update(clean=.999, loud=.0009, silent=.0001)
             return result
@@ -56,6 +57,7 @@ def test_no_provider_stops_routing_but_calling_agent_protocol_works(tmp_path, mo
         engine.pick("task", native_candidates=INVENTORY, seed=1)
     assert not (engine.config.state_root / "decisions").exists()
     pending = engine.prepare("task", native_candidates=INVENTORY)
+    pending = forecast_request(engine, pending)
     response = FixtureLLM().complete(pending["baseline_request"])
     response["memory_forecasts"] = []
     choice = engine.decide(pending["request_id"], response, seed=1)
@@ -117,6 +119,7 @@ def test_memory_forecast_can_raise_risk_and_require_review(tmp_path):
     engine = Engine(directory=tmp_path)
     memory = engine.memory.add("Boundary", "Cross-service changes can escape local tests")
     pending = engine.prepare("task", native_candidates=inventory([("opus", "high")]))
+    pending = forecast_request(engine, pending)
     cell = pending["baseline_request"]["cells"][0]
     reference = {"family": cell["family"], "effort": cell["effort"], "clean": .98,
                  "loud": .015, "silent": .005, "tokens": 1000, "seconds": 10}
@@ -132,6 +135,7 @@ def test_external_observation_invalidates_prepared_request(tmp_path):
     from howhard.validation import HowHardError
     engine = Engine(directory=tmp_path)
     pending = engine.prepare("task", native_candidates=INVENTORY)
+    pending = forecast_request(engine, pending)
     response = FixtureLLM().complete(pending["baseline_request"])
     response["memory_forecasts"] = []
     other = Engine(directory=tmp_path)
