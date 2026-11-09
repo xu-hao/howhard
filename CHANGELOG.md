@@ -1,5 +1,25 @@
 # Changelog
 
+## 3.0.0 — 2026-11-09
+
+- Accept any nonempty distinct candidate inventory and learn a task-specific capability
+  order and fit band from similarity-weighted actual execution outcomes. Share the
+  observation store and tempered expert-score replay with calibrated forecasts; expose
+  prior-only placements, threshold evidence and filter-quality diagnostics (#66).
+- Add filter → forecast requests, a default 12-cell fine-forecast budget with one explicit
+  re-filter, and bounded stronger-only widening before cap-unmet fallback. Never truncate
+  inventories or fabricate forecasts/outcomes for excluded cells (#66).
+- Minimize expected cost to an accepted result with same-cell retries after loud failure.
+  Apply epsilon to accepted-result silent defect risk, calibrate bounded sampling from
+  forecast spread and predictive evidence, and restrict exploration by mean cost and
+  supported uncertainty. Cap-unmet selection is deterministic and requires review (#67).
+- Break the calling-agent/provider contract: decision v6 receipts include both readers
+  and frozen accepted-result selection, agent requests use v5, and semantic state uses v4.
+  Old receipts cannot supply new receipt-bound feedback or predictive scoring; raw
+  historical evidence remains intact. Update adapters and skills; reprepare pending
+  requests. C_loud and epsilon have new retry/accepted-result meanings. See the 3.0
+  upgrade guide (#66, #67).
+
 ## Unreleased
 
 ## 2.2.0 — 2026-11-08

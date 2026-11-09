@@ -36,17 +36,27 @@ the host's actual tools execute the task.
    Honor the user/application's fixed retrieval configuration. Do not edit it or try
    to upgrade its reranker when results are weak; retrieval tools accept no tier,
    model or configuration override.
-4. For calling-agent reasoning, evaluate the returned `baseline_request` in a
-   separate fresh model context without memory/history or learned tables. Then reason
-   over the original task, project and retrieved experience for memory overrides.
-   The backend retrieves/reranks up to eight useful precedents, including read-only
-   `execution:RUN_ID` experts with actual model, effort, outcomes and measured usage.
-   Broader/narrower tasks and relevant failures can inform estimates; do not infer unrun
-   outcomes or edit execution experts. Copy
-   emitted opaque cell keys into the forecast schema; generate prospective estimates
-   honestly. If genuine independence is unavailable, disclose it and report routing unavailable until an independent LLM forecast is available. Prepared requests already bind candidates, prices and worktree;
-   follow-up retrieve/decide commands do not repeat or replace that inventory.
-5. Inspect the chosen native ID/control, cost policy and cap/review status. Delegate
+4. For calling-agent reasoning, evaluate each returned `baseline_request` in a
+   separate fresh model context without memory/history or learned tables. `context`
+   starts at `stage=filter`: supply a complete task-specific capability order over
+   emitted opaque cell keys and nonempty lower/upper fit cuts. Reason separately over
+   retrieved experience for up to eight cited `memory_filters`. Submit the combined
+   filter to `decide`, then use its NEW `stage=forecast` request ID to obtain calibrated
+   rows only for the band. Supply `forecasts` and up to eight `memory_forecasts` under
+   the same independent-baseline rule. Handle one explicit re-filter and stronger-only
+   widening requests; never truncate an inventory/band or forecast excluded cells.
+   The backend learns the order and threshold from actual similar executions, with
+   prior-only placement labels for unseen cells. Placement is task-specific; there is
+   no universal model ranking. If genuine independence is unavailable, disclose it
+   and report routing unavailable until the independent LLM calls are possible.
+   Prepared requests bind candidates, prices and worktree; follow-up retrieve/decide
+   commands do not repeat or replace that inventory. Never invent unrun outcomes or
+   edit read-only execution experts.
+5. Inspect the chosen native ID/control, cost policy, accepted-result cap/review
+   status and exploration explanation. `J` includes same-cell retries after loud
+   failures; epsilon caps `P_silent/(1-P_loud)` among accepted results. An unmet cap
+   disables exploration, selects by mean cost (or configured lowest-bound) and requires
+   review. Delegate
    through the actual host tool within the authorized scope, using only supported
    controls. On a host whose native spawn API applies explicit model and effort
    overrides, accepted controls plus completed task execution attribute feedback to

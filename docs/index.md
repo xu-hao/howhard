@@ -3,6 +3,9 @@
 - [Quickstart](quickstart.md) — install, choose, record an outcome and learn, with no setup.
 - [Model and storage contracts](reference.md) — LLM forecasts, cost/risk selection, strict rows,
   reproducibility and storage.
+- [Task-specific capability filtering](capability.md) — learned fit bands, threshold evidence,
+  bounded fine forecasts, widening and filter-quality reports.
+- [Upgrading to 3.0](upgrading-3.0.md) — two-stage requests and accepted-result selection.
 - [Concurrent clients](concurrency.md) — backend-owned FIFO write admission, bounded waits,
   cancellation, queue status and safe retries across worktrees.
 - [Task text and changing project context](context.md) — original task/project text, immutable
@@ -32,6 +35,8 @@
 
 quickstart
 reference
+capability
+upgrading-3.0
 concurrency
 context
 semantic-memory

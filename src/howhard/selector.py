@@ -56,17 +56,35 @@ def choose(prepared, config, seed, parts):
         raise HowHardError("candidates: no selectable cells")
     eligible = [row for row in available if row["admissible"]]
     cap_met = bool(eligible)
+    best = min(eligible or available, key=lambda row: (row["J"], row["family"], row["effort"]))
+    sampling = result["semantic"]["sampling"]
+    policy = result["sampling_policy"]
+    fraction = min(policy["explore_within"], result["constants"].get("explore_within", policy["explore_within"]))
     if eligible:
-        if "explore_within" in result["constants"]:
-            threshold = min(row["J"] for row in eligible) * (1 + result["constants"]["explore_within"])
-            eligible = [row for row in eligible if row["J"] <= threshold]
-        chosen = min(eligible, key=lambda row: row["sampled_J"])
+        uncertainty = {(c["family"], c["effort"]): c["cost_sd"] for c in sampling["cells"]}
+        best_sd = uncertainty[best["family"], best["effort"]]
+        eligible = [row for row in eligible if row["J"]-best["J"] <= min(
+            abs(best["J"])*fraction,
+            policy["uncertainty_multiplier"]*(best_sd+uncertainty[row["family"], row["effort"]])) + 1e-12]
+        chosen = min(eligible, key=lambda row: (row["sampled_J"], row["J"], row["family"], row["effort"]))
+        reason = "sampled-within-supported-mean-band" if chosen is not best else "mean-best" if len(eligible) > 1 else "disabled-no-supported-alternative"
     elif config.data["on_cap_unmet"] == "lowest-bound":
-        chosen = min(available, key=lambda row: (row["P_silent"]["upper"], row["sampled_J"]))
+        chosen = min(available, key=lambda row: (row["P_silent_accepted"]["upper"], row["J"], row["family"], row["effort"]))
+        reason = "disabled-cap-unmet"
     else:
-        chosen = min(available, key=lambda row: row["sampled_J"])
+        chosen = best
+        reason = "disabled-cap-unmet"
     result.update(chosen={k: chosen[k] for k in ("model", "family", "effort")}, seed=seed, cap_met=cap_met,
-                  needs_review=not cap_met and config.data["on_cap_unmet"] == "flag-review", why=[])
+                  needs_review=not cap_met, why=[])
+    result["exploration"] = {"enabled": cap_met and len(eligible) > 1, "reason": reason,
+                             "mean_best": {k: best[k] for k in ("model", "family", "effort")},
+                             "mean_best_J": best["J"], "chosen_mean_J": chosen["J"],
+                             "mean_gap": chosen["J"]-best["J"], "relative_band": fraction,
+                             "eligible_cells": [{k: row[k] for k in ("model", "family", "effort")} for row in eligible]}
+    result["selection"] = {"objective": "cost-to-accepted-result", "retry_policy": "same-cell-until-non-loud",
+                           "constants": deepcopy(result["constants"]), "sampling_policy": deepcopy(policy),
+                           "cells": deepcopy(result["cells"]), "exploration": deepcopy(result["exploration"]),
+                           "cap_met": cap_met, "needs_review": not cap_met, "on_cap_unmet": config.data["on_cap_unmet"]}
     pick_index = indices[chosen["family"], chosen["effort"]]
     for row in result["cells"]:
         if not result["cost_policy"]["worker_money_included"]:
@@ -75,11 +93,11 @@ def choose(prepared, config, seed, parts):
             continue
         explanation = {k: row[k] for k in ("model", "family", "effort")}
         if not row["admissible"] and cap_met:
-            explanation.update(reason="silent-cap", message=f"excluded: P_silent upper bound {row['P_silent']['upper']:.6g} > epsilon {result['constants']['epsilon']:.6g}")
+            explanation.update(reason="silent-cap", message=f"excluded: P_silent_accepted upper bound {row['P_silent_accepted']['upper']:.6g} > epsilon {result['constants']['epsilon']:.6g}")
         elif cap_met and "explore_within" in result["constants"] and row not in eligible:
-            explanation.update(reason="explore-within", message="excluded: expected J exceeds explore_within limit")
+            explanation.update(reason="explore-within", message="excluded: mean accepted-result cost exceeds the supported exploration band")
         elif not cap_met and config.data["on_cap_unmet"] == "lowest-bound":
-            explanation.update(reason="lowest-bound", message="higher P_silent upper bound under lowest-bound policy")
+            explanation.update(reason="lowest-bound", message="higher accepted-result silent upper bound under lowest-bound policy")
         else:
             i = indices[row["family"], row["effort"]]
             differences = {name: float(value[0, i] - value[0, pick_index]) for name, value in parts.items()}
