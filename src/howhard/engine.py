@@ -119,13 +119,23 @@ class Engine:
         try:
             result = self._pick(task_type, task_text, project_context=project_context, risk=risk, seed=seed, native_candidates=native_candidates)
         except Exception as exc:
-            from .writes import WriteError
             self._refresh_stale(exc)
-            if not isinstance(exc, WriteError):
-                self._decision_event(None, task_type, started, error=type(exc).__name__)
+            self._failed_decision_event(exc, task_type, started)
             raise
         self._decision_event(result, task_type, started)
         return result
+
+    def _failed_decision_event(self, error, task_type, started):
+        from .writes import WriteError
+        from .request_state import StaleRequest
+        if isinstance(error, WriteError):
+            return
+        try:
+            self._decision_event(None, task_type, started, error=type(error).__name__)
+        except WriteError as audit:
+            if not isinstance(error, StaleRequest):
+                raise
+            error.audit_error = audit.as_dict()
 
     def _decision_event(self, result, task_type, started, error=None):
         event = {"event_id": secrets.token_hex(12), "at_utc": datetime.now(timezone.utc).isoformat(),
@@ -282,10 +292,8 @@ class Engine:
         try:
             result = self._decide(request_id, response, seed=seed)
         except Exception as exc:
-            from .writes import WriteError
             self._refresh_stale(exc, request_id)
-            if not isinstance(exc, WriteError):
-                self._decision_event(None, "calling-agent", started, error=type(exc).__name__)
+            self._failed_decision_event(exc, "calling-agent", started)
             raise
         if "decision_id" in result:
             self._decision_event(result, result["task_type"], started)
