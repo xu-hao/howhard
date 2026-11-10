@@ -105,8 +105,12 @@ class Engine:
     def summary(self, task_type, task_text="", *, project_context=None, risk=None, native_candidates=None, inventory=None):
         from .native import resolve
         candidates = resolve(self.config, native_candidates, inventory)
-        return self._drive(task_type, task_text, project_context=project_context, risk=risk,
-                           native_candidates=candidates, select=False)
+        try:
+            return self._drive(task_type, task_text, project_context=project_context, risk=risk,
+                               native_candidates=candidates, select=False)
+        except HowHardError as exc:
+            self._refresh_stale(exc)
+            raise
 
     def pick(self, task_type, task_text="", *, project_context=None, risk=None, seed=None, native_candidates=None, inventory=None):
         from .native import resolve
@@ -116,6 +120,7 @@ class Engine:
             result = self._pick(task_type, task_text, project_context=project_context, risk=risk, seed=seed, native_candidates=native_candidates)
         except Exception as exc:
             from .writes import WriteError
+            self._refresh_stale(exc)
             if not isinstance(exc, WriteError):
                 self._decision_event(None, task_type, started, error=type(exc).__name__)
             raise
@@ -145,10 +150,16 @@ class Engine:
                                native_candidates=native_candidates)
         self._inference()
         while "request_id" in pending:
-            bundle = self._load_request(pending["request_id"])
-            response, payload, usage = semantic.complete(self, bundle["payload"], bundle["snapshot"])
-            bundle["payload"] = payload
-            pending = self._advance(bundle, response, seed=seed, usage=usage, select=select)
+            from .request_state import view, StaleRequest
+            try:
+                bundle = self._load_request(pending["request_id"])
+                reader = view(self, bundle["read_state"]) if "read_state" in bundle else self
+                response, payload, usage = semantic.complete(reader, bundle["payload"], bundle["snapshot"])
+                bundle["payload"] = payload
+                pending = self._advance(bundle, response, seed=seed, usage=usage, select=select)
+            except StaleRequest as exc:
+                exc.request_id = pending["request_id"]
+                raise
         return pending
 
     def _validate_state(self, evidence_key, revision):
@@ -167,23 +178,34 @@ class Engine:
 
     def prepare(self, task_type, task_text="", *, project_context=None, risk=None, native_candidates=None, inventory=None):
         from .native import resolve
+        from .request_state import capture, configuration
         candidates = self._register(resolve(self.config, native_candidates, inventory))
-        prepared = self._prepared(task_type, risk, task_text, project_context, candidates)
-        payload, snapshot = semantic.request(self, prepared)
-        from .capability import request
-        bundle = {"format": "howhard-agent-request-v5", "evidence_key": self.evidence_key,
+        reader, read_state = capture(self)
+        prepared = reader._prepared(task_type, risk, task_text, project_context, candidates)
+        payload, snapshot = semantic.request(reader, prepared)
+        payload["weights_policy"] = "snapshot"
+        self.last_retrieval_usage = reader.last_retrieval_usage
+        from .capability import request, observations
+        bundle = {"format": "howhard-agent-request-v5", "evidence_key": reader.evidence_key,
                   "payload": request(payload, self.config.data["capability"]), "snapshot": snapshot,
                   "stage": "filter", "capability": None, "refilter_round": 0,
                   "forecast_template": payload, "forecast_state": None, "coarse_usage": None}
+        bundle["read_state"] = read_state
+        bundle["dependencies"] = {"configuration": configuration(reader.config), "memories": {}, "evidence": {}}
+        bundle["learned_state"] = {"weights_policy": "snapshot", "capability_observations": observations(reader, bundle["payload"])}
+        bundle["inventory_source"] = inventory
         bundle["native_candidates"] = candidates
         bundle["project_root"] = str(self.config.project_root)
-        return self._save_request(bundle)
+        return self._save_request(bundle, validate=False)
 
-    def _save_request(self, bundle):
+    def _save_request(self, bundle, *, validate=True):
         from .files import atomic_write
+        from .request_state import extend
+        extend(self, bundle)
         request_id = digest(bundle)
         with storage.locked(self.config, operation="request commit"):
-            self._validate_state(bundle["evidence_key"], bundle["snapshot"]["revision"])
+            if validate:
+                self._check_request(bundle)
             atomic_write(self.config.state_root / "requests" / f"{request_id}.json", canonical(bundle) + b"\n")
         return {"request_id": request_id, "stage": bundle["stage"], "refilter_round": bundle["refilter_round"],
                 "capability": bundle["capability"], "request": semantic.visible_request(bundle["payload"]),
@@ -200,23 +222,58 @@ class Engine:
         except (OSError, ValueError) as exc:
             raise HowHardError("request_id: unavailable or invalid agent request") from exc
         from .validation import keys
-        keys(bundle, ["format", "evidence_key", "payload", "snapshot", "native_candidates", "project_root", "stage", "capability", "refilter_round", "forecast_template", "forecast_state", "coarse_usage"], where="request")
+        keys(bundle, ["format", "evidence_key", "payload", "snapshot", "native_candidates", "project_root", "stage", "capability", "refilter_round", "forecast_template", "forecast_state", "coarse_usage"],
+             ["read_state", "dependencies", "learned_state", "inventory_source"], where="request")
         if digest(bundle) != request_id or bundle["format"] != "howhard-agent-request-v5":
             raise HowHardError("request_id: request integrity or format mismatch")
         if bundle["project_root"] != str(self.config.project_root):
             raise HowHardError("request_id: belongs to another worktree; prepare in the current project")
-        if bundle["evidence_key"] != self.evidence_key or bundle["snapshot"]["revision"] != self.memory.snapshot()["revision"]:
-            raise HowHardError("request_id: stale evidence or memory; prepare a new decision")
+        with storage.reading(self.config):
+            self._check_request(bundle)
         return bundle
 
+    def _check_request(self, bundle):
+        from .request_state import changes, StaleRequest
+        self.refresh()
+        if "dependencies" not in bundle:
+            return self._validate_state(bundle["evidence_key"], bundle["snapshot"]["revision"])
+        changed = changes(self, bundle)
+        if changed:
+            raise StaleRequest(changed, bundle)
+
+    def _refresh_stale(self, error, request_id=None):
+        from .request_state import StaleRequest
+        if not isinstance(error, StaleRequest):
+            return
+        if request_id is not None:
+            error.request_id = request_id
+        bundle, payload = error.bundle, error.bundle["payload"]
+        try:
+            options = ({"inventory": bundle["inventory_source"]} if bundle.get("inventory_source")
+                       else {"native_candidates": bundle["native_candidates"]})
+            error.refreshed_request = self.prepare(payload["task_type"], payload["context"]["task_text"],
+                project_context=payload["context"]["project_context"], risk=payload["risk_class"], **options)
+            error.baseline_unchanged = semantic.baseline_request(payload) == error.refreshed_request["baseline_request"]
+        except HowHardError as exc:
+            error.refresh_error = str(exc)
+
     def retrieve(self, request_id, queries):
+        try:
+            return self._retrieve(request_id, queries)
+        except HowHardError as exc:
+            self._refresh_stale(exc, request_id)
+            raise
+
+    def _retrieve(self, request_id, queries):
         if not isinstance(queries, list) or not 1 <= len(queries) <= 3:
             raise HowHardError("retrieval: provide between one and three tool requests")
         bundle = self._load_request(request_id)
+        from .request_state import view
+        reader = view(self, bundle["read_state"]) if "read_state" in bundle else self
         if len(bundle["payload"]["retrieval"]) + len(queries) > 3 * semantic.SETTINGS["retrieval_rounds"]:
             raise HowHardError("retrieval: request budget exceeded")
         for query in queries:
-            result = semantic.tool(self, query, project_snapshot=bundle["payload"]["context"]["project_context"])
+            result = semantic.tool(reader, query, project_snapshot=bundle["payload"]["context"]["project_context"])
             bundle["payload"]["retrieval"].append({"request": query, "result": result})
         return self._save_request(bundle)
 
@@ -226,6 +283,7 @@ class Engine:
             result = self._decide(request_id, response, seed=seed)
         except Exception as exc:
             from .writes import WriteError
+            self._refresh_stale(exc, request_id)
             if not isinstance(exc, WriteError):
                 self._decision_event(None, "calling-agent", started, error=type(exc).__name__)
             raise
@@ -255,15 +313,18 @@ class Engine:
         from copy import deepcopy
         from . import capability
         payload, snapshot = bundle["payload"], bundle["snapshot"]
+        from .request_state import extend
+        extend(self, bundle)
         response = semantic.validate_response(response, payload, snapshot)
         if usage is None:
             semantic.external_submission(self, payload)
             usage = {"backend": "calling-agent", "seconds": 0., "cost_usd": None, "calls": [],
                      "cached": False, "call_seconds": 0., "call_cost_usd": None}
         with storage.reading(self.config):
-            self._validate_state(bundle["evidence_key"], snapshot["revision"])
+            self._check_request(bundle)
         if bundle["stage"] == "filter":
-            state = capability.aggregate(self, payload, response)
+            state = capability.aggregate(self, payload, response,
+                observed=bundle.get("learned_state", {}).get("capability_observations"))
             bundle["coarse_usage"] = semantic.combine_usage(bundle["coarse_usage"], usage)
             state["reader_usage"] = {k: deepcopy(bundle["coarse_usage"][k]) for k in ("backend", "seconds", "cost_usd", "calls")}
             state["refilter_rounds"] = bundle["refilter_round"]
@@ -313,6 +374,9 @@ class Engine:
             return self._forecast_request(bundle, {next_cell})
         state["widening_stop"] = "cap-met" if admissible else "forecast-budget" if len(forecasted) >= state["policy"]["max_forecast_cells"] else "round-limit" if stronger else "exhausted"
         prepared[0]["capability"] = state
+        if "dependencies" in bundle:
+            prepared[0]["request_snapshot"] = {"weights_policy": "snapshot", "dependencies": deepcopy(bundle["dependencies"]),
+                "evidence_key": bundle["evidence_key"], "memory_revision": snapshot["revision"]}
         # Include both reader calls in routing overhead; no invented provider costs.
         coarse = bundle["coarse_usage"]
         prepared[0]["backend"]["inference_cached"] = prepared[0]["backend"]["inference_cached"] and coarse["cached"]
@@ -328,7 +392,7 @@ class Engine:
         chosen = next(c for c in state["cells"] if (c["model"], c["effort"]) == (result["chosen"]["model"], result["chosen"]["effort"]))
         result["capability"]["executed"] = {k: chosen[k] for k in ("key", "classification", "position", "P_clear")}
         with storage.locked(self.config, operation="decision commit"):
-            self._validate_state(bundle["evidence_key"], snapshot["revision"])
+            self._check_request(bundle)
             result["decision_id"] = decisions.save(self.config, result)
         return result
 

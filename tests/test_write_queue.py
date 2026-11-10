@@ -256,6 +256,7 @@ def test_queued_memory_patch_still_rejects_a_stale_revision(tmp_path):
 def test_queued_decision_revalidates_evidence_before_receipt_commit(tmp_path):
     from howhard.writes import admit
     engine = Engine(directory=tmp_path)
+    engine.observe("task", INVENTORY[0]["model"], "high", "clean", id="surfaced-evidence")
     request = engine.prepare("task", native_candidates=INVENTORY)
     options = {"request_id": request["request_id"], "response": _response(request["baseline_request"])}
     with client(_operation_client, tmp_path, "decide", options) as (_, connection):
@@ -265,13 +266,14 @@ def test_queued_decision_revalidates_evidence_before_receipt_commit(tmp_path):
         with admit(engine.config.state_root):
             connection.send("go")
             queued(engine, 2)
-            engine.observe("task", INVENTORY[0]["model"], "high", "clean", id="new-evidence")
+            engine.observe("task", INVENTORY[0]["model"], "high", "silent",
+                           amends="surfaced-evidence", id="corrected-evidence")
         result = receive(connection)
-        assert result["error"] == "HowHardError" and "stale" in result["message"]
+        assert result["error"] == "StaleRequest" and "stale" in result["message"]
     assert not (engine.config.state_root / "decisions").exists()
 
 
-def test_model_forecasting_does_not_hold_a_write_turn_and_stale_result_is_refused(tmp_path):
+def test_model_forecasting_does_not_hold_a_write_turn_or_refuse_unrelated_writes(tmp_path):
     engine = Engine(directory=tmp_path)
     with client(_forecast_client, tmp_path) as (_, connection):
         assert receive(connection) == "ready"
@@ -280,11 +282,14 @@ def test_model_forecasting_does_not_hold_a_write_turn_and_stale_result_is_refuse
         assert engine.write_status()["entries"] == []
         engine.memory.add("During forecast", "Independent write completes")
         connection.send("finish")
-        assert "stale" in receive(connection)["error"]
-    assert not (engine.config.state_root / "decisions").exists()
+        result = receive(connection)
+        while result == "forecast":
+            connection.send("finish")
+            result = receive(connection)
+        assert result["result"]["decision_id"]
 
 
-def test_embedding_does_not_hold_a_write_turn_and_stale_preparation_is_refused(tmp_path):
+def test_embedding_does_not_hold_a_write_turn_or_refuse_snapshot_preparation(tmp_path):
     engine = Engine(directory=tmp_path)
     engine.memory.apply([dict(op="add", title=f"Lesson {i}", body=f"component{i}") for i in range(9)])
     with client(_embedding_client, tmp_path) as (_, connection):
@@ -294,8 +299,8 @@ def test_embedding_does_not_hold_a_write_turn_and_stale_preparation_is_refused(t
         assert not engine.write_status()["entries"]
         engine.memory.add("During embedding", "Independent write completes")
         connection.send("finish")
-        assert "stale" in receive(connection)["error"]
-    assert not (engine.config.state_root / "requests").exists()
+        result = receive(connection)["result"]
+        assert result["request"]["memory_revision"] == 9
 
 
 def test_queued_learning_revalidates_the_evidence_event(tmp_path):
