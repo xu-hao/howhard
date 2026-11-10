@@ -39,7 +39,11 @@ howhard observe DECISION_ID clean --tokens 12000 --seconds 45
 Every pick saves a content-addressed receipt under `decisions/` in the backend state
 root reported by `howhard paths` (local `.howhard` for plain folders). Its ID is
 printed in text and JSON output. The receipt includes the chosen cell, task description,
-project snapshot, seed and risk class. A later observation resolves the receipt and
+project snapshot, seed and risk class. New receipts also retain `request_snapshot`:
+the snapshot weight policy and exact surfaced dependencies used by the staged request.
+Unrelated concurrent writes leave those prospective inputs unchanged; a changed
+dependency returns a [structured conflict and refresh](concurrency.md).
+A later observation resolves the receipt and
 copies that original context into the append-only row. It does not rescan the newer
 project. `--save-decision PATH` copies the receipt for another process; the short observe
 form also accepts that file path. Explicit four-argument observe supports `--decision ID`

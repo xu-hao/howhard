@@ -6,8 +6,8 @@
 - [Task-specific capability filtering](capability.md) — learned fit bands, threshold evidence,
   bounded fine forecasts, widening and filter-quality reports.
 - [Upgrading to 3.0](upgrading-3.0.md) — two-stage requests and accepted-result selection.
-- [Concurrent clients](concurrency.md) — backend-owned FIFO write admission, bounded waits,
-  cancellation, queue status and safe retries across worktrees.
+- [Concurrent clients](concurrency.md) — backend-owned FIFO admission, snapshot/dependency
+  validity, structured refresh conflicts, bounded waits and safe retries across worktrees.
 - [Task text and changing project context](context.md) — original task/project text, immutable
   snapshots and decision receipts.
 - [LLM reasoning and writable semantic memory](semantic-memory.md) — reader/writer

@@ -22,6 +22,8 @@ def save(config, result):
     value["selection"] = result["selection"]
     value["cost_policy"] = result["cost_policy"]
     value["native_candidates"] = result["native_candidates"]
+    if "request_snapshot" in result:
+        value["request_snapshot"] = result["request_snapshot"]
     decision_id = digest(value)
     from .storage import locked
     with locked(config, operation="receipt commit"):
@@ -55,7 +57,10 @@ def load(config, source, *, for_scoring=False):
         return None  # Preserve old evidence without replaying a removed predictor.
     if not isinstance(value, dict) or value.get("format") != DECISION_FORMAT:
         raise HowHardError("decision.format: unsupported version; prepare a new capability-filtered decision")
-    keys(value, ["format", "project", "project_identity", "task_type", "risk_class", "chosen", "seed", "context", "cost_policy", "native_candidates", "semantic", "capability", "selection"], where="decision")
+    keys(value, ["format", "project", "project_identity", "task_type", "risk_class", "chosen", "seed", "context", "cost_policy", "native_candidates", "semantic", "capability", "selection"], ["request_snapshot"], where="decision")
+    if "request_snapshot" in value:
+        from .request_state import validate_provenance
+        validate_provenance(value["request_snapshot"])
     policy = value["cost_policy"]
     keys(policy, ["worker_money_included", "unknown_price_models", "comparison", "basis"], where="decision.cost_policy")
     if type(policy["worker_money_included"]) is not bool or not isinstance(policy["unknown_price_models"], list):
@@ -71,6 +76,8 @@ def load(config, source, *, for_scoring=False):
         return all(v is not None for v in c["rate_card"]["rates"].values()) if "rate_card" in c else c.get("usd_per_mtok") is not None
     from .semantic import validate_receipt as validate_semantic
     validate_semantic(value["semantic"])
+    if "request_snapshot" in value and value["request_snapshot"]["memory_revision"] != value["semantic"]["memory_revision"]:
+        raise HowHardError("request_snapshot: memory revision differs from frozen semantic inputs")
     forecast_pairs = {(c["family"], c["effort"]) for c in value["semantic"]["worlds"]["llm"]}
     priced_inventory = [c for c in inventory if (config.data["models"].get(c["model"], {}).get("family"), c["effort"]) in forecast_pairs]
     unknown = sorted({c["model"] for c in priced_inventory if not priced(c)})
