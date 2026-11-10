@@ -16,6 +16,7 @@ class StaleRequest(HowHardError):
         self.request_id = digest(bundle)
         self.refreshed_request = None
         self.refresh_error = None
+        self.audit_error = None
         self.baseline_unchanged = False
         names = ', '.join(
             f"memory {c['id']} version {c['old_version']} -> {c['new_version']} "
@@ -37,6 +38,8 @@ class StaleRequest(HowHardError):
                   'baseline_unchanged': self.baseline_unchanged}
         if self.refresh_error is not None:
             result['refresh_error'] = self.refresh_error
+        if self.audit_error is not None:
+            result['audit_error'] = deepcopy(self.audit_error)
         return result
 
 

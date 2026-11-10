@@ -144,6 +144,8 @@ is identical to the returned one; only an identical baseline permits reusing tha
 answer. Re-evaluate affected memory/evidence reasoning. Refresh is attempted once; if
 admission or configuration prevents it, `refresh_error` explains the failure and the
 original conflict remains visible. There is no unbounded retry or writer-window protocol.
+If recording the failed-decision audit also fails admission, `audit_error` carries its
+typed diagnostic without replacing the original `stale_request` or changed dependencies.
 
 For example, an observation and a memory update from two worktrees register in one
 store queue. The memory update waits its turn, then checks the expected revision
