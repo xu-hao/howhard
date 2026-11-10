@@ -215,8 +215,11 @@ request. Evaluate the baseline in a separate model context, then submit
 for calibrated rows over the fit band. Evaluate that clean baseline independently and
 submit `{forecasts, memory_forecasts, reason}`. Handle explicit re-filter or stronger-only
 widening requests until a decision ID is returned. The full inventory remains bound
-throughout; follow-up commands never replace it. Retrieval returns a new request ID including frozen results. Stale evidence or
-memory requires preparing again. This protocol never claims the calling agent's model
+throughout; follow-up commands never replace it. Retrieval returns a new request ID including frozen results.
+Unrelated writes do not invalidate an in-flight request: belief/expert weights and
+capability inputs use the preparation snapshot. Changed surfaced dependencies return
+`StaleRequest` with the changed IDs/versions and a refreshed request, as documented in
+[concurrent clients](concurrency.md). This protocol never claims the calling agent's model
 calls are free: externally supplied forecasts and updates are audited separately, with
 unknown model cost and latency. The host can retain its own measured usage alongside
 these submissions; they are not included in the package's measured call count.

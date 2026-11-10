@@ -18,7 +18,8 @@ number may restart after the queue empties; the random ticket suffix distinguish
 | --- | --- |
 | First use | Validate evidence, establish project/store identity; initialize memory schema when needed |
 | Native inventories | Validate and merge historical identity metadata |
-| `context` / `retrieve` | Publish the immutable request artifact after checking evidence and memory again |
+| `context` | Capture one consistent store snapshot; publish the immutable request even if writers ran during retrieval |
+| `retrieve` / stage transitions | Recheck surfaced dependencies before publishing the next immutable request |
 | `decide` / `pick` | Commit the receipt after checking its forecast inputs again; audit events have separate turns |
 | `observe` / amendments | Read current evidence, validate IDs, provenance and corrections, then append/fsync |
 | `usage attach` | Collect the owned source outside admission; validate and append the correction inside admission |
@@ -102,14 +103,56 @@ crash/flush recovery rules still apply. Queueing does not make a multi-file flus
 
 ## Revalidation and retries
 
+### Prepared request dependencies
+
+Preparation briefly takes shared data locks to capture evidence, native identities and
+one SQLite memory snapshot consistently. Retrieval, capability relevance scoring and
+model inference then run against those captured values outside the read lock and FIFO
+write turn. Writers may continue while preparation runs; their commits cannot cause
+preparation itself to fail as stale. A dependency changed during preparation is checked
+when the resulting request is used.
+
+New v5 requests persist the read snapshot and a dependency manifest. It contains exact
+content/active versions of surfaced memories, effective-row digests of surfaced evidence
+(including execution experts and capability inputs), and the bound configuration digest.
+Dependencies accumulate across filtering, extra retrieval, forecasting and widening.
+Additional memory/evidence retrieval reads the original snapshot. It cannot silently
+replace old content with a newer version. Edits to unsurfaced memories, new observations
+and unrelated learning commits leave the request valid. Amendments or usage corrections
+to a surfaced execution invalidate it when its effective contents change.
+
+The weight policy is **snapshot**. Both readers use the captured belief/expert scores,
+evidence counts and capability observation/recency weights throughout the workflow.
+They do not replay concurrent outcomes into an in-flight forecast. The receipt's optional
+`request_snapshot` records this policy, the dependency manifest, the captured evidence
+hash and memory revision. These are decision-time provenance; the global revision is
+not a freshness condition. Previously prepared v5 requests without this metadata retain
+their conservative whole-store validation. Existing v6 receipts remain readable.
+
+At load and after write admission, howhard checks the dependencies again before a new
+stage or receipt is committed. A genuine conflict raises Python `StaleRequest`, exported
+from `howhard`. Its `as_dict()` returns `code: "stale_request"`, the original request ID,
+`changes` and `refreshed_request`. Memory changes name the ID, old/new versions and active
+states; evidence/configuration changes report old/new digests. `decide` and `retrieve`
+with `--json` return this object under `error` on stderr with exit status 2.
+
+The refreshed request restarts filtering because a changed precedent can affect the
+fit band as well as its forecasts. It preserves the original task/project snapshot and
+explicit inventory, or refreshes a named configured inventory. No old response is applied
+automatically. `baseline_unchanged` says whether the failed request's independent baseline
+is identical to the returned one; only an identical baseline permits reusing that isolated
+answer. Re-evaluate affected memory/evidence reasoning. Refresh is attempted once; if
+admission or configuration prevents it, `refresh_error` explains the failure and the
+original conflict remains visible. There is no unbounded retry or writer-window protocol.
+
 For example, an observation and a memory update from two worktrees register in one
 store queue. The memory update waits its turn, then checks the expected revision
 against current memory. A stale revision still returns the existing actionable
 conflict; howhard never silently rebases a patch. Learning also checks the effective
 evidence event after admission. A prepared request remains bound to its worktree,
-actual candidate inventory, evidence and memory revision. Evidence or memory changes
-during forecasting, retrieval or a queue wait require a new request. Adding an unrelated
-historical model identity alone does not invalidate a disjoint inventory.
+actual candidate inventory and surfaced dependencies. A changed dependency during
+forecasting, retrieval or a queue wait returns the structured conflict described above.
+Unrelated writes and historical identity additions do not invalidate a disjoint request.
 
 A timeout does not execute later in the background. Resubmit a normal call if needed;
 no manual queue cleanup is required. Reuse the same stable observation/attachment ID

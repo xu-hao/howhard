@@ -272,7 +272,8 @@ def main(argv=None):
         return 130
     except (HowHardError, OSError) as exc:
         from .writes import WriteError
-        if args.json and isinstance(exc, WriteError):
+        from .request_state import StaleRequest
+        if args.json and isinstance(exc, (WriteError, StaleRequest)):
             print(json.dumps({"error": exc.as_dict()}), file=sys.stderr)
             return 2
         print(f"howhard: {exc}", file=sys.stderr)

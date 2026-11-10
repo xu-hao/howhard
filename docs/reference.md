@@ -264,8 +264,11 @@ Frozen-receipt observations and learning share the store across that project's w
 
 Validated LLM responses may be cached by complete request, adapter identity, settings,
 evidence and memory revision. Corrupt caches are replaced. Prepared requests bind the
-current worktree, native inventory, effective evidence and memory revision; stale requests
-must be prepared again. Calling-agent submissions are audited with unknown external
+current worktree, native inventory and a consistent store snapshot. New requests validate
+only surfaced memory/evidence dependencies and configuration, with belief and capability
+weights frozen at preparation. Unrelated writes do not invalidate them. A real change
+returns a typed conflict and refreshed request; see [concurrent clients](concurrency.md).
+Calling-agent submissions are audited with unknown external
 inference costs and latency rather than being counted as free provider calls.
 
 Receipts use `howhard-decision-v6`, requests `howhard-agent-request-v5`, semantic state

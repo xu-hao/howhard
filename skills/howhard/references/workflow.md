@@ -89,7 +89,14 @@ and a reason. Follow new request IDs through one explicit re-filter or bounded
 stronger-only widening until `decision_id` is returned; never truncate or invent rows. Copy opaque family/effort keys emitted by the
 backend; do not invent or rename them. An empty override list is valid. Generate honest
 prospective estimates; do not fabricate past forecasts, observations or independence.
-If an independent context is unavailable, report routing unavailable and stop selection. If evidence/memory is stale, prepare again once; report repeated failure.
+If an independent context is unavailable, report routing unavailable and stop selection.
+The backend freezes belief/capability weights and reads from the prepared snapshot;
+unrelated writes do not invalidate the flow. A `stale_request` error names changed
+surfaced dependencies and carries a `refreshed_request` restarting the filter. Use that
+request and regenerate affected reasoning; reuse a prior independent answer only when
+the baseline is identical (`baseline_unchanged`). If refresh fails, prepare again once
+using the reported cause; report repeated failure. Never silently reuse stale reasoning
+or invent a writer window. Explicit memory writer revisions remain strict.
 
 The decision includes the receipt `decision_id`, `chosen` native ID/control,
 `cost_policy`, and cap/review status. With any unpriced cell, `worker_money_included`
