@@ -172,6 +172,10 @@ instructs agents to submit normal calls, inspect `writes --json` for contention 
 retry with stable IDs after a timeout. Agents must not create a writer-window or
 acquire/release protocol in their conversation channels. Stale writer patches still
 require fresh context and a regenerated response.
+Routing requests use snapshot weights and validate only surfaced dependencies. On
+`stale_request`, inspect the named changes and use the returned `refreshed_request`;
+reuse an independent answer only when its baseline is identical, then regenerate the
+affected reasoning. Unrelated observations or memory additions require no restart.
 
 No project bridge, model mapping, statistical settings, lock feature or extra audit
 ledger is needed. Native manifests and the stateful Python backend remain separate.

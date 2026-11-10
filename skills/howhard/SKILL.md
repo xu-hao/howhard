@@ -32,7 +32,10 @@ the host's actual tools execute the task.
    bounded waiting and crash release. Do not exchange writer-window/acquire/release
    messages or maintain an agent-channel mutex. Inspect `howhard writes --json` for
    contention; use `--write-timeout` when needed. After a timeout resubmit normally
-   with the same stable IDs; refresh/regenerate stale requests or writer patches.
+   with the same stable IDs. Routing uses snapshot weights; unrelated writes do not
+   invalidate requests. For `stale_request`, inspect changed dependencies and use its
+   `refreshed_request`; reuse an independent answer only if the baseline is identical.
+   Regenerate affected reasoning. Writer patches still require current revisions.
    Honor the user/application's fixed retrieval configuration. Do not edit it or try
    to upgrade its reranker when results are weak; retrieval tools accept no tier,
    model or configuration override.

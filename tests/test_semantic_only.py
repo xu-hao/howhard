@@ -131,7 +131,7 @@ def test_memory_forecast_can_raise_risk_and_require_review(tmp_path):
     assert choice["cells"][0]["P_silent"]["upper"] == .4
 
 
-def test_external_observation_invalidates_prepared_request(tmp_path):
+def test_unsurfaced_external_observation_keeps_prepared_request_valid(tmp_path):
     from howhard.validation import HowHardError
     engine = Engine(directory=tmp_path)
     pending = engine.prepare("task", native_candidates=INVENTORY)
@@ -140,8 +140,7 @@ def test_external_observation_invalidates_prepared_request(tmp_path):
     response["memory_forecasts"] = []
     other = Engine(directory=tmp_path)
     other.observe("task", "host-model", "ultra", "clean", id="new-evidence")
-    with pytest.raises(HowHardError, match="stale"):
-        engine.decide(pending["request_id"], response, seed=1)
+    assert engine.decide(pending["request_id"], response, seed=1)["decision_id"]
 
 
 @pytest.mark.parametrize("mode", ["off", "auto", "claude", "command"])

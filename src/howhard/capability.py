@@ -219,7 +219,7 @@ def _learn_order(order, cdf, obs, cells, policy):
         order, score = best, best_score
 
 
-def aggregate(engine, payload, response):
+def aggregate(engine, payload, response, *, observed=None):
     from .semantic import normalize_support
     policy = payload["filter_policy"]
     baseline = response["filter"]
@@ -255,7 +255,7 @@ def aggregate(engine, payload, response):
             b, a = blocks.pop(), blocks.pop()
             blocks.append((a[0]+b[0], (len(a[0])*a[1]+len(b[0])*b[1])/(len(a[0])+len(b[0]))))
     cdf = {k: p for group, p in blocks for k in group}
-    obs = observations(engine, payload)
+    obs = observations(engine, payload) if observed is None else deepcopy(observed)
     learned_order = _learn_order(order, cdf, obs, payload["cells"], policy) if obs else order
     cdf = dict(zip(learned_order, [cdf[k] for k in order]))
     probabilities, _ = _posterior(learned_order, cdf, obs, policy)

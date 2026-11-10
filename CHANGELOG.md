@@ -1,5 +1,17 @@
 # Changelog
 
+## 3.0.1 — 2026-11-10
+
+- Keep concurrent routing requests valid across unrelated observations and memory
+  writes. Capture one consistent read snapshot, freeze belief/capability weights, and
+  validate only surfaced memory/evidence dependencies plus bound configuration (#69).
+- Return typed `StaleRequest` conflicts with changed IDs/versions or evidence digests
+  and a refreshed request. Preserve dependency tracking through extra retrieval,
+  filtering, forecasting and widening; retain FIFO admission and strict writer revisions
+  (#69).
+- Record the snapshot policy and dependency manifest in new immutable receipts while
+  retaining existing v6 receipt and conservative legacy v5 request compatibility (#69).
+
 ## 3.0.0 — 2026-11-09
 
 - Accept any nonempty distinct candidate inventory and learn a task-specific capability
