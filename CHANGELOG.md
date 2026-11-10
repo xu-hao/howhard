@@ -9,6 +9,8 @@
   and a refreshed request. Preserve dependency tracking through extra retrieval,
   filtering, forecasting and widening; retain FIFO admission and strict writer revisions
   (#69).
+- Preserve the original dependency conflict if refresh or failure-audit admission times
+  out; return bounded recovery diagnostics without masking the changed inputs (#69).
 - Record the snapshot policy and dependency manifest in new immutable receipts while
   retaining existing v6 receipt and conservative legacy v5 request compatibility (#69).
 

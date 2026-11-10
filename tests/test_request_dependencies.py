@@ -355,3 +355,33 @@ def test_existing_v6_receipts_without_snapshot_metadata_remain_readable(tmp_path
     receipt = load(engine.config, result['decision_id'])
     receipt.pop('request_snapshot')
     assert load(engine.config, receipt)['chosen'] == result['chosen']
+
+
+def _decide_with_short_deadline(directory, pending, connection):
+    engine = Engine(directory=directory, retrieval=RelevantOnly(), llm=ProtocolDouble(), write_timeout=.15)
+    connection.send('ready')
+    connection.recv()
+    try:
+        engine.decide(pending['request_id'], filtering(pending['baseline_request'], 0, 1))
+    except HowHardError as exc:
+        connection.send({'type': type(exc).__name__, 'error': exc.as_dict()})
+
+
+def test_conflict_survives_refresh_and_audit_admission_timeouts(tmp_path):
+    from howhard.writes import admit
+    engine = engine_at(tmp_path)
+    memory = engine.memory.add('Rollback lesson', 'Original rollback guidance')
+    pending = prepare(engine)
+    with client(_decide_with_short_deadline, tmp_path, pending) as (process, connection):
+        assert receive(connection) == 'ready'
+        with admit(engine.config.state_root):
+            engine.memory.edit(memory['id'], body='Changed rollback guidance')
+            connection.send('decide')
+            result = receive(connection)
+        assert result['type'] == 'StaleRequest'
+        error = result['error']
+        assert error['changes'][0]['id'] == memory['id']
+        assert error['refreshed_request'] is None and error['refresh_error']
+        assert error['audit_error']['code'] == 'write_timeout'
+        process.join(10)
+        assert process.exitcode == 0
