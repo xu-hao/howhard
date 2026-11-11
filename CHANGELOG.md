@@ -1,5 +1,17 @@
 # Changelog
 
+## 3.0.2 — 2026-11-11
+
+- Bound the learned capability band when no inventory cell reaches
+  `reliability_probability`. Treat that as an explicit case: anchor the gain-margin cut
+  at the lower cut and measure it against the best attained clearing probability,
+  instead of running the band to the strongest cell. Easy tasks with low lower bounds
+  are no longer refused with `max_forecast_cells exceeded after re-filter` merely
+  because the inventory is large. Stronger cells are classified overpowered and remain
+  reachable through stronger-only widening. A band that is genuinely wider than the
+  budget still gets one re-filter and then the refusal. Receipt formats are unchanged
+  (#72).
+
 ## 3.0.1 — 2026-11-10
 
 - Keep concurrent routing requests valid across unrelated observations and memory
