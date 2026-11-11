@@ -16,11 +16,22 @@ within-model order. Cross-model placements can change with related execution evi
 
 Fitness is a band: underpowered, fit, then overpowered. Threshold-clearing probability
 is monotone along this decision's order; fitness is not a score that improves forever
-with capability. A stronger cell is overpowered when a weaker one already meets the
-reliability target and the additional clearing probability is below the gain margin.
-The upper cut uses a reliable weaker cell whose gain to the strongest remaining cell
-is below the margin, so the entire excluded suffix qualifies. Price, retry cost, and
-accepted-result silent risk belong to stage 2.
+with capability. A stronger cell is overpowered when a weaker fit cell already gives
+nearly all the clearing probability this inventory offers: the additional clearing
+probability is below the gain margin. The lower cut is the first cell reaching
+`min_clear_probability`. The upper cut is the first cell at or above its anchor whose
+gain to the strongest cell is below the margin, so the entire excluded suffix
+qualifies. The strongest cell attains the best clearing probability because the
+probability is monotone along the order.
+
+The anchor is the first cell reaching `reliability_probability`, so the band always
+includes a reliable cell when one exists. If no cell reaches that target, the target
+is unattainable within this inventory and cannot anchor the band. "No reliable cell" is
+then an explicit case: the anchor is the lower cut, and the gain cut alone, measured
+against the best attained probability, ends the band. The upper cut never falls back
+to the strongest cell merely because the target is unmet. Stronger cells remain
+reachable through stronger-only widening. Price, retry cost, and accepted-result silent
+risk belong to stage 2.
 
 The order assumes a useful scalar approximation to the demands of this task. Related
 tasks and noisy outcomes do not establish a universal ranking, causal explanation,
@@ -101,9 +112,13 @@ Neither independent call receives memory, execution evidence or learned tables.
 The inventory has no count limit. `max_forecast_cells` is a budget for fine forecasts,
 not an inventory cap. If the learned band exceeds it, `decide` returns one re-filter
 request with the full inventory. A second oversized band errors and asks for a tighter
-filter. The backend never slices a band to fit the budget. If the posterior puts every cell
-below the minimum clearing probability, it refuses routing and asks for a more capable
-inventory; it does not relabel a known underpowered strongest cell as fit.
+filter. Because neither cut falls back to the strongest cell, an oversized band means
+the posterior spreads material clearing-probability gains over more cells than the
+budget; a sharper prior can narrow it. The backend never slices a band to fit the
+budget, which would exclude cells that still add material clearing probability. If the
+posterior puts every cell below the minimum clearing probability, it refuses routing
+and asks for a more capable inventory; it does not relabel a known underpowered
+strongest cell as fit.
 
 If no forecast cell passes the accepted-result silent cap, request the next stronger
 overpowered cell, one per widening round, in capability order. Each requires an actual
