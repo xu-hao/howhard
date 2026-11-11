@@ -263,8 +263,15 @@ def aggregate(engine, payload, response, *, observed=None):
     lo = next((i for i, k in enumerate(learned_order) if probabilities[k] >= policy["min_clear_probability"]), n)
     if lo == n:
         raise HowHardError("capability filter: no cell reaches the required capability probability; supply a more capable inventory")
-    reliable = next((i for i, k in enumerate(learned_order) if i >= lo and probabilities[k] >= policy["reliability_probability"]), n-1)
-    hi = next((i for i in range(reliable, n) if probabilities[learned_order[-1]]-probabilities[learned_order[i]] < policy["overpowered_gain_margin"]), n-1)
+    # P_clear is monotone along the order, so the strongest cell attains the best probability.
+    best = probabilities[learned_order[-1]]
+    reliable = next((i for i in range(lo, n) if probabilities[learned_order[i]] >= policy["reliability_probability"]), None)
+    # The band reaches the first reliable cell, then stops once the remaining gain is below
+    # the margin. With no reliable cell the target is unattainable in this inventory and
+    # cannot anchor the band; the gain cut against the best attained probability then
+    # applies from the lower cut instead of defaulting to the strongest cell.
+    anchor = lo if reliable is None else reliable
+    hi = next((i for i in range(anchor, n) if best-probabilities[learned_order[i]] < policy["overpowered_gain_margin"]), n-1)
     # The original LLM cuts are exact when no evidence or memory adjustment exists.
     if not obs and len(worlds) == 1:
         lo, hi = learned_order.index(baseline["lower"]), learned_order.index(baseline["upper"])
