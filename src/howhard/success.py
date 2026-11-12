@@ -110,11 +110,25 @@ def validate_selection(selection, semantic, capability, cost_policy):
     if not isinstance(selection["cells"], list):
         raise HowHardError("decision.selection.cells: expected array")
     for row in selection["cells"]:
-        keys(row, ["model", "family", "effort", "P_clean", "P_loud", "P_silent", "C_run", "cost_basis", "T", "expected_attempts", "J", "P_silent_accepted", "admissible", "sampled_J"], where="selection cell")
+        keys(row, ["model", "family", "effort", "P_clean", "P_loud", "P_silent", "C_run", "cost_basis", "T", "expected_attempts", "J", "P_silent_accepted", "admissible", "sampled_J"],
+             ["needed_credit_usd", "credit_budget", "available_credit_usd", "credit_ok"], where="selection cell")
         for field in ("T", "expected_attempts", "J", "sampled_J"):
             number(row[field], "selection."+field, nonnegative=True)
         if type(row["admissible"]) is not bool:
             raise HowHardError("decision.selection: admissibility must be boolean")
+        if "credit_budget" in row and row["credit_budget"] is not None:
+            from .native import credit_budget
+            credit_budget(row["credit_budget"])
+        if "needed_credit_usd" in row and row["needed_credit_usd"] != row["C_run"]:
+            raise HowHardError("decision.selection: needed_credit_usd must match C_run")
+        if "available_credit_usd" in row:
+            expected_available = row["credit_budget"]["available_usd"] if row.get("credit_budget") is not None else None
+            if row["available_credit_usd"] != expected_available:
+                raise HowHardError("decision.selection: available_credit_usd does not match credit_budget")
+        if "credit_ok" in row:
+            expected_ok = True if row.get("available_credit_usd") is None else (row.get("needed_credit_usd") is not None and row["needed_credit_usd"] <= row["available_credit_usd"])
+            if type(row["credit_ok"]) is not bool or row["credit_ok"] != expected_ok:
+                raise HowHardError("decision.selection: inconsistent credit_ok status")
         for field in ("P_clean", "P_loud", "P_silent", "P_silent_accepted"):
             keys(row[field], ["mean", "lower", "upper"], where="selection."+field)
             for value in row[field].values():
@@ -145,7 +159,9 @@ def validate_selection(selection, semantic, capability, cost_policy):
             raise HowHardError("decision.selection: cost-to-accepted-result mismatch")
     if seen != set(panels["llm"]):
         raise HowHardError("decision.selection: missing forecasted cells")
-    cap_met = any(c["admissible"] for c in selection["cells"])
+    if not any(c.get("credit_ok", True) for c in selection["cells"]):
+        raise HowHardError("decision.selection: no schedulable cells with sufficient credit")
+    cap_met = any(c["admissible"] and c.get("credit_ok", True) for c in selection["cells"])
     if semantic["sampling"]["enabled"] != cap_met:
         raise HowHardError("decision.selection: sampling and cap status disagree")
     if type(selection["cap_met"]) is not bool or selection["cap_met"] != cap_met or selection["needs_review"] != (not cap_met):

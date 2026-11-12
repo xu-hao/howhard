@@ -9,12 +9,21 @@ from .validation import HowHardError, keys, number, text
 FORMAT = "howhard-native-v1"
 
 
+def credit_budget(value):
+    keys(value, ["available_usd"], ["session_5h_remaining_usd", "weekly_7d_remaining_usd"], "candidate.credit_budget")
+    normalized = {key: number(amount, f"candidate.credit_budget.{key}", nonnegative=True) for key, amount in value.items()}
+    windows = [normalized[k] for k in ("session_5h_remaining_usd", "weekly_7d_remaining_usd") if k in normalized]
+    if windows and abs(normalized["available_usd"] - min(windows)) > 1e-6:
+        raise HowHardError("candidate.credit_budget: available_usd must match minimum remaining window credit")
+    return normalized
+
+
 def validate(candidates):
     if not isinstance(candidates, list) or not candidates:
         raise HowHardError("candidates: expected at least one native model/effort cell")
     result, seen = [], set()
     for cell in candidates:
-        keys(cell, ["model", "effort"], ["usd_per_mtok", "rate_card"], "native candidate")
+        keys(cell, ["model", "effort"], ["usd_per_mtok", "rate_card", "credit_budget"], "native candidate")
         model = text(cell["model"], "candidate.model")
         effort = text(cell["effort"], "candidate.effort", label=True)
         if len(model) > 256 or any(ord(c) < 32 for c in model) or len(effort) > 64 or effort == "model_default":
@@ -31,7 +40,21 @@ def validate(candidates):
         price = cell.get("usd_per_mtok")
         if price is not None:
             price = number(price, "candidate.usd_per_mtok", nonnegative=True)
-        result.append({"model": model, "effort": effort, **({"usd_per_mtok": price} if "usd_per_mtok" in cell else {}), **({"rate_card": deepcopy(cell["rate_card"])} if "rate_card" in cell else {})})
+        budget = None
+        if "credit_budget" in cell:
+            budget = credit_budget(cell["credit_budget"])
+            if "rate_card" not in cell and price is None:
+                raise HowHardError("candidate.credit_budget: requires rate_card or usd_per_mtok")
+        result.append({"model": model, "effort": effort,
+                       **({"usd_per_mtok": price} if "usd_per_mtok" in cell else {}),
+                       **({"rate_card": deepcopy(cell["rate_card"])} if "rate_card" in cell else {}),
+                       **({"credit_budget": deepcopy(budget)} if budget is not None else {})})
+    if any("credit_budget" in c for c in result):
+        from .accounting import CATEGORIES
+        priced = [all(c["rate_card"]["rates"][k] is not None for k in CATEGORIES) if "rate_card" in c else c.get("usd_per_mtok") is not None for c in result]
+        bases = {"estimate:" + c["rate_card"]["basis"] if "rate_card" in c else "legacy-unspecified" for c, ok in zip(result, priced) if ok}
+        if not all(priced) or len(bases) != 1:
+            raise HowHardError("candidates: credit_budget requires uniform pricing across all candidates")
     return sorted(result, key=lambda c: (c["model"], c["effort"]))
 
 

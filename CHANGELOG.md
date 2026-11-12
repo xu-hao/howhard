@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- Support optional candidate `credit_budget` constraints (`available_usd` and optional
+  `session_5h_remaining_usd`, `weekly_7d_remaining_usd`) in candidate lists and named
+  inventories. Require uniform pricing across the inventory whenever any candidate
+  declares `credit_budget`, report `needed_credit_usd`, `credit_budget`,
+  `available_credit_usd` and `credit_ok` on evaluated cells while keeping `admissible`
+  for accepted-result silent-risk admissibility, filter selection strictly to schedulable
+  cells (`credit_ok == true`) including under `on_cap_unmet`, refuse selection when no
+  evaluated cell has sufficient credit, and label cheaper unschedulable alternatives with
+  `insufficient-credit` (#75).
+
 ## 3.0.2 — 2026-11-11
 
 - Bound the learned capability band when no inventory cell reaches
@@ -45,8 +57,6 @@
   historical evidence remains intact. Update adapters and skills; reprepare pending
   requests. C_loud and epsilon have new retry/accepted-result meanings. See the 3.0
   upgrade guide (#66, #67).
-
-## Unreleased
 
 ## 2.2.0 — 2026-11-08
 
