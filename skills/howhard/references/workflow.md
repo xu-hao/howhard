@@ -7,7 +7,10 @@ Use the host's own tools/settings to discover actual model and effort/control ID
 Write their cells to a temporary `host-candidates.json` file outside project source.
 Each object has `model` and `effort`; optional `usd_per_mtok` is a known blended worker
 price with unspecified basis. Alternatively supply an explicit category `rate_card` and
-category forecasts using [portable accounting](accounting.md). Neither is an assumed API price. Omitted/null price means unknown, including
+category forecasts using [portable accounting](accounting.md). When remaining quota credit
+windows are known for a uniformly priced inventory, optional `credit_budget`
+(`available_usd` plus optional `session_5h_remaining_usd` and `weekly_7d_remaining_usd`)
+enforces hard scheduling feasibility (`credit_ok`) against forecasted `C_run`. Neither price source is an assumed API price. Omitted/null price means unknown, including
 when the ID also exists in howhard's shipped registry. Do not fabricate an example
 inventory, prices, family labels, weights or statistical settings.
 

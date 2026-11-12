@@ -18,7 +18,8 @@ def prepare(config, task, risk=None, context=None, native_candidates=None):
     from .native import preflight
     inventory = preflight(config, native_candidates)
     cells = [{"model": c["model"], "family": config.data["models"][c["model"]]["family"],
-              "effort": c["effort"], "price": c.get("usd_per_mtok"), "rate_card": c.get("rate_card")} for c in inventory]
+              "effort": c["effort"], "price": c.get("usd_per_mtok"), "rate_card": c.get("rate_card"),
+              "credit_budget": deepcopy(c.get("credit_budget"))} for c in inventory]
     from .accounting import CATEGORIES
     for cell in cells:
         card = cell["rate_card"]
@@ -26,6 +27,8 @@ def prepare(config, task, risk=None, context=None, native_candidates=None):
         cell["money_basis"] = "estimate:" + card["basis"] if card else "legacy-unspecified" if cell["priced"] else None
     bases = {c["money_basis"] for c in cells if c["priced"]}
     monetary = all(c["priced"] for c in cells) and len(bases) == 1
+    if any(c["credit_budget"] is not None for c in cells) and not monetary:
+        raise HowHardError("candidates: credit_budget requires uniform pricing across all candidates")
     for cell in cells:
         cell["comparison_price"] = cell["price"] if monetary else 0.0
         cell["money_included"] = monetary
@@ -54,9 +57,17 @@ def choose(prepared, config, seed, parts):
     available = result["cells"]
     if not available:
         raise HowHardError("candidates: no selectable cells")
-    eligible = [row for row in available if row["admissible"]]
+    schedulable = [row for row in available if row.get("credit_ok", True)]
+    if not schedulable:
+        min_needed = min(row["needed_credit_usd"] for row in available)
+        max_avail = max(row["available_credit_usd"] for row in available)
+        raise HowHardError(
+            f"candidates: no candidate has sufficient remaining credit to schedule task "
+            f"(min needed {min_needed:.6g} USD, max available {max_avail:.6g} USD)"
+        )
+    eligible = [row for row in schedulable if row["admissible"]]
     cap_met = bool(eligible)
-    best = min(eligible or available, key=lambda row: (row["J"], row["family"], row["effort"]))
+    best = min(eligible or schedulable, key=lambda row: (row["J"], row["family"], row["effort"]))
     sampling = result["semantic"]["sampling"]
     policy = result["sampling_policy"]
     fraction = min(policy["explore_within"], result["constants"].get("explore_within", policy["explore_within"]))
@@ -69,7 +80,7 @@ def choose(prepared, config, seed, parts):
         chosen = min(eligible, key=lambda row: (row["sampled_J"], row["J"], row["family"], row["effort"]))
         reason = "sampled-within-supported-mean-band" if chosen is not best else "mean-best" if len(eligible) > 1 else "disabled-no-supported-alternative"
     elif config.data["on_cap_unmet"] == "lowest-bound":
-        chosen = min(available, key=lambda row: (row["P_silent_accepted"]["upper"], row["J"], row["family"], row["effort"]))
+        chosen = min(schedulable, key=lambda row: (row["P_silent_accepted"]["upper"], row["J"], row["family"], row["effort"]))
         reason = "disabled-cap-unmet"
     else:
         chosen = best
@@ -92,7 +103,12 @@ def choose(prepared, config, seed, parts):
         if row["C_run"] >= chosen["C_run"]:
             continue
         explanation = {k: row[k] for k in ("model", "family", "effort")}
-        if not row["admissible"] and cap_met:
+        if not row.get("credit_ok", True):
+            explanation.update(
+                reason="insufficient-credit",
+                message=f"excluded: needed_credit_usd {row['needed_credit_usd']:.6g} > available_credit_usd {row['available_credit_usd']:.6g}",
+            )
+        elif not row["admissible"] and cap_met:
             explanation.update(reason="silent-cap", message=f"excluded: P_silent_accepted upper bound {row['P_silent_accepted']['upper']:.6g} > epsilon {result['constants']['epsilon']:.6g}")
         elif cap_met and "explore_within" in result["constants"] and row not in eligible:
             explanation.update(reason="explore-within", message="excluded: mean accepted-result cost exceeds the supported exploration band")

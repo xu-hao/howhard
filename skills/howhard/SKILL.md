@@ -22,7 +22,11 @@ the host's actual tools execute the task.
    no model assumptions or statistical settings are required. Read [portable accounting](references/accounting.md) for explicit rate cards and
    category forecasts when prices are known. Omit worker prices unless actually known:
    if any are unknown, the backend compares all cells without worker money and labels
-   that limit. Do not supply zero or an API list price for unknown host charges.
+   that limit. Do not supply zero or an API list price for unknown host charges. When
+   a priced candidate also has a known remaining credit envelope, attach optional
+   `credit_budget` (`available_usd` and optional `session_5h_remaining_usd`,
+   `weekly_7d_remaining_usd`) so cells whose forecasted `C_run` exceeds available credit
+   are excluded before selection.
 3. Run commands from the current project. `howhard paths --json` exposes the
    capture/state roots. Fresh Git worktrees share repository state automatically while
    each task captures its current checkout. Explicit store selection remains available.

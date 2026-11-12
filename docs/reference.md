@@ -23,7 +23,7 @@ The caller supplies any nonempty number of distinct actual cells through `--cand
 `native_candidates`. External routers can explicitly select a saved list from
 `howhard.toml` with `--inventory NAME` or Python `inventory="NAME"` instead. Neither
 option is implicit, and the two sources cannot be combined. An empty list is refused. Each has `model`,
-`effort` and optional `usd_per_mtok` or `rate_card`. External routers can use stable
+`effort` and optional `usd_per_mtok` or `rate_card`, plus optional `credit_budget`. External routers can use stable
 provider-qualified model IDs; execution and provider access belong to the caller.
 See {ref}`inventory configuration <external-router-inventories>`.
 No-effort, null and `model_default` controls are refused. Unknown identities receive distinct
@@ -81,6 +81,21 @@ Fully priced inventories with a uniform money basis use the full objective. Neve
 for unknown host charges. Tokens include cached/uncached input and output; T is hours.
 Actual `tokens`, `seconds` and `cost_usd` remain null unless measured. Observations
 update both the threshold reader and shared predictive evidence from one stored row.
+
+An optional candidate `credit_budget` object enforces hard scheduling feasibility against
+forecasted `C_run`. It requires nonnegative finite `available_usd` and accepts optional
+`session_5h_remaining_usd` and `weekly_7d_remaining_usd` windows; when window fields are
+present, `available_usd` must match their minimum within `1e-6`. Any candidate supplying
+`credit_budget` must also supply `rate_card` or `usd_per_mtok`, and an inventory that uses
+`credit_budget` requires uniform pricing across all candidates so `needed_credit_usd` is
+known on a single money basis. Each evaluated cell reports `needed_credit_usd`,
+`credit_budget`, `available_credit_usd` and `credit_ok` (`needed_credit_usd <= available_credit_usd`
+when `credit_budget` is present, or `true` when omitted), while
+`admissible` remains accepted-result silent-risk admissibility. Selection filters to
+schedulable cells (`credit_ok == true`) before sampling, exploration or `on_cap_unmet`
+fallback (`lowest-bound` or `flag-review`), refuses selection when no evaluated cell is
+schedulable, and labels cheaper unschedulable alternatives with `insufficient-credit` in
+`why`.
 
 (portable-execution-accounting)=
 ## Portable execution accounting
