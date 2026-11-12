@@ -46,7 +46,7 @@ When availability changes, pass Python `native_candidates=[...]` or CLI
 `--candidates FILE` instead. Supplied lists and named inventories are mutually exclusive;
 there is no union or fallback between them. An empty list or unknown inventory name is
 an error. Without an explicit list or inventory selector, the backend refuses selection
-even when saved lists exist. The same nonempty, unbounded inventory validation and optional pricing fields
+even when saved lists exist. The same nonempty, unbounded inventory validation and optional pricing and `credit_budget` fields
 apply to both sources; invalid configured lists fail before creating state. The
 `[models]` registry describes identities and evidence weights, not availability.
 Previously observed models never become candidates merely because they are in history.
@@ -173,7 +173,8 @@ native identities need no configuration and receive distinct opaque identity lab
 Every `pick`, `summary` and `context` request uses an explicit inventory through
 `--candidates FILE` (Python: `native_candidates`) or an explicitly selected saved list
 with `--inventory NAME` (Python: `inventory`). Registry entries do not activate candidates. Supply known worker prices as
-optional `usd_per_mtok` in that inventory;
+optional `usd_per_mtok` or `rate_card`, and optional remaining quota windows as
+`credit_budget = { available_usd = 1.25, session_5h_remaining_usd = 1.25, weekly_7d_remaining_usd = 4.50 }`, in that inventory;
 unknown prices remain omitted/null. Family selection flags, model default efforts,
 component API prices and token-mix configuration are not accepted.
 

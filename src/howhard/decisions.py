@@ -115,6 +115,13 @@ def load(config, source, *, for_scoring=False):
         validate_capability(value["capability"], inventory, value["semantic"], value["chosen"])
         from .success import validate_selection
         validate_selection(value["selection"], value["semantic"], value["capability"], value["cost_policy"])
+        by_pair = {(c["model"], c["effort"]): c for c in inventory}
+        for row in value["selection"]["cells"]:
+            if "credit_budget" in row and row["credit_budget"] != by_pair.get((row["model"], row["effort"]), {}).get("credit_budget"):
+                raise HowHardError("decision.selection: credit_budget does not match native candidate inventory")
+        chosen_row = next((c for c in value["selection"]["cells"] if (c["model"], c["effort"]) == (value["chosen"]["model"], value["chosen"]["effort"])), None)
+        if chosen_row is None or not chosen_row.get("credit_ok", True):
+            raise HowHardError("decision.chosen: selected cell is not schedulable within credit_budget")
         from .semantic import panel_lookup
         for panel in value["semantic"]["worlds"].values():
             lookup = panel_lookup(panel)

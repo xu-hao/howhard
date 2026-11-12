@@ -473,6 +473,10 @@ def augment(engine, prepared, response, payload, snapshot, usage):
         cell = next(c for c in cells if (c["family"], c["effort"]) == pair)
         row["C_run"] = sum(weights[k] * forecast_cost(indexed[k][pair], cell) for k in weights) if cell["priced"] else None
         row["cost_basis"] = cell["money_basis"]
+        row["needed_credit_usd"] = row["C_run"]
+        row["credit_budget"] = deepcopy(cell["credit_budget"])
+        row["available_credit_usd"] = cell["credit_budget"]["available_usd"] if cell["credit_budget"] is not None else None
+        row["credit_ok"] = True if row["available_credit_usd"] is None else (row["needed_credit_usd"] <= row["available_credit_usd"])
         row["T"] = seconds / 3600
         c = result["constants"]
         from .success import cost, denominator, accepted_risk, envelope
@@ -506,7 +510,7 @@ def sample(prepared, seed):
     state = result["semantic"]
     parts = {k: np.zeros((1, len(cells))) for k in ("run", "loud", "silent", "time")}
     constants = result["constants"]
-    if not any(c["admissible"] for c in result["cells"]):
+    if not any(c["admissible"] and c.get("credit_ok", True) for c in result["cells"]):
         # No RNG call is made when the accepted-result cap is unmet.
         state["sampling"] = {"enabled": False, "reason": "cap-unmet", "policy": deepcopy(result["sampling_policy"]), "cells": []}
         indexed = panel_lookup(result["cells"])
