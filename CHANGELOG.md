@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 3.1.0 — 2026-11-13
 
 - Version newly aggregated capability filter blocks as `howhard-capability-v2` with
   strict geometric overpowered-tail validation while accepting stored
