@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Version newly aggregated capability filter blocks as `howhard-capability-v2` with
+  strict geometric overpowered-tail validation while accepting stored
+  `howhard-capability-v1` decision v6 receipts whose expert priors uniformly match
+  either the pre-#77 linear overpowered tail or the geometric overpowered tail, keeping
+  receipt loading, belief replay, `observe`, and `report` working across the #74/#77
+  prior change (#78).
 - Concentrate the prior's overpowered tail geometrically near the upper cut so
   conditioning on weak-cell failures does not stretch the learned band in proportion to
   inventory size (#74).

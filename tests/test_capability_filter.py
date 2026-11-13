@@ -404,3 +404,139 @@ def test_overpowered_tail_band_stays_bounded_across_inventory_sizes(tmp_path):
         assert widths[size] <= band["capability"]["policy"]["max_forecast_cells"]
     assert widths[50] <= widths[20]
     assert widths[100] <= widths[20]
+
+
+def _rewrite_stored_receipt(engine, decision_id, mutator):
+    from howhard.context import canonical, digest
+    from howhard.decisions import receipt_path
+    from howhard.files import atomic_write
+    old_path = receipt_path(engine.config, decision_id)
+    value = json.loads(old_path.read_bytes())
+    mutator(value)
+    new_id = digest(value)
+    old_path.unlink()
+    atomic_write(receipt_path(engine.config, new_id), canonical(value) + b"\n")
+    return new_id, value
+
+
+def _linear_tail_cdf(flt, policy):
+    import numpy as np
+    order = flt["order"]
+    n = len(order)
+    lo, hi = order.index(flt["lower"]), order.index(flt["upper"])
+    minimum, reliable = policy["min_clear_probability"], policy["reliability_probability"]
+    before = np.linspace(minimum * .2, minimum * .8, lo).tolist()
+    fit = np.linspace(max(minimum, reliable - .2), reliable, hi - lo + 1).tolist() if hi > lo else [reliable]
+    tail = min((1 - reliable) * .5, policy["overpowered_gain_margin"] * .5)
+    after = np.linspace(reliable, reliable + tail, n - hi).tolist()[1:]
+    return dict(zip(order, before + fit + after))
+
+
+def test_v1_linear_and_geometric_receipts_validate_replay_and_observe_while_v2_is_strict(tmp_path, monkeypatch, capsys):
+    from howhard.cli import main
+    monkeypatch.chdir(tmp_path)
+    cells = inventory(8)  # lower=1, upper=3 -> after_count = 4 >= 3
+    candidates_file = tmp_path / "candidates.json"
+    candidates_file.write_text(json.dumps(cells))
+
+    engine = Engine(directory=tmp_path)
+    memory = engine.memory.add("Rollback", "Earlier fit cells can also clear rollback tasks")
+
+    def mint_with_memory():
+        pending = start(engine, cells)
+        resp = filtering(pending["baseline_request"], 1, 3)
+        mem_flt = filtering(pending["baseline_request"], 0, 3)["filter"]
+        resp["memory_filters"] = [{"id": memory["id"], "version": memory["version"], "filter": mem_flt}]
+        band = engine.decide(pending["request_id"], resp)
+        return finish(engine, band)["decision_id"]
+
+    # 1. Mint a pre-#77 linear-tail howhard-capability-v1 v6 receipt (after_count == 4).
+    raw_linear_id = mint_with_memory()
+    mem_key = f"filter:memory:{memory['id']}:{memory['version']}"
+
+    def to_linear_v1(receipt):
+        cap = receipt["capability"]
+        cap["format"] = "howhard-capability-v1"
+        policy = cap["policy"]
+        cap["worlds"]["filter:llm"] = _linear_tail_cdf(cap["baseline"], policy)
+        cap["worlds"][mem_key] = _linear_tail_cdf(cap["memory_filters"][0]["filter"], policy)
+        for c in cap["cells"]:
+            if c["position"] > 3:
+                c["P_clear"] = cap["worlds"]["filter:llm"][c["key"]]
+
+    linear_v1_id, linear_v1_receipt = _rewrite_stored_receipt(engine, raw_linear_id, to_linear_v1)
+
+    # 2. Mint an unversioned 5e96dcc geometric-tail howhard-capability-v1 v6 receipt.
+    raw_geom_id = mint_with_memory()
+
+    def to_geometric_v1(receipt):
+        receipt["capability"]["format"] = "howhard-capability-v1"
+
+    geom_v1_id, geom_v1_receipt = _rewrite_stored_receipt(engine, raw_geom_id, to_geometric_v1)
+
+    # Confirm linear and geometric overpowered tails genuinely differ for after_count == 4.
+    assert linear_v1_receipt["capability"]["worlds"]["filter:llm"] != geom_v1_receipt["capability"]["worlds"]["filter:llm"]
+
+    # 3. Mint a new howhard-capability-v2 receipt directly.
+    v2_id = mint_with_memory()
+
+    # Load all three stored receipts cleanly and verify newly minted format is v2.
+    loaded_linear = load(engine.config, linear_v1_id)
+    loaded_geom = load(engine.config, geom_v1_id)
+    loaded_v2 = load(engine.config, v2_id)
+    assert loaded_linear["capability"]["format"] == "howhard-capability-v1"
+    assert loaded_geom["capability"]["format"] == "howhard-capability-v1"
+    assert loaded_v2["capability"]["format"] == "howhard-capability-v2"
+
+    # CLI observe --decision and positional observe succeed across all three receipts.
+    chosen_linear = loaded_linear["chosen"]
+    assert main(["observe", "task", chosen_linear["model"], chosen_linear["effort"], "clean",
+                 "--decision", linear_v1_id, "--id", "obs-linear-v1", "--json"]) == 0
+    capsys.readouterr()
+    assert main(["observe", geom_v1_id, "clean", "--id", "obs-geom-v1", "--json"]) == 0
+    capsys.readouterr()
+    assert main(["observe", v2_id, "clean", "--id", "obs-v2", "--json"]) == 0
+    capsys.readouterr()
+
+    # CLI context + belief replay and report succeed on a store containing all three receipts.
+    assert main(["context", "task", "--text", "Follow-up rollback", "--candidates", str(candidates_file), "--json"]) == 0
+    ctx_out = json.loads(capsys.readouterr().out)
+    assert ctx_out["stage"] == "filter"
+
+    engine.refresh()
+    beliefs = engine.memory_beliefs()
+    assert beliefs["unscored_runs"] == 0
+    by_expert = {e["key"]: e for e in beliefs["experts"]}
+    assert by_expert["filter:llm"]["evidence_count"] == 3
+
+    assert main(["report", "--json"]) == 0
+    rep_out = json.loads(capsys.readouterr().out)
+    assert len(rep_out["filter_quality"]["executions"]) == 3
+
+    # Tampered worlds on v1 (corrupted probability or mixed linear/geometric across experts) are rejected.
+    tampered_v1 = deepcopy(loaded_linear)
+    overpowered_key = tampered_v1["capability"]["order"][-2]
+    tampered_v1["capability"]["worlds"]["filter:llm"][overpowered_key] = 0.919999
+    with pytest.raises(HowHardError, match="prior probabilities do not match the filter"):
+        load(engine.config, tampered_v1)
+
+    mixed_v1 = deepcopy(loaded_geom)
+    mixed_v1["capability"]["worlds"][mem_key] = deepcopy(loaded_linear["capability"]["worlds"][mem_key])
+    with pytest.raises(HowHardError, match="prior probabilities do not match the filter"):
+        load(engine.config, mixed_v1)
+
+    # Tampered worlds or legacy linear worlds on v2 are rejected; unsupported format versions are rejected.
+    tampered_v2 = deepcopy(loaded_v2)
+    tampered_v2["capability"]["worlds"]["filter:llm"][overpowered_key] = 0.919999
+    with pytest.raises(HowHardError, match="prior probabilities do not match the filter"):
+        load(engine.config, tampered_v2)
+
+    linear_in_v2 = deepcopy(loaded_linear)
+    linear_in_v2["capability"]["format"] = "howhard-capability-v2"
+    with pytest.raises(HowHardError, match="prior probabilities do not match the filter"):
+        load(engine.config, linear_in_v2)
+
+    unsupported_fmt = deepcopy(loaded_v2)
+    unsupported_fmt["capability"]["format"] = "howhard-capability-v3"
+    with pytest.raises(HowHardError, match="decision.capability.format: unsupported version"):
+        load(engine.config, unsupported_fmt)

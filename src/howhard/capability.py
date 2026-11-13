@@ -10,7 +10,8 @@ from .context import digest
 from .llm import LLMError, SETTINGS
 from .validation import HowHardError, keys, number, text
 
-FORMAT = "howhard-capability-v1"
+FORMAT = "howhard-capability-v2"
+LEGACY_FORMAT_V1 = "howhard-capability-v1"
 EFFORT_ORDER = {e: i for i, e in enumerate(("low", "medium", "high", "xhigh", "max", "ultra"))}
 DEFAULTS = {"max_forecast_cells": 12, "widening_rounds": 2,
             "min_clear_probability": .5, "reliability_probability": .9,
@@ -122,6 +123,18 @@ def prior_cdf(value, policy):
         after = (reliable + tail * (1.0 - 0.5 ** steps) / (1.0 - 0.5 ** after_count)).tolist()
     else:
         after = []
+    return dict(zip(value["order"], before+fit+after))
+
+
+def _linear_prior_cdf(value, policy):
+    """Legacy howhard-capability-v1 linear overpowered-tail prior CDF."""
+    n = len(value["order"])
+    lo, hi = value["order"].index(value["lower"]), value["order"].index(value["upper"])
+    minimum, reliable = policy["min_clear_probability"], policy["reliability_probability"]
+    before = np.linspace(minimum * .2, minimum * .8, lo).tolist()
+    fit = np.linspace(max(minimum, reliable - .2), reliable, hi-lo+1).tolist() if hi > lo else [reliable]
+    tail = min((1-reliable)*.5, policy["overpowered_gain_margin"]*.5)
+    after = np.linspace(reliable, reliable+tail, n-hi).tolist()[1:]
     return dict(zip(value["order"], before+fit+after))
 
 
@@ -308,7 +321,7 @@ def validate_receipt(state, inventory, semantic, chosen):
     """Check complete filter coverage and the exact set of prospectively forecast cells."""
     keys(state, ["format", "baseline", "memory_filters", "order", "lower", "upper", "band", "cells", "worlds", "beliefs",
                  "evidence", "policy", "reason", "widening", "disagreements", "refilter_rounds", "reader_usage", "widening_stop", "executed"], where="decision.capability")
-    if state["format"] != FORMAT:
+    if state["format"] not in (FORMAT, LEGACY_FORMAT_V1):
         raise HowHardError("decision.capability.format: unsupported version")
     validate_policy(state["policy"])
     cells = [{**c, "key": cell_key(c)} for c in inventory]
@@ -346,9 +359,15 @@ def validate_receipt(state, inventory, semantic, chosen):
         filters[key] = item["filter"]
     if not isinstance(state["worlds"], dict) or set(state["worlds"]) != set(filters):
         raise HowHardError("decision.capability: inconsistent expert worlds")
-    for key, value in filters.items():
-        if state["worlds"][key] != prior_cdf(value, state["policy"]):
-            raise HowHardError("decision.capability: prior probabilities do not match the filter")
+    if state["format"] == FORMAT:
+        valid_worlds = all(state["worlds"][key] == prior_cdf(value, state["policy"]) for key, value in filters.items())
+    else:
+        valid_worlds = (
+            all(state["worlds"][key] == prior_cdf(value, state["policy"]) for key, value in filters.items())
+            or all(state["worlds"][key] == _linear_prior_cdf(value, state["policy"]) for key, value in filters.items())
+        )
+    if not valid_worlds:
+        raise HowHardError("decision.capability: prior probabilities do not match the filter")
     weights, seen = 0., set()
     for e in state["beliefs"]["experts"]:
         keys(e, ["key", "weight", "log_score", "evidence_count"], where="capability expert")
