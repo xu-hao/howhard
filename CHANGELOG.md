@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Restore loading and scoring of decision receipts with original linear v1 capability
+  priors; new capability states use v2 for the geometric overpowered tail.
+
 - Concentrate the prior's overpowered tail geometrically near the upper cut so
   conditioning on weak-cell failures does not stretch the learned band in proportion to
   inventory size (#74).

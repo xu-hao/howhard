@@ -404,3 +404,109 @@ def test_overpowered_tail_band_stays_bounded_across_inventory_sizes(tmp_path):
         assert widths[size] <= band["capability"]["policy"]["max_forecast_cells"]
     assert widths[50] <= widths[20]
     assert widths[100] <= widths[20]
+
+
+def linear_v1_prior(value, policy):
+    """The original v1 calculation, used to produce a frozen historical receipt."""
+    import numpy as np
+
+    order = value["order"]
+    lo, hi = order.index(value["lower"]), order.index(value["upper"])
+    minimum, reliable = policy["min_clear_probability"], policy["reliability_probability"]
+    before = np.linspace(minimum * .2, minimum * .8, lo).tolist()
+    fit = np.linspace(max(minimum, reliable - .2), reliable, hi-lo+1).tolist() if hi > lo else [reliable]
+    tail = min((1-reliable)*.5, policy["overpowered_gain_margin"]*.5)
+    after = np.linspace(reliable, reliable+tail, len(order)-hi).tolist()[1:]
+    return dict(zip(order, before+fit+after))
+
+
+@pytest.fixture
+def frozen_v1_receipt(tmp_path, monkeypatch):
+    from howhard import capability
+
+    engine = Engine(directory=tmp_path, retrieval=SimilarityDouble())
+    memory = engine.memory.add("Rollback", "Related capability guidance")
+    # Generate and persist the whole decision with the historical prior, including
+    # the resulting posterior and selection, rather than rewriting a v2 receipt.
+    with monkeypatch.context() as patch:
+        patch.setattr(capability, "FORMAT", "howhard-capability-v1")
+        patch.setattr(capability, "prior_cdf", linear_v1_prior)
+        pending = start(engine, inventory(6))
+        response = filtering(pending["baseline_request"], 1, 2)
+        response["memory_filters"] = [{"id": memory["id"], "version": memory["version"],
+                                       "filter": deepcopy(response["filter"])}]
+        result = finish(engine, pending, response)
+        receipt = load(engine.config, result["decision_id"])
+        engine.observe_decision(result["decision_id"], "silent", id="historical-run", cause="capability")
+    assert receipt["format"] == "howhard-decision-v6"
+    assert receipt["capability"]["format"] == "howhard-capability-v1"
+    baseline = receipt["capability"]["baseline"]
+    assert len(baseline["order"]) - 1 - baseline["order"].index(baseline["upper"]) >= 2
+    return engine, result["decision_id"], receipt
+
+
+@pytest.mark.parametrize("boundary", ["prepare", "observe", "beliefs", "learn", "report"])
+def test_frozen_v1_receipt_loads_and_scores_at_public_boundaries(frozen_v1_receipt, boundary):
+    from howhard.semantic import learning_request
+
+    engine, decision_id, receipt = frozen_v1_receipt
+    if boundary == "prepare":
+        assert start(engine, inventory(6))["stage"] == "filter"
+    elif boundary == "observe":
+        assert engine.observe_decision(decision_id, "clean", id="new-run")["decision_id"] == decision_id
+    elif boundary == "beliefs":
+        expert = next(e for e in engine.memory_beliefs()["experts"] if e["key"] == "filter:llm")
+        assert expert["evidence_count"] == 1
+    elif boundary == "learn":
+        request, _ = learning_request(engine, "historical-run")
+        assert request["decision"] == receipt
+        assert next(e for e in request["beliefs"]["experts"] if e["key"] == "filter:llm")["evidence_count"] == 1
+    else:
+        quality = report(engine)["filter_quality"]
+        assert quality["decisions"] == 1 and len(quality["executions"]) == 1
+
+
+@pytest.mark.parametrize("version", ["v1", "v2"])
+def test_versioned_receipt_rejects_tampered_prior(tmp_path, frozen_v1_receipt, version):
+    engine, _, receipt = frozen_v1_receipt
+    if version == "v2":
+        engine = Engine(directory=tmp_path / "v2")
+        pending = start(engine, inventory(6))
+        result = finish(engine, pending, filtering(pending["baseline_request"], 1, 2))
+        receipt = load(engine.config, result["decision_id"])
+    assert receipt["capability"]["format"] == f"howhard-capability-{version}"
+    world = receipt["capability"]["worlds"]["filter:llm"]
+    world[next(iter(world))] += .001
+    with pytest.raises(HowHardError, match="decision.capability: prior probabilities do not match the filter"):
+        load(engine.config, receipt)
+
+
+def test_new_capability_receipts_use_geometric_v2_prior(tmp_path):
+    engine = Engine(directory=tmp_path)
+    pending = start(engine, inventory(6))
+    result = finish(engine, pending, filtering(pending["baseline_request"], 1, 2))
+    state = load(engine.config, result["decision_id"])["capability"]
+    assert state["format"] == "howhard-capability-v2"
+    order = state["baseline"]["order"]
+    reliable = state["policy"]["reliability_probability"]
+    tail = min((1-reliable)*.5, state["policy"]["overpowered_gain_margin"]*.5)
+    expected = [reliable + tail * (1 - .5**i) / (1 - .5**3) for i in range(1, 4)]
+    assert [state["worlds"]["filter:llm"][key] for key in order[3:]] == pytest.approx(expected)
+    assert state["worlds"]["filter:llm"] != linear_v1_prior(state["baseline"], state["policy"])
+
+
+def test_unknown_capability_format_is_rejected(frozen_v1_receipt):
+    engine, _, receipt = frozen_v1_receipt
+    receipt["capability"]["format"] = "howhard-capability-v3"
+    with pytest.raises(HowHardError, match="decision.capability.format: unsupported version"):
+        load(engine.config, receipt)
+
+
+def test_geometric_prior_labeled_v1_is_rejected(tmp_path):
+    engine = Engine(directory=tmp_path)
+    pending = start(engine, inventory(6))
+    result = finish(engine, pending, filtering(pending["baseline_request"], 1, 2))
+    receipt = load(engine.config, result["decision_id"])
+    receipt["capability"]["format"] = "howhard-capability-v1"
+    with pytest.raises(HowHardError, match="decision.capability: prior probabilities do not match the filter"):
+        load(engine.config, receipt)

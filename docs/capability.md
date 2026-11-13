@@ -155,5 +155,10 @@ never ran contribute no outcome. Reported rates are descriptive diagnostics.
 Configuration defaults and validation are in [configuration](configuration.md).
 Decision v6 receipts freeze the full filter, expert priors, task-specific order,
 probabilities, band, widening, disagreement data, fine forecasts, and accepted-result
-selection. Older receipts remain inspectable as raw artifacts but cannot supply new
-receipt-bound feedback or predictive scores; old observation rows remain evidence.
+selection. New capability states use `howhard-capability-v2`, whose overpowered tail is
+geometric. Validation of `howhard-capability-v1` states uses the original linear tail,
+so decisions with that frozen prior continue to load and score. A v1-labeled state
+written with the geometric tail during the intervening regression does not match the
+v1 contract and is rejected when the two tails differ. Older receipts remain
+inspectable as raw artifacts but cannot supply new receipt-bound feedback or predictive
+scores; old observation rows remain evidence.

@@ -272,6 +272,8 @@ policy. The resolved state subtree is excluded from capture and
 root is refused. Prepared calling-agent requests bind the worktree and reject sibling
 retrieve/decide. Requests use `howhard-agent-request-v5` and receipts use
 `howhard-decision-v6`, with required capability and accepted-result selection state.
+Capability states use `howhard-capability-v2` for new geometric priors; v1 states are
+validated against their original linear priors as described in [capability](capability.md).
 Earlier formats are refused; prepare a fresh request and decision.
 Frozen-receipt observations and learning share the store across that project's worktrees.
 
