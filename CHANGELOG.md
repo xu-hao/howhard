@@ -2,8 +2,9 @@
 
 ## Unreleased
 
-- Restore loading and scoring of decision receipts with original linear v1 capability
-  priors; new capability states use v2 for the geometric overpowered tail.
+- Require the original linear prior in v1 capability receipts and the geometric prior
+  in v2. Geometric priors mislabeled v1 during the intervening regression are rejected
+  when their values differ from the linear prior.
 
 - Concentrate the prior's overpowered tail geometrically near the upper cut so
   conditioning on weak-cell failures does not stretch the learned band in proportion to
