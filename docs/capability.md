@@ -44,7 +44,9 @@ The required capability is a discrete latent threshold with a possible value bey
 the strongest supplied cell. Each expert's cut points define a smoothed prior CDF:
 underpowered positions lie below `min_clear_probability`, the upper fit position
 reaches `reliability_probability`, and the overpowered tail's possible gain stays
-below `overpowered_gain_margin`. With no execution evidence or memory adjustment,
+below `overpowered_gain_margin`, concentrated geometrically near the upper cut so
+conditioning on weak-cell failures does not stretch the band in proportion to inventory
+size. With no execution evidence or memory adjustment,
 the result retains the independent prior's order and cuts exactly.
 
 The existing tempered log-score weights mix the independent and versioned-memory

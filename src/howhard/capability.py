@@ -114,8 +114,14 @@ def prior_cdf(value, policy):
     before = np.linspace(minimum * .2, minimum * .8, lo).tolist()
     fit = np.linspace(max(minimum, reliable - .2), reliable, hi-lo+1).tolist() if hi > lo else [reliable]
     # Above the upper cut, the maximum possible gain stays below the policy margin.
+    # Concentrate the tail geometrically so conditioning cannot stretch it across large inventories.
     tail = min((1-reliable)*.5, policy["overpowered_gain_margin"]*.5)
-    after = np.linspace(reliable, reliable+tail, n-hi).tolist()[1:]
+    after_count = n - 1 - hi
+    if after_count:
+        steps = np.arange(1, after_count + 1, dtype=float)
+        after = (reliable + tail * (1.0 - 0.5 ** steps) / (1.0 - 0.5 ** after_count)).tolist()
+    else:
+        after = []
     return dict(zip(value["order"], before+fit+after))
 
 
