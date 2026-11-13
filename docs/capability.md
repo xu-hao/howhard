@@ -155,5 +155,10 @@ never ran contribute no outcome. Reported rates are descriptive diagnostics.
 Configuration defaults and validation are in [configuration](configuration.md).
 Decision v6 receipts freeze the full filter, expert priors, task-specific order,
 probabilities, band, widening, disagreement data, fine forecasts, and accepted-result
-selection. Older receipts remain inspectable as raw artifacts but cannot supply new
-receipt-bound feedback or predictive scores; old observation rows remain evidence.
+selection. Newly aggregated capability blocks carry `format = "howhard-capability-v2"`
+and require geometric overpowered-tail expert priors; existing decision v6 receipts
+carrying `"howhard-capability-v1"` remain valid for loading, feedback, belief replay,
+and reporting when all participating expert priors uniformly match either the legacy
+linear overpowered tail or the geometric overpowered tail. Older decision formats
+remain inspectable as raw artifacts but cannot supply new receipt-bound feedback or
+predictive scores; old observation rows remain evidence.
