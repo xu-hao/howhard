@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Concentrate the prior's overpowered tail geometrically near the upper cut so
+  conditioning on weak-cell failures does not stretch the learned band in proportion to
+  inventory size (#74).
 - Support optional candidate `credit_budget` constraints (`available_usd` and optional
   `session_5h_remaining_usd`, `weekly_7d_remaining_usd`) in candidate lists and named
   inventories. Require uniform pricing across the inventory whenever any candidate

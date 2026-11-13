@@ -390,3 +390,17 @@ def test_learned_band_genuinely_wider_than_budget_still_refilters_then_refuses(t
     assert narrow["stage"] == "forecast"
     assert max(c["P_clear"] for c in state["cells"]) < state["policy"]["reliability_probability"]
     assert len(state["band"]) <= state["policy"]["max_forecast_cells"]
+
+
+def test_overpowered_tail_band_stays_bounded_across_inventory_sizes(tmp_path):
+    widths = {}
+    for size in (20, 50, 100):
+        cells = inventory(size)
+        engine = failed_at(tmp_path / f"s{size}", cells[0])
+        pending = start(engine, cells)
+        band = engine.decide(pending["request_id"], filtering(pending["baseline_request"], 0, 5))
+        assert band["stage"] == "forecast"
+        widths[size] = len(band["capability"]["band"])
+        assert widths[size] <= band["capability"]["policy"]["max_forecast_cells"]
+    assert widths[50] <= widths[20]
+    assert widths[100] <= widths[20]
