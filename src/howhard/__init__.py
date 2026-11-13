@@ -1,6 +1,6 @@
 """LLM model and effort selection, with a zero-configuration starting point."""
 
-__version__ = "3.0.2"
+__version__ = "3.1.0"
 
 from .config import load_config
 from .engine import Engine
