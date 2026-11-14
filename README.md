@@ -1,5 +1,7 @@
 # howhard
 
+<img src="docs/assets/spiral.png" alt="howhard spiral mark" width="160" height="160">
+
 *How hard should the agent think?*
 
 [Read the documentation](https://howhard.readthedocs.io/en/latest/).
