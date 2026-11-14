@@ -2,10 +2,12 @@
 
 ## Unreleased
 
+## 3.2.0 — 2026-11-14
+
 - Separate actual session money cost from list-price quota credit with optional
   `cost_per_credit`, explicit `session_cost_usd` and `needed_credit_usd` cell fields,
-  credit-named budget fields, cost-based selection, and decision v7 while retaining
-  v1–v6 receipts as historical store evidence (#95).
+  credit-named budget fields, cost-based selection, and `howhard-decision-v7` receipt
+  normalization while retaining v1–v6 receipts as historical store evidence (#95).
 
 - Reduce the spiral project mark's uniform line weight from 20 to 17 units while
   retaining its 4.5 turns and solid black-and-white palette (#93).
