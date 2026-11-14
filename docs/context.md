@@ -83,4 +83,4 @@ placement labels, learned threshold probabilities, widening, cross-reader disagr
 and stage-2 forecasts/selection. Stage 2 records same-cell retry cost, accepted-result
 silent-risk bounds, calibrated uncertainty and exploration status. One later observation
 uses this original receipt to update both readers. See [capability filtering](capability.md)
-and [upgrading to 3.0](upgrading-3.0.md).
+and the {ref}`selection contract <accepted-result-selection>`.

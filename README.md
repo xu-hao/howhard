@@ -4,6 +4,10 @@
 
 [Read the documentation](https://howhard.readthedocs.io/en/latest/).
 
+Start with the [quickstart](docs/quickstart.md), or read the
+[technical report](docs/technical-report.md) for the credit-saving objective,
+learning equations, statistical assumptions and retrospective defect attribution.
+
 `howhard` chooses the model and reasoning effort for a task delegated to an AI
 agent. An LLM reads the actual task, current project and writable semantic memory,
 learning a task-specific capability-fit band over the full supplied inventory, then

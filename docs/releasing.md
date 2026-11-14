@@ -8,9 +8,9 @@ major for incompatible public interfaces. While below 1.0, document any incompat
 change explicitly. Receipt and request format versions are separate compatibility contracts.
 Keep the version fields in the portable, Claude Code and Antigravity plugin manifests
 in sync with that Python version; distribution validation checks them in the source archive.
-The [3.0 upgrade guide](upgrading-3.0.md) records the current protocol/selection boundary;
-the [2.0 guide](upgrading-2.0.md) retains the earlier accounting transition, and
-the published 0.6.1 maintenance release has its own retained changelog section.
+The [model and storage contracts](reference.md) define current protocol and selection
+compatibility. The [changelog](changelog.md) retains release history and links to
+upgrade guides archived in the corresponding release tags.
 
 Before release:
 
