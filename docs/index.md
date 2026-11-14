@@ -1,52 +1,95 @@
-# howhard documentation
+# howhard
 
-- [Quickstart](quickstart.md) — install, choose, record an outcome and learn, with no setup.
-- [Model and storage contracts](reference.md) — LLM forecasts, cost/risk selection, strict rows,
-  reproducibility and storage.
-- [Task-specific capability filtering](capability.md) — learned fit bands, threshold evidence,
-  bounded fine forecasts, widening and filter-quality reports.
-- [Upgrading to 3.0](upgrading-3.0.md) — two-stage requests and accepted-result selection.
-- [Concurrent clients](concurrency.md) — backend-owned FIFO admission, snapshot/dependency
-  validity, structured refresh conflicts, bounded waits and safe retries across worktrees.
-- [Task text and changing project context](context.md) — original task/project text, immutable
-  snapshots and decision receipts.
-- [LLM reasoning and writable semantic memory](semantic-memory.md) — reader/writer
-  adapters, memory operations, feedback weights and agent tools.
-- [Execution experience retrieval](retrieval.md) — replaceable BM25/HNSW retrieval,
-  pretrained instruction-aware reranking and bounded precedent context.
-- [Reusable skills and host installation](skills.md) — routing, escaped-defect attribution,
-  Codex, Claude Code and Antigravity discovery, native installation and execution limits.
-- [Rule retrieval benchmark](rule-benchmark.md) — opt-in representation/reranking diagnostics
-  with pytest-probability, separate from field routing-quality evidence.
-- [Real-project evaluation](evaluation.md) — chronological field trials and genuine
-  observed outcomes, with implementation fixtures kept separate.
-- [Advanced configuration](configuration.md) — external-router candidate lists, optional
-  registry, policies and data locations.
-- [Upgrading to 2.0](upgrading-2.0.md) — portable execution accounting and explicit money bases.
-- [Upgrading to 1.0](upgrading-1.0.md) — breaking interfaces, backend/skill updates and
-  preserved historical state.
-- [Contributor workflow](contributing.md) — issue tracking, worktrees and coordinated checks.
-- [Packaging and release](releasing.md) — versions, distribution validation and publication.
-- [Changelog](changelog.md) — user-facing changes by version.
-- [Session handoff](session_handoff_format.md) — reporting changed work.
+howhard helps you save AI credits by choosing the model and reasoning effort each
+task needs. It starts with an LLM's judgment, learns from your project's real
+results, and corrects earlier success records when bugs are discovered later.
+Its selection accounts for retries, elapsed time and escaped defects.
+
+Start with the [quickstart](quickstart.md) to use it on a real task. Read the
+[technical report](technical-report.md) for the design, learning equations,
+statistical assumptions and evaluation method. Savings depend on actual host
+costs and the overhead of routing and learning; the [evaluation guide](evaluation.md)
+explains how to measure them.
+
+## Getting started
+
+- [Quickstart](quickstart.md) — install the backend and plugin, route a task,
+  record its outcome and learn.
+- [Agent skills and host installation](skills.md) — native setup, routing and
+  escaped-defect attribution in Codex, Claude Code and Antigravity.
 
 ```{toctree}
 :hidden:
+:caption: Getting started
 
 quickstart
-reference
+skills
+```
+
+## Technical deep dive
+
+The technical report connects the full workflow. The component guides describe
+each method and its operational boundaries in detail.
+
+- [Technical report](technical-report.md) — the credit-saving objective, LLM
+  priors, Bayesian capability learning, evidence-weighted memory and retrospective
+  defect attribution.
+- [Capability filtering](capability.md) — task-specific fit bands, threshold
+  evidence, forecast budgets and widening.
+- [LLM reasoning and semantic memory](semantic-memory.md) — independent
+  forecasts, memory operations, predictive weights and feedback replay.
+- [Experience retrieval](retrieval.md) — hybrid search, reranking and bounded
+  context from earlier executions and written lessons.
+- [Real-project evaluation](evaluation.md) — measure net cost and forecast
+  quality with chronological trials on genuine work.
+- [Rule retrieval benchmark](rule-benchmark.md) — representation and reranking
+  diagnostics, separate from field routing-quality evidence.
+
+```{toctree}
+:hidden:
+:caption: Technical deep dive
+
+technical-report
 capability
-upgrading-3.0
-concurrency
-context
 semantic-memory
 retrieval
-skills
 evaluation
 rule-benchmark
+```
+
+## Reference
+
+- [Model and storage contracts](reference.md) — selection, pricing, execution
+  accounting, CLI/API behavior and persisted evidence.
+- [Configuration](configuration.md) — optional inventories, policies, retrieval
+  profiles and data locations.
+- [Task and project context](context.md) — original task text, immutable project
+  snapshots and decision receipts.
+- [Concurrent clients](concurrency.md) — FIFO write admission, snapshot validity,
+  refresh conflicts, bounded waits and retries.
+
+```{toctree}
+:hidden:
+:caption: Reference
+
+reference
 configuration
-upgrading-1.0
-upgrading-2.0
+context
+concurrency
+```
+
+## Project
+
+- [Contributor workflow](contributing.md) — issues, isolated worktrees and checks.
+- [Packaging and release](releasing.md) — versioning, distribution validation
+  and publication.
+- [Changelog](changelog.md) — release history and links to archived upgrade guides.
+- [Session handoff](session_handoff_format.md) — reporting completed and open work.
+
+```{toctree}
+:hidden:
+:caption: Project
+
 contributing
 releasing
 changelog

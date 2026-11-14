@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Reorganize Read the Docs into Getting started, Technical deep dive, Reference and
+  Project. Add a technical report explaining the credit-saving objective, independent
+  LLM priors, Bayesian capability updates, predictive memory weights, risk envelopes,
+  retrospective defect attribution and field evaluation. Remove historical upgrade
+  pages from the live docs while retaining links to their release-tag archives (#85).
+
 ## 3.1.0 — 2026-11-13
 
 - Version newly aggregated capability filter blocks as `howhard-capability-v2` with
@@ -65,7 +73,8 @@
   Old receipts cannot supply new receipt-bound feedback or predictive scoring; raw
   historical evidence remains intact. Update adapters and skills; reprepare pending
   requests. C_loud and epsilon have new retry/accepted-result meanings. See the 3.0
-  upgrade guide (#66, #67).
+  [archived upgrade guide](https://github.com/xu-hao/howhard/blob/v3.0.0/docs/upgrading-3.0.md)
+  (#66, #67).
 
 ## 2.2.0 — 2026-11-08
 
@@ -109,7 +118,7 @@ distributions are separate from PyPI publication; this entry asserts neither.
   worker money uniformly for unknown or mixed price bases; never infer host charges.
 - Require decision v5, agent request v4 and semantic state v3. Older receipts cannot
   be replayed, while historical raw observations remain retained. Synchronize backend
-  and native plugin versions at 2.0.0; see the [upgrade guide](https://github.com/xu-hao/howhard/blob/main/docs/upgrading-2.0.md).
+  and native plugin versions at 2.0.0; see the [archived upgrade guide](https://github.com/xu-hao/howhard/blob/v2.0.0/docs/upgrading-2.0.md).
 - Extend the host skill with owned artifact capture, rate-card provenance, honest
   partial usage, attachment retries and explicit child-session binding limits.
 
