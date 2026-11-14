@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Reduce the spiral project mark's uniform line weight from 20 to 17 units while
+  retaining its 4.5 turns and solid black-and-white palette (#93).
+
 - Increase the abstract geometric spiral project mark from 2.5 to 4.5 turns and
   thicken its uniform stroke from 14 to 20 units, preserving its solid
   black-and-white palette (#91).
