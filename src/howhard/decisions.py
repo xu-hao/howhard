@@ -52,7 +52,7 @@ def load(config, source, *, for_scoring=False):
         if re.fullmatch(r"[0-9a-f]{64}", source) and digest(value) != source:
             raise HowHardError("decision: receipt content does not match its ID")
     if for_scoring and isinstance(value, dict) and value.get("format") in {
-        "howhard-decision-v1", "howhard-decision-v2", "howhard-decision-v3", "howhard-decision-v4", "howhard-decision-v5"
+        "howhard-decision-v1", "howhard-decision-v2", "howhard-decision-v3", "howhard-decision-v4", "howhard-decision-v5", "howhard-decision-v6"
     }:
         return None  # Preserve old evidence without replaying a removed predictor.
     if not isinstance(value, dict) or value.get("format") != DECISION_FORMAT:
@@ -117,8 +117,13 @@ def load(config, source, *, for_scoring=False):
         validate_selection(value["selection"], value["semantic"], value["capability"], value["cost_policy"])
         by_pair = {(c["model"], c["effort"]): c for c in inventory}
         for row in value["selection"]["cells"]:
-            if "credit_budget" in row and row["credit_budget"] != by_pair.get((row["model"], row["effort"]), {}).get("credit_budget"):
+            candidate = by_pair.get((row["model"], row["effort"]))
+            if candidate is None:
+                raise HowHardError("decision.selection: cell does not match native candidate inventory")
+            if row["credit_budget"] != candidate.get("credit_budget"):
                 raise HowHardError("decision.selection: credit_budget does not match native candidate inventory")
+            if row["cost_per_credit"] != candidate["cost_per_credit"]:
+                raise HowHardError("decision.selection: cost_per_credit does not match native candidate inventory")
         chosen_row = next((c for c in value["selection"]["cells"] if (c["model"], c["effort"]) == (value["chosen"]["model"], value["chosen"]["effort"])), None)
         if chosen_row is None or not chosen_row.get("credit_ok", True):
             raise HowHardError("decision.chosen: selected cell is not schedulable within credit_budget")

@@ -16,7 +16,7 @@ from .validation import HowHardError, keys, number
 SETTINGS = tomllib.loads(packaged("context.toml").decode())
 FORMAT = SETTINGS["format"]
 PROJECT_FORMAT = "howhard-project-v1"
-DECISION_FORMAT = "howhard-decision-v6"
+DECISION_FORMAT = "howhard-decision-v7"
 COUNTS = ("files", "source_bytes", "languages", "test_files", "manifests", "changed_files")
 FLAGS = ("has_ci", "has_lockfile", "has_typing")
 PARAMETERS = (*COUNTS, *FLAGS, "coverage")

@@ -64,7 +64,7 @@ def test_independent_baseline_and_original_semantic_inputs_are_preserved(project
     assert reader["context"]["task_text"] == result["context"]["task_text"]
     assert reader["memories"][0]["body"] == memory["body"]
     receipt = load(engine.config, result["decision_id"])
-    assert receipt["format"] == "howhard-decision-v6"
+    assert receipt["format"] == "howhard-decision-v7"
     assert receipt["semantic"]["memories"][0]["body"] == memory["body"]
     again = engine.pick("Y", result["context"]["task_text"], seed=42, native_candidates=inventory())
     assert again["chosen"] == result["chosen"]

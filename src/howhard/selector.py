@@ -18,19 +18,19 @@ def prepare(config, task, risk=None, context=None, native_candidates=None):
     from .native import preflight
     inventory = preflight(config, native_candidates)
     cells = [{"model": c["model"], "family": config.data["models"][c["model"]]["family"],
-              "effort": c["effort"], "price": c.get("usd_per_mtok"), "rate_card": c.get("rate_card"),
+              "effort": c["effort"], "credit_rate": c.get("usd_per_mtok"),
+              "rate_card": c.get("rate_card"), "cost_per_credit": c["cost_per_credit"],
               "credit_budget": deepcopy(c.get("credit_budget"))} for c in inventory]
     from .accounting import CATEGORIES
     for cell in cells:
         card = cell["rate_card"]
-        cell["priced"] = all(card["rates"][k] is not None for k in CATEGORIES) if card else cell["price"] is not None
+        cell["priced"] = all(card["rates"][k] is not None for k in CATEGORIES) if card else cell["credit_rate"] is not None
         cell["money_basis"] = "estimate:" + card["basis"] if card else "legacy-unspecified" if cell["priced"] else None
     bases = {c["money_basis"] for c in cells if c["priced"]}
     monetary = all(c["priced"] for c in cells) and len(bases) == 1
     if any(c["credit_budget"] is not None for c in cells) and not monetary:
         raise HowHardError("candidates: credit_budget requires uniform pricing across all candidates")
     for cell in cells:
-        cell["comparison_price"] = cell["price"] if monetary else 0.0
         cell["money_included"] = monetary
     result = {"task_type": task, "risk_class": cls, "constants": deepcopy(config.data["classes"][cls]),
               "cells": [{k: c[k] for k in ("model", "family", "effort")} for c in cells],
@@ -63,7 +63,7 @@ def choose(prepared, config, seed, parts):
         max_avail = max(row["available_credit_usd"] for row in available)
         raise HowHardError(
             f"candidates: no candidate has sufficient remaining credit to schedule task "
-            f"(min needed {min_needed:.6g} USD, max available {max_avail:.6g} USD)"
+            f"(minimum needed_credit_usd {min_needed:.6g} USD, maximum available_credit_usd {max_avail:.6g} USD)"
         )
     eligible = [row for row in schedulable if row["admissible"]]
     cap_met = bool(eligible)
@@ -100,7 +100,7 @@ def choose(prepared, config, seed, parts):
     for row in result["cells"]:
         if not result["cost_policy"]["worker_money_included"]:
             continue  # Unknown prices do not establish a cheaper monetary alternative.
-        if row["C_run"] >= chosen["C_run"]:
+        if row["session_cost_usd"] >= chosen["session_cost_usd"]:
             continue
         explanation = {k: row[k] for k in ("model", "family", "effort")}
         if not row.get("credit_ok", True):

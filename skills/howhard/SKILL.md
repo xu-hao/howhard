@@ -20,13 +20,14 @@ the host's actual tools execute the task.
    candidate list to a temporary JSON input and pass `--candidates` to `context` or
    `pick`. Unknown identities receive separate identity labels automatically;
    no model assumptions or statistical settings are required. Read [portable accounting](references/accounting.md) for explicit rate cards and
-   category forecasts when prices are known. Omit worker prices unless actually known:
-   if any are unknown, the backend compares all cells without worker money and labels
-   that limit. Do not supply zero or an API list price for unknown host charges. When
-   a priced candidate also has a known remaining credit envelope, attach optional
-   `credit_budget` (`available_usd` and optional `session_5h_remaining_usd`,
-   `weekly_7d_remaining_usd`) so cells whose forecasted `C_run` exceeds available credit
-   are excluded before selection.
+   category forecasts when rates are known. Candidate `usd_per_mtok` and `rate_card`
+   values represent raw list-price quota credit; optional `cost_per_credit` converts that
+   amount to actual session cost and defaults to `1.0` for pay-as-you-go. When actual
+   pricing is unknown, omit rates so the backend compares all cells without worker money
+   and labels that limit. When a priced candidate also has a known remaining credit
+   envelope, attach optional `credit_budget` (`available_credit_usd` and optional
+   `session_5h_remaining_credit_usd`, `weekly_7d_remaining_credit_usd`) so cells whose
+   `needed_credit_usd` exceeds available credit are excluded before selection.
 3. Run commands from the current project. `howhard paths --json` exposes the
    capture/state roots. Fresh Git worktrees share repository state automatically while
    each task captures its current checkout. Explicit store selection remains available.

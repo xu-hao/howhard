@@ -19,11 +19,16 @@ J = (C_run + lambda_per_hour * T + C_loud * P_loud + C_silent * P_silent)
     / max(probability_floor, 1 - P_loud)
 ```
 
+`C_run` is the expected actual session money cost (`session_cost_usd`). The candidate's
+`rate_card` or `usd_per_mtok` gives raw public API list-price quota credit, reported as
+`needed_credit_usd`; `cost_per_credit` converts that credit amount to session cost and
+defaults to `1.0` for pay-as-you-go. A free tier can set it to `0.0`.
+
 The caller supplies any nonempty number of distinct actual cells through `--candidates FILE` or Python
 `native_candidates`. External routers can explicitly select a saved list from
 `howhard.toml` with `--inventory NAME` or Python `inventory="NAME"` instead. Neither
 option is implicit, and the two sources cannot be combined. An empty list is refused. Each has `model`,
-`effort` and optional `usd_per_mtok` or `rate_card`, plus optional `credit_budget`. External routers can use stable
+`effort` and optional `usd_per_mtok` or `rate_card`, `cost_per_credit`, and `credit_budget`. External routers can use stable
 provider-qualified model IDs; execution and provider access belong to the caller.
 See {ref}`inventory configuration <external-router-inventories>`.
 No-effort, null and `model_default` controls are refused. Unknown identities receive distinct
@@ -75,20 +80,24 @@ component explanations or the policy that excluded them.
 ## Prices and measurements
 
 Prices belong to the host inventory. If any forecasted band/widened candidate is unpriced, worker money is
-omitted uniformly from every candidate's objective. Known `C_run` remains visible;
+omitted uniformly from every candidate's objective. Known `session_cost_usd` remains visible;
 unknown values stay null, and `cost_policy` labels the partial risk/time comparison.
-Fully priced inventories with a uniform money basis use the full objective. Never substitute provider API prices
-for unknown host charges. Tokens include cached/uncached input and output; T is hours.
+Fully priced inventories with a uniform rate basis use the full objective. Candidate
+`usd_per_mtok` and `rate_card` rates measure list-price quota credit; they do not
+establish actual host money cost when that differs. `cost_per_credit` supplies that
+conversion. Tokens include cached/uncached input and output; T is hours.
 Actual `tokens`, `seconds` and `cost_usd` remain null unless measured. Observations
 update both the threshold reader and shared predictive evidence from one stored row.
 
 An optional candidate `credit_budget` object enforces hard scheduling feasibility against
-forecasted `C_run`. It requires nonnegative finite `available_usd` and accepts optional
-`session_5h_remaining_usd` and `weekly_7d_remaining_usd` windows; when window fields are
-present, `available_usd` must match their minimum within `1e-6`. Any candidate supplying
+forecasted `needed_credit_usd`, independently of the session money cost. It requires
+nonnegative finite `available_credit_usd` and accepts optional
+`session_5h_remaining_credit_usd` and `weekly_7d_remaining_credit_usd` windows; when window fields are
+present, `available_credit_usd` must match their minimum within `1e-6`. Any candidate supplying
 `credit_budget` must also supply `rate_card` or `usd_per_mtok`, and an inventory that uses
 `credit_budget` requires uniform pricing across all candidates so `needed_credit_usd` is
-known on a single money basis. Each evaluated cell reports `needed_credit_usd`,
+known on a single credit basis. Each evaluated cell reports `session_cost_usd`,
+`cost_per_credit`, `needed_credit_usd`,
 `credit_budget`, `available_credit_usd` and `credit_ok` (`needed_credit_usd <= available_credit_usd`
 when `credit_budget` is present, or `true` when omitted), while
 `admissible` remains accepted-result silent-risk admissibility. Selection filters to
@@ -169,12 +178,14 @@ may have no per-run billed charge. Measured tokens do not require prices. Histor
 bases separately and preserve unknown coverage instead of treating missing values as zero.
 
 Native candidates may provide an explicit versioned `rate_card` with source, effective
-date, provider/model/tier, cost basis and category rates in USD per million tokens.
-Rates must come from a known applicable source; there are no built-in price assumptions.
+date, provider/model/tier, credit-rate basis and category rates in USD per million tokens.
+These rates represent raw public API list-price quota credit. They must come from a known
+applicable source; there are no built-in price assumptions. `cost_per_credit` converts the
+resulting credit burn to actual session cost.
 Category forecasts use `token_usage` alongside their consistent scalar `tokens` total;
 a rate-card candidate requires the category forecast. Legacy blended `usd_per_mtok`
-remains a total-token forecast with unspecified money basis. Comparisons omit worker
-money uniformly when prices are unknown or their bases differ. Current request, receipt
+remains a total-token forecast with unspecified credit basis. Comparisons omit worker
+money uniformly when rates are unknown or their bases differ. Current request, receipt
 and semantic format versions exclude older predictors from replay while retaining raw
 historical evidence.
 
@@ -271,8 +282,9 @@ policy. The resolved state subtree is excluded from capture and
 `project.read`, including symlink aliases; a state root equal to or containing the capture
 root is refused. Prepared calling-agent requests bind the worktree and reject sibling
 retrieve/decide. Requests use `howhard-agent-request-v5` and receipts use
-`howhard-decision-v6`, with required capability and accepted-result selection state.
-Earlier formats are refused; prepare a fresh request and decision.
+`howhard-decision-v7`, with required capability and accepted-result selection state.
+Receipts v1–v6 remain recognizable as historical store entries but are not replayed as
+new decisions; prepare a fresh request and decision to attach new feedback.
 Frozen-receipt observations and learning share the store across that project's worktrees.
 
 ## Inference cache and current interfaces
@@ -286,9 +298,9 @@ returns a typed conflict and refreshed request; see [concurrent clients](concurr
 Calling-agent submissions are audited with unknown external
 inference costs and latency rather than being counted as free provider calls.
 
-Receipts use `howhard-decision-v6`, requests `howhard-agent-request-v5`, semantic state
-`howhard-semantic-v4`. Older receipts and requests are refused for execution/feedback;
-old receipt forecasts are excluded from replay/report scoring. Existing raw observations
+Receipts use `howhard-decision-v7`, requests `howhard-agent-request-v5`, semantic state
+`howhard-semantic-v4`. Older receipts and requests are refused for new execution feedback;
+v1–v6 receipt forecasts are excluded from replay/report scoring. Existing raw observations
 and semantic memories remain stored. Old posterior/prior artifacts are unused and left
 untouched. Removed interfaces include `--llm`, `HOWHARD_LLM`, `--cache`, `Engine(cache_path=...)`,
 `fit`, posterior/prior attributes, `export-prior`, `import-prior`, and prior/cache/transfer

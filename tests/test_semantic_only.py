@@ -86,7 +86,7 @@ def test_removed_statistical_configuration_is_rejected(tmp_path, setting):
     assert not (tmp_path / ".howhard").exists()
 
 
-@pytest.mark.parametrize("version", ["howhard-decision-v3", "howhard-decision-v4"])
+@pytest.mark.parametrize("version", ["howhard-decision-v3", "howhard-decision-v4", "howhard-decision-v6"])
 def test_legacy_receipts_do_not_block_evidence_memory_or_reports(tmp_path, version):
     from howhard.context import canonical, digest
     from howhard.decisions import load
@@ -95,10 +95,19 @@ def test_legacy_receipts_do_not_block_evidence_memory_or_reports(tmp_path, versi
     choice = engine.pick("task", native_candidates=INVENTORY, seed=1)
     legacy = load(engine.config, choice["decision_id"])
     legacy["format"] = version
-    legacy.pop("semantic")
+    if version == "howhard-decision-v6":
+        for candidate in legacy["native_candidates"]:
+            candidate.pop("cost_per_credit", None)
+        for cell in legacy["selection"]["cells"]:
+            cell.pop("cost_per_credit", None)
+            cell.pop("session_cost_usd", None)
+    else:
+        legacy.pop("semantic")
     legacy_id = digest(legacy)
     legacy_path = engine.config.state_root / "decisions" / f"{legacy_id}.json"
     legacy_path.write_bytes(canonical(legacy))
+    if version == "howhard-decision-v6":
+        assert load(engine.config, legacy_id, for_scoring=True) is None
     row = engine.observe_decision(choice["decision_id"], "clean", id="historical")
     journal = engine.config.path(engine.config.data["journal"])
     row["decision_id"] = legacy_id
