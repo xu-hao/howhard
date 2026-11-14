@@ -12,15 +12,19 @@ The SVG was authored directly by Codex on 2026-11-14, following the user's selec
 spiral concept and approval to publish the proposed geometric SVG replacement.
 It replaces the earlier generated PNG. No third-party artwork was used.
 
-Geometry starts with the Archimedean spiral `r(t) = 8 + 180t / (5π)` for
-`0 ≤ t ≤ 5π`, rotated so its outer end points toward the lower right. Forty cubic
+Geometry starts with the Archimedean spiral `r(t) = 8 + 180t / (9π)` for
+`0 ≤ t ≤ 9π`, rotated so its outer end points toward the lower right. Seventy-two cubic
 Bézier segments approximate the curve using its analytic positions and derivatives.
 The path is uniformly scaled to fit a 360-unit bounding extent and centered in a
-512 by 512 view box. Its stroke is 14 units wide. Browser rendering may antialias
+512 by 512 view box. Its stroke is 20 units wide. Browser rendering may antialias
 edges; the vector artwork itself uses only the two colors above.
 
 The SVG's SHA-256 checksum is
-`b4070d47f435b81c965aefe6818b7e2a4f96a14bb0379b80c4717ce34924a37f`.
+`592be631ae2d9c674415ae5ac8fc9ef3c6ecd9f1277ae9772b83879c5b5c64ec`.
 
 [Issue #89](https://github.com/xu-hao/howhard/issues/89) tracks replacing the soft
 raster image with the precise black-and-white abstract spiral.
+
+[Issue #91](https://github.com/xu-hao/howhard/issues/91) tracks increasing the
+spiral from 2.5 to 4.5 turns and thickening its uniform stroke from 14 to 20 units,
+while preserving its two colors and geometric styling.

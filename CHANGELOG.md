@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Increase the abstract geometric spiral project mark from 2.5 to 4.5 turns and
+  thicken its uniform stroke from 14 to 20 units, preserving its solid
+  black-and-white palette (#91).
+
 - Replace the raster project mark with a geometric SVG spiral using only solid
   black and white, with uniform lines and no shading or texture (#89).
 
