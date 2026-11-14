@@ -180,9 +180,10 @@ failure leaves the outcome durable and does not create a second execution.
 Routing seeds reproduce selection given recorded forecasts. They do not make fresh
 LLM calls deterministic. Cached forecasts and content-addressed receipts support replay;
 operational timing/cache metadata may differ between invocations.
-Receipts use `howhard-decision-v6` with capability and accepted-result selection state.
+Receipts use `howhard-decision-v7` with capability and accepted-result selection state.
 Requests use `howhard-agent-request-v5` and semantic state uses `howhard-semantic-v4`. Older
-receipts cannot be used for new feedback or predictive scoring; raw evidence remains intact.
+decision receipts v1–v6 remain in the store but are excluded from predictive scoring; raw
+evidence already linked to them remains intact.
 
 Native host selection supplies `--candidates FILE` to `context` or `pick` before any
 baseline/reader forecasts. The inventory is generated from actual host controls, not a

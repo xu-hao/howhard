@@ -36,7 +36,7 @@ def parser():
         if name in ("pick", "summary", "context"):
             command.add_argument("--risk", help="optional risk policy override")
             inventory_options = command.add_mutually_exclusive_group(required=True)
-            inventory_options.add_argument("--candidates", metavar="FILE", help="JSON available model/effort inventory, with optional category rate_card or legacy usd_per_mtok")
+            inventory_options.add_argument("--candidates", metavar="FILE", help="JSON available model/effort inventory, with optional list-price credit rate_card or usd_per_mtok, cost_per_credit and credit_budget")
             inventory_options.add_argument("--inventory", metavar="NAME", help="explicitly select a configured inventory")
         if name == "evidence":
             command.add_argument("id")
@@ -128,13 +128,15 @@ def render(result):
         if result["needs_review"]:
             lines.append("Independent review is required before release.")
     lines.append(f"Task: {result['task_type']}  Risk: {result['risk_class']}  Constants: {json.dumps(result['constants'], sort_keys=True)}")
-    lines.append("family/effort  P_clean [95%]  P_loud [95%]  P_silent [95%]  P_silent accepted [95%]  run USD  time h  J* USD  sampled J*  admissible")
+    lines.append("family/effort  P_clean [95%]  P_loud [95%]  P_silent [95%]  P_silent accepted [95%]  session_cost_usd (cost)  needed_credit_usd (credit)  time h  J* USD  sampled J*  admissible")
     for row in result["cells"]:
         fields = [f"{row['family']}/{row['effort']}"]
         for name in ("P_clean", "P_loud", "P_silent", "P_silent_accepted"):
             p = row[name]
             fields.append(f"{p['mean']:.3f} [{p['lower']:.3f}, {p['upper']:.3f}]")
-        fields.extend((f"{row['C_run']:.4f}" if row["C_run"] is not None else "unknown", f"{row['T']:.4f}", f"{row['J']:.4f}",
+        fields.extend((f"{row['session_cost_usd']:.4f}" if row["session_cost_usd"] is not None else "unknown",
+                       f"{row['needed_credit_usd']:.4f}" if row["needed_credit_usd"] is not None else "unknown",
+                       f"{row['T']:.4f}", f"{row['J']:.4f}",
                        f"{row['sampled_J']:.4f}" if "sampled_J" in row else "—", str(row["admissible"])))
         lines.append("  ".join(fields))
     for reason in result.get("why", []):

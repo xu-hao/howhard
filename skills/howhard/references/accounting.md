@@ -264,11 +264,13 @@ omit the card unless every segment has the same applicable identity; a mismatch 
 refused. Retry collection once without the card to retain measured tokens and available
 client estimates, preserving the durable outcome; never guess a matching price.
 
-A candidate accepts either `rate_card` or legacy blended `usd_per_mtok`, never both.
+A native candidate accepts either `rate_card` or legacy blended `usd_per_mtok`, never both;
+both are raw public API list-price quota credit rates. Optional `cost_per_credit` converts
+that forecast credit amount to actual session money cost and defaults to `1.0`.
 `basis: "charge"` describes the card's source basis; multiplying forecast or measured
 tokens by it is still an estimate, not a billing record. A required missing category rate
 makes the corresponding total unknown. Money is omitted uniformly when candidates have
-unknown prices or mixed bases; do not fill missing prices with zero.
+unknown rates or mixed bases; do not fill missing rates with zero.
 
 For rate-card candidates, every independent and memory forecast must additionally supply
 all six nonoverlapping finite nonnegative `token_usage` categories. For example,

@@ -89,7 +89,7 @@ def test_unbounded_inventory_runs_both_stages_and_validates_receipt(tmp_path, co
     assert len(receipt["native_candidates"]) == count
     assert len(receipt["capability"]["cells"]) == count
     assert len(receipt["semantic"]["worlds"]["llm"]) == 4
-    assert receipt["format"] == "howhard-decision-v6"
+    assert receipt["format"] == "howhard-decision-v7"
 
 
 @pytest.mark.parametrize("defect", ["missing", "duplicate", "unknown", "empty"])

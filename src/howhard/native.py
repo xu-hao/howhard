@@ -10,11 +10,11 @@ FORMAT = "howhard-native-v1"
 
 
 def credit_budget(value):
-    keys(value, ["available_usd"], ["session_5h_remaining_usd", "weekly_7d_remaining_usd"], "candidate.credit_budget")
+    keys(value, ["available_credit_usd"], ["session_5h_remaining_credit_usd", "weekly_7d_remaining_credit_usd"], "candidate.credit_budget")
     normalized = {key: number(amount, f"candidate.credit_budget.{key}", nonnegative=True) for key, amount in value.items()}
-    windows = [normalized[k] for k in ("session_5h_remaining_usd", "weekly_7d_remaining_usd") if k in normalized]
-    if windows and abs(normalized["available_usd"] - min(windows)) > 1e-6:
-        raise HowHardError("candidate.credit_budget: available_usd must match minimum remaining window credit")
+    windows = [normalized[k] for k in ("session_5h_remaining_credit_usd", "weekly_7d_remaining_credit_usd") if k in normalized]
+    if windows and abs(normalized["available_credit_usd"] - min(windows)) > 1e-6:
+        raise HowHardError("candidate.credit_budget: available_credit_usd must match minimum remaining window credit")
     return normalized
 
 
@@ -23,7 +23,7 @@ def validate(candidates):
         raise HowHardError("candidates: expected at least one native model/effort cell")
     result, seen = [], set()
     for cell in candidates:
-        keys(cell, ["model", "effort"], ["usd_per_mtok", "rate_card", "credit_budget"], "native candidate")
+        keys(cell, ["model", "effort"], ["usd_per_mtok", "rate_card", "cost_per_credit", "credit_budget"], "native candidate")
         model = text(cell["model"], "candidate.model")
         effort = text(cell["effort"], "candidate.effort", label=True)
         if len(model) > 256 or any(ord(c) < 32 for c in model) or len(effort) > 64 or effort == "model_default":
@@ -37,17 +37,19 @@ def validate(candidates):
             rate_card(cell["rate_card"])
             if "usd_per_mtok" in cell or cell["rate_card"]["model"] != model:
                 raise HowHardError("candidate.rate_card: model must match and blended price is exclusive")
-        price = cell.get("usd_per_mtok")
-        if price is not None:
-            price = number(price, "candidate.usd_per_mtok", nonnegative=True)
+        credit_rate = cell.get("usd_per_mtok")
+        if credit_rate is not None:
+            credit_rate = number(credit_rate, "candidate.usd_per_mtok", nonnegative=True)
+        cost_per_credit = number(cell.get("cost_per_credit", 1.0), "candidate.cost_per_credit", nonnegative=True)
         budget = None
         if "credit_budget" in cell:
             budget = credit_budget(cell["credit_budget"])
-            if "rate_card" not in cell and price is None:
+            if "rate_card" not in cell and credit_rate is None:
                 raise HowHardError("candidate.credit_budget: requires rate_card or usd_per_mtok")
         result.append({"model": model, "effort": effort,
-                       **({"usd_per_mtok": price} if "usd_per_mtok" in cell else {}),
+                       **({"usd_per_mtok": credit_rate} if "usd_per_mtok" in cell else {}),
                        **({"rate_card": deepcopy(cell["rate_card"])} if "rate_card" in cell else {}),
+                       "cost_per_credit": cost_per_credit,
                        **({"credit_budget": deepcopy(budget)} if budget is not None else {})})
     if any("credit_budget" in c for c in result):
         from .accounting import CATEGORIES

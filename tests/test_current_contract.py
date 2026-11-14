@@ -52,7 +52,7 @@ def test_receipts_require_identity_inventory_and_cost_policy(tmp_path, missing):
         load(engine.config, value)
 
 
-@pytest.mark.parametrize("version", ["howhard-decision-v1", "howhard-decision-v2", "howhard-decision-v3", "howhard-decision-v4", "howhard-decision-v5"])
+@pytest.mark.parametrize("version", ["howhard-decision-v1", "howhard-decision-v2", "howhard-decision-v3", "howhard-decision-v4", "howhard-decision-v5", "howhard-decision-v6"])
 def test_superseded_receipt_formats_are_refused(tmp_path, version):
     engine = Engine(directory=tmp_path)
     decision = engine.pick("task", native_candidates=INVENTORY, seed=1)

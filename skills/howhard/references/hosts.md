@@ -38,11 +38,13 @@ feedback but does not make old candidates active in future decisions. Existing c
 model identities retain their historical mapping; an ambiguous configured family/effort
 collision is refused rather than silently merging distinct forecasts.
 
-Native worker pricing is unknown unless intentionally supplied for that execution
-surface. A subscription or bundled allowance is not an observed zero price or an API
-list-price quote. Omit it when unknown. The backend then excludes worker money uniformly
-from the entire candidate comparison, keeps unknown `C_run` null and labels the partial
-objective. It still records actual measured costs/resources when supplied.
+Native rates are unknown unless intentionally supplied for that execution surface.
+`usd_per_mtok` and candidate `rate_card` values represent raw list-price quota credit;
+`cost_per_credit` converts them to actual session money cost. Set that ratio from known
+subscription or bundled allowance terms, and use `0.0` for a free tier. If the rate is
+unknown, omit it; the backend then excludes worker money uniformly from the candidate
+comparison, keeps unknown `session_cost_usd` null and labels the partial objective. It
+still records actual measured costs/resources when supplied.
 
 Delegate using the chosen exact native controls. If another known cell actually ran, raw
 `observe --native` records it with frozen task/project context and a provenance note,

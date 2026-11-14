@@ -39,7 +39,9 @@ def test_python_selection_uses_explicitly_named_cross_provider_list(tmp_path, me
     assert len({c["family"] for c in cells}) == 2
     if method == "pick":
         assert result["chosen"]["model"] in {c["model"] for c in INVENTORY}
-        assert load(engine.config, result["decision_id"])["native_candidates"] == INVENTORY
+        assert load(engine.config, result["decision_id"])["native_candidates"] == [
+            {**candidate, "cost_per_credit": 1.0} for candidate in INVENTORY
+        ]
 
 
 @pytest.mark.parametrize("method", ["prepare", "pick", "summary"])
@@ -98,7 +100,7 @@ def test_supplied_availability_is_complete_and_receipt_feedback_survives_config_
     later = Engine(path, llm=FixtureLLM())
     result = later.pick("bookkeeping", inventory="router", seed=3)
     assert result["chosen"]["model"] == INVENTORY[1]["model"]
-    assert result["native_candidates"] == [INVENTORY[1]]
+    assert result["native_candidates"] == [{**INVENTORY[1], "cost_per_credit": 1.0}]
     observed = later.observe_decision(choice["decision_id"], "clean", id="earlier-run")
     assert observed["model"] == INVENTORY[0]["model"]
     before = deepcopy(later.raw_rows)

@@ -471,21 +471,26 @@ def augment(engine, prepared, response, payload, snapshot, usage):
             row[f"P_{outcome}"]["upper"] = max(quantile(.975), row[f"P_{outcome}"]["mean"])
         seconds = sum(weights[k] * indexed[k][pair]["seconds"] for k in weights)
         cell = next(c for c in cells if (c["family"], c["effort"]) == pair)
-        row["C_run"] = sum(weights[k] * forecast_cost(indexed[k][pair], cell) for k in weights) if cell["priced"] else None
+        needed_credit = sum(weights[k] * forecast_credit(indexed[k][pair], cell) for k in weights) if cell["priced"] else None
+        row["cost_per_credit"] = cell["cost_per_credit"]
+        row["needed_credit_usd"] = needed_credit
+        row["session_cost_usd"] = needed_credit * cell["cost_per_credit"] if needed_credit is not None else None
+        row["C_run"] = row["session_cost_usd"]
         row["cost_basis"] = cell["money_basis"]
-        row["needed_credit_usd"] = row["C_run"]
         row["credit_budget"] = deepcopy(cell["credit_budget"])
-        row["available_credit_usd"] = cell["credit_budget"]["available_usd"] if cell["credit_budget"] is not None else None
-        row["credit_ok"] = True if row["available_credit_usd"] is None else (row["needed_credit_usd"] <= row["available_credit_usd"])
+        row["available_credit_usd"] = cell["credit_budget"]["available_credit_usd"] if cell["credit_budget"] is not None else None
+        row["credit_ok"] = True if row["available_credit_usd"] is None else (
+            row["needed_credit_usd"] is not None and row["needed_credit_usd"] <= row["available_credit_usd"]
+        )
         row["T"] = seconds / 3600
         c = result["constants"]
         from .success import cost, denominator, accepted_risk, envelope
         loud, silent = row["P_loud"]["mean"], row["P_silent"]["mean"]
         row["expected_attempts"] = 1/denominator(loud)
-        row["J"] = cost(row["C_run"] if cell["money_included"] else 0., row["T"], loud, silent, c)
+        row["J"] = cost(row["session_cost_usd"] if cell["money_included"] else 0., row["T"], loud, silent, c)
         row["P_silent_accepted"] = envelope([(accepted_risk(indexed[k][pair]["loud"], indexed[k][pair]["silent"]), weights[k]) for k in weights], accepted_risk(loud, silent))
         row["admissible"] = row["P_silent_accepted"]["upper"] <= c["epsilon"]
-    result["cells"].sort(key=lambda row: (row["C_run"] if row["C_run"] is not None else float("inf"), row["family"], row["effort"]))
+    result["cells"].sort(key=lambda row: (row["session_cost_usd"] if row["session_cost_usd"] is not None else float("inf"), row["family"], row["effort"]))
     result["semantic"] = {"format": FORMAT, "prompt_version": SETTINGS["prompt_version"], "backend": usage["backend"],
                           "memory_revision": snapshot["revision"], "memories": deepcopy(snapshot["memories"]),
                           "worlds": worlds, "exposures": exposures, "beliefs": state, "reason": response["reason"], "retrieval": payload["retrieval"],
@@ -497,11 +502,16 @@ def augment(engine, prepared, response, payload, snapshot, usage):
     return result, cells
 
 
-def forecast_cost(row, cell):
+def forecast_credit(row, cell):
     if cell["rate_card"] is not None:
         from .accounting import price
         return price(row["token_usage"], cell["rate_card"])
-    return row["tokens"] / 1e6 * cell["price"] if cell["price"] is not None else None
+    return row["tokens"] / 1e6 * cell["credit_rate"] if cell["credit_rate"] is not None else None
+
+
+def forecast_session_cost(row, cell):
+    needed_credit = forecast_credit(row, cell)
+    return needed_credit * cell["cost_per_credit"] if needed_credit is not None else None
 
 
 def sample(prepared, seed):
@@ -517,7 +527,7 @@ def sample(prepared, seed):
         for i, cell in enumerate(cells):
             row = indexed[cell["family"], cell["effort"]]
             d = denominator(row["P_loud"]["mean"])
-            parts["run"][0, i] = row["C_run"]/d if cell["money_included"] else 0.
+            parts["run"][0, i] = row["session_cost_usd"]/d if cell["money_included"] else 0.
             parts["loud"][0, i] = constants["C_loud"]*row["P_loud"]["mean"]/d
             parts["silent"][0, i] = constants["C_silent"]*row["P_silent"]["mean"]/d
             parts["time"][0, i] = constants["lambda_per_hour"]*row["T"]/d
@@ -535,7 +545,7 @@ def sample(prepared, seed):
         calibration_rows.append(calibrated)
         p = rng.dirichlet(np.asarray(calibrated["probabilities"])*calibrated["concentration"])
         d = denominator(p[1])
-        parts["run"][0, i] = forecast_cost(row, cell)/d if cell["money_included"] else 0.
+        parts["run"][0, i] = forecast_session_cost(row, cell)/d if cell["money_included"] else 0.
         parts["loud"][0, i] = p[1]*constants["C_loud"]/d
         parts["silent"][0, i] = p[2]*constants["C_silent"]/d
         parts["time"][0, i] = row["seconds"]/3600*constants["lambda_per_hour"]/d

@@ -50,7 +50,7 @@ def envelope(values, mean):
 
 def calibration(result, state, expert, cell, row):
     """Moment-match Dirichlet variance to evidence precision and expert disagreement."""
-    from .semantic import OUTCOMES, panel_lookup, forecast_cost
+    from .semantic import OUTCOMES, panel_lookup, forecast_session_cost
     pair = cell["family"], cell["effort"]
     aggregate = next(c for c in result["cells"] if (c["family"], c["effort"]) == pair)
     probabilities = np.maximum([row[k] for k in OUTCOMES], SETTINGS["belief"]["probability_floor"])
@@ -71,7 +71,7 @@ def calibration(result, state, expert, cell, row):
     concentration = max(policy["min_concentration"], min(policy["max_concentration"], min(concentrations)))
     # Delta-method uncertainty for the same-cell retry objective, including
     # the covariance between loud and silent probabilities in the Dirichlet.
-    run = forecast_cost(row, cell) if cell["money_included"] else 0.
+    run = forecast_session_cost(row, cell) if cell["money_included"] else 0.
     constants = result["constants"]
     expected = cost(run, row["seconds"]/3600, probabilities[1], probabilities[2], constants)
     d = denominator(probabilities[1])
@@ -81,7 +81,7 @@ def calibration(result, state, expert, cell, row):
     expert_costs = []
     for e in state["beliefs"]["experts"]:
         prediction = panel_lookup(state["worlds"][e["key"]])[pair]
-        money = forecast_cost(prediction, cell) if cell["money_included"] else 0.
+        money = forecast_session_cost(prediction, cell) if cell["money_included"] else 0.
         expert_costs.append((e["weight"], cost(money, prediction["seconds"]/3600, prediction["loud"], prediction["silent"], constants)))
     mean_cost = sum(w*j for w, j in expert_costs)
     variance = max(variance, sum(w*(j-mean_cost)**2 for w, j in expert_costs))
@@ -110,25 +110,37 @@ def validate_selection(selection, semantic, capability, cost_policy):
     if not isinstance(selection["cells"], list):
         raise HowHardError("decision.selection.cells: expected array")
     for row in selection["cells"]:
-        keys(row, ["model", "family", "effort", "P_clean", "P_loud", "P_silent", "C_run", "cost_basis", "T", "expected_attempts", "J", "P_silent_accepted", "admissible", "sampled_J"],
-             ["needed_credit_usd", "credit_budget", "available_credit_usd", "credit_ok"], where="selection cell")
+        keys(row, ["model", "family", "effort", "P_clean", "P_loud", "P_silent", "C_run", "session_cost_usd", "cost_per_credit", "needed_credit_usd", "cost_basis", "T", "expected_attempts", "J", "P_silent_accepted", "admissible", "sampled_J", "credit_budget", "available_credit_usd", "credit_ok"], where="selection cell")
         for field in ("T", "expected_attempts", "J", "sampled_J"):
             number(row[field], "selection."+field, nonnegative=True)
+        cost_per_credit = number(row["cost_per_credit"], "selection.cost_per_credit", nonnegative=True)
+        for field in ("C_run", "session_cost_usd", "needed_credit_usd"):
+            if row[field] is not None:
+                number(row[field], "selection."+field, nonnegative=True)
+        needed_credit = row["needed_credit_usd"]
+        session_cost = row["session_cost_usd"]
+        expected_session_cost = needed_credit * cost_per_credit if needed_credit is not None else None
+        if (session_cost is None) != (expected_session_cost is None) or (
+            session_cost is not None and abs(session_cost - expected_session_cost) > 1e-10 * max(1., abs(expected_session_cost))
+        ):
+            raise HowHardError("decision.selection: session_cost_usd must match needed_credit_usd times cost_per_credit")
+        if (row["C_run"] is None) != (session_cost is None) or (
+            session_cost is not None and abs(row["C_run"] - session_cost) > 1e-10 * max(1., abs(session_cost))
+        ):
+            raise HowHardError("decision.selection: C_run must match session_cost_usd")
         if type(row["admissible"]) is not bool:
             raise HowHardError("decision.selection: admissibility must be boolean")
-        if "credit_budget" in row and row["credit_budget"] is not None:
+        if row["credit_budget"] is not None:
             from .native import credit_budget
             credit_budget(row["credit_budget"])
-        if "needed_credit_usd" in row and row["needed_credit_usd"] != row["C_run"]:
-            raise HowHardError("decision.selection: needed_credit_usd must match C_run")
-        if "available_credit_usd" in row:
-            expected_available = row["credit_budget"]["available_usd"] if row.get("credit_budget") is not None else None
-            if row["available_credit_usd"] != expected_available:
-                raise HowHardError("decision.selection: available_credit_usd does not match credit_budget")
-        if "credit_ok" in row:
-            expected_ok = True if row.get("available_credit_usd") is None else (row.get("needed_credit_usd") is not None and row["needed_credit_usd"] <= row["available_credit_usd"])
-            if type(row["credit_ok"]) is not bool or row["credit_ok"] != expected_ok:
-                raise HowHardError("decision.selection: inconsistent credit_ok status")
+        expected_available = row["credit_budget"]["available_credit_usd"] if row["credit_budget"] is not None else None
+        if row["available_credit_usd"] != expected_available:
+            raise HowHardError("decision.selection: available_credit_usd does not match credit_budget")
+        expected_ok = True if row["available_credit_usd"] is None else (
+            needed_credit is not None and needed_credit <= row["available_credit_usd"]
+        )
+        if type(row["credit_ok"]) is not bool or row["credit_ok"] != expected_ok:
+            raise HowHardError("decision.selection: inconsistent credit_ok status")
         for field in ("P_clean", "P_loud", "P_silent", "P_silent_accepted"):
             keys(row[field], ["mean", "lower", "upper"], where="selection."+field)
             for value in row[field].values():
@@ -151,9 +163,9 @@ def validate_selection(selection, semantic, capability, cost_policy):
         expected_hours = sum(e["weight"]*panels[e["key"]][pair]["seconds"] for e in experts)/3600
         if abs(row["T"]-expected_hours) > 1e-10:
             raise HowHardError("decision.selection: expected time mismatch")
-        run = row["C_run"] if cost_policy["worker_money_included"] else 0.
+        run = row["session_cost_usd"] if cost_policy["worker_money_included"] else 0.
         if run is not None:
-            number(run, "selection.C_run", nonnegative=True)
+            number(run, "selection.session_cost_usd", nonnegative=True)
         expected_cost = cost(run, expected_hours, loud, silent, constants)
         if abs(row["J"]-expected_cost) > 1e-8*max(1, expected_cost) or abs(row["expected_attempts"]-1/denominator(loud)) > 1e-8:
             raise HowHardError("decision.selection: cost-to-accepted-result mismatch")

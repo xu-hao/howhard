@@ -5,12 +5,15 @@
 Run from the current project directory with the installed howhard backend visible.
 Use the host's own tools/settings to discover actual model and effort/control IDs.
 Write their cells to a temporary `host-candidates.json` file outside project source.
-Each object has `model` and `effort`; optional `usd_per_mtok` is a known blended worker
-price with unspecified basis. Alternatively supply an explicit category `rate_card` and
-category forecasts using [portable accounting](accounting.md). When remaining quota credit
-windows are known for a uniformly priced inventory, optional `credit_budget`
-(`available_usd` plus optional `session_5h_remaining_usd` and `weekly_7d_remaining_usd`)
-enforces hard scheduling feasibility (`credit_ok`) against forecasted `C_run`. Neither price source is an assumed API price. Omitted/null price means unknown, including
+Each object has `model` and `effort`; optional `usd_per_mtok` is a blended raw public API
+list-price quota credit rate. Alternatively supply an explicit category `rate_card` and
+category forecasts using [portable accounting](accounting.md). Optional `cost_per_credit`
+converts forecast credit to actual session money cost and defaults to `1.0`. When remaining
+quota credit windows are known for a uniformly priced inventory, optional `credit_budget`
+(`available_credit_usd` plus optional `session_5h_remaining_credit_usd` and
+`weekly_7d_remaining_credit_usd`) enforces hard scheduling feasibility (`credit_ok`) against
+`needed_credit_usd`. Selection uses `session_cost_usd`; neither rate source represents
+actual session money cost when `cost_per_credit` differs from `1.0`. Omitted/null rate means unknown, including
 when the ID also exists in howhard's shipped registry. Do not fabricate an example
 inventory, prices, family labels, weights or statistical settings.
 
@@ -103,12 +106,14 @@ or invent a writer window. Explicit memory writer revisions remain strict.
 
 The decision includes the receipt `decision_id`, `chosen` native ID/control,
 `cost_policy`, and cap/review status. With any unpriced cell, `worker_money_included`
-is false and the comparison excludes worker money for all cells. Unknown `C_run` is
-null; known estimated worker costs remain visible but do not affect that comparison.
+is false and the comparison excludes worker money for all cells. Unknown
+`session_cost_usd` is null; known session costs remain visible but do not affect that comparison.
 `J` then includes expected retry-adjusted risk/time cost while omitting unknown worker
-money. The full objective is `(C_run + lambda*T + C_loud*P_loud + C_silent*P_silent)
+money. The full objective uses `C_run = session_cost_usd` and is
+`(session_cost_usd + lambda*T + C_loud*P_loud + C_silent*P_silent)
 / max(probability_floor, 1-P_loud)`: loud attempts retry the same cell. Fully priced native
-inventories with a uniform money basis include worker money. Mixed bases omit it uniformly. `needs_review` still requires independent review;
+inventories with a uniform credit-rate basis include worker money using each candidate's
+`cost_per_credit`. Mixed bases omit it uniformly. `needs_review` still requires independent review;
 the risk cap is checked against the joint-expert envelope for accepted-result defects,
 `P_silent/(1-P_loud)`. Concentration is calibrated from forecast spread and actual expert
 evidence. Exploration requires both a close mean J and supporting cost uncertainty.
