@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Replace the raster project mark with a geometric SVG spiral using only solid
+  black and white, with uniform lines and no shading or texture (#89).
+
 - Publish the clean monochrome spiral project mark in the README and documentation
   homepage, with image provenance recorded under `docs/assets/` (#87).
 

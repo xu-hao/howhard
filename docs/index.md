@@ -1,6 +1,6 @@
 # howhard
 
-```{image} assets/spiral.png
+```{image} assets/spiral.svg
 :alt: howhard spiral mark
 :width: 160px
 :align: center
