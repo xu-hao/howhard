@@ -1,5 +1,11 @@
 # howhard
 
+```{image} assets/spiral.png
+:alt: howhard spiral mark
+:width: 160px
+:align: center
+```
+
 howhard helps you save AI credits by choosing the model and reasoning effort each
 task needs. It starts with an LLM's judgment, learns from your project's real
 results, and corrects earlier success records when bugs are discovered later.
@@ -84,6 +90,7 @@ concurrency
 - [Packaging and release](releasing.md) — versioning, distribution validation
   and publication.
 - [Changelog](changelog.md) — release history and links to archived upgrade guides.
+- [Image provenance](assets/README.md) — origin and presentation of the project mark.
 - [Session handoff](session_handoff_format.md) — reporting completed and open work.
 
 ```{toctree}
@@ -93,5 +100,6 @@ concurrency
 contributing
 releasing
 changelog
+assets/README
 session_handoff_format
 ```

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Publish the clean monochrome spiral project mark in the README and documentation
+  homepage, with image provenance recorded under `docs/assets/` (#87).
+
 - Reorganize Read the Docs into Getting started, Technical deep dive, Reference and
   Project. Add a technical report explaining the credit-saving objective, independent
   LLM priors, Bayesian capability updates, predictive memory weights, risk envelopes,
