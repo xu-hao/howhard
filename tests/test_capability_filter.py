@@ -89,7 +89,7 @@ def test_unbounded_inventory_runs_both_stages_and_validates_receipt(tmp_path, co
     assert len(receipt["native_candidates"]) == count
     assert len(receipt["capability"]["cells"]) == count
     assert len(receipt["semantic"]["worlds"]["llm"]) == 4
-    assert receipt["format"] == "howhard-decision-v7"
+    assert receipt["format"] == "howhard-decision-v8"
 
 
 @pytest.mark.parametrize("defect", ["missing", "duplicate", "unknown", "empty"])
@@ -450,13 +450,28 @@ def test_v1_linear_and_geometric_receipts_validate_replay_and_observe_while_v2_i
         band = engine.decide(pending["request_id"], resp)
         return finish(engine, band)["decision_id"]
 
-    # 1. Mint a pre-#77 linear-tail howhard-capability-v1 v6 receipt (after_count == 4).
+    def to_decision_v7(receipt, cap_format):
+        receipt["format"] = "howhard-decision-v7"
+        receipt["semantic"]["format"] = "howhard-semantic-v4"
+        receipt["semantic"]["prompt_version"] = "semantic-reader-v5"
+        receipt["semantic"].pop("duration_observations", None)
+        for sc in receipt["semantic"]["sampling"]["cells"]:
+            sc.pop("duration", None)
+        cap = receipt["capability"]
+        cap["format"] = cap_format
+        for c in cap["cells"]:
+            c.pop("P_timely", None)
+        for ev in cap["evidence"]:
+            for extra in ("active_seconds", "forecast_active_seconds", "timely_strength"):
+                ev.pop(extra, None)
+
+    # 1. Mint a pre-#77 linear-tail howhard-capability-v1 v7 receipt (after_count == 4).
     raw_linear_id = mint_with_memory()
     mem_key = f"filter:memory:{memory['id']}:{memory['version']}"
 
     def to_linear_v1(receipt):
+        to_decision_v7(receipt, "howhard-capability-v1")
         cap = receipt["capability"]
-        cap["format"] = "howhard-capability-v1"
         policy = cap["policy"]
         cap["worlds"]["filter:llm"] = _linear_tail_cdf(cap["baseline"], policy)
         cap["worlds"][mem_key] = _linear_tail_cdf(cap["memory_filters"][0]["filter"], policy)
@@ -466,29 +481,31 @@ def test_v1_linear_and_geometric_receipts_validate_replay_and_observe_while_v2_i
 
     linear_v1_id, linear_v1_receipt = _rewrite_stored_receipt(engine, raw_linear_id, to_linear_v1)
 
-    # 2. Mint an unversioned 5e96dcc geometric-tail howhard-capability-v1 v6 receipt.
+    # 2. Mint an unversioned 5e96dcc geometric-tail howhard-capability-v1 v7 receipt.
     raw_geom_id = mint_with_memory()
-
-    def to_geometric_v1(receipt):
-        receipt["capability"]["format"] = "howhard-capability-v1"
-
-    geom_v1_id, geom_v1_receipt = _rewrite_stored_receipt(engine, raw_geom_id, to_geometric_v1)
+    geom_v1_id, geom_v1_receipt = _rewrite_stored_receipt(
+        engine, raw_geom_id, lambda r: to_decision_v7(r, "howhard-capability-v1")
+    )
 
     # Confirm linear and geometric overpowered tails genuinely differ for after_count == 4.
     assert linear_v1_receipt["capability"]["worlds"]["filter:llm"] != geom_v1_receipt["capability"]["worlds"]["filter:llm"]
 
-    # 3. Mint a new howhard-capability-v2 receipt directly.
-    v2_id = mint_with_memory()
+    # 3. Mint a frozen howhard-capability-v2 v7 receipt and a new howhard-capability-v3 v8 receipt directly.
+    raw_v2_id = mint_with_memory()
+    v2_id, _ = _rewrite_stored_receipt(engine, raw_v2_id, lambda r: to_decision_v7(r, "howhard-capability-v2"))
+    v3_id = mint_with_memory()
 
-    # Load all three stored receipts cleanly and verify newly minted format is v2.
+    # Load all stored receipts cleanly and verify newly minted format is v3 inside decision v8.
     loaded_linear = load(engine.config, linear_v1_id)
     loaded_geom = load(engine.config, geom_v1_id)
     loaded_v2 = load(engine.config, v2_id)
+    loaded_v3 = load(engine.config, v3_id)
     assert loaded_linear["capability"]["format"] == "howhard-capability-v1"
     assert loaded_geom["capability"]["format"] == "howhard-capability-v1"
     assert loaded_v2["capability"]["format"] == "howhard-capability-v2"
+    assert loaded_v3["capability"]["format"] == "howhard-capability-v3"
 
-    # CLI observe --decision and positional observe succeed across all three receipts.
+    # CLI observe --decision and positional observe succeed across all four receipts.
     chosen_linear = loaded_linear["chosen"]
     assert main(["observe", "task", chosen_linear["model"], chosen_linear["effort"], "clean",
                  "--decision", linear_v1_id, "--id", "obs-linear-v1", "--json"]) == 0
@@ -497,8 +514,10 @@ def test_v1_linear_and_geometric_receipts_validate_replay_and_observe_while_v2_i
     capsys.readouterr()
     assert main(["observe", v2_id, "clean", "--id", "obs-v2", "--json"]) == 0
     capsys.readouterr()
+    assert main(["observe", v3_id, "clean", "--id", "obs-v3", "--json"]) == 0
+    capsys.readouterr()
 
-    # CLI context + belief replay and report succeed on a store containing all three receipts.
+    # CLI context + belief replay and report succeed on a store containing all four receipts.
     assert main(["context", "task", "--text", "Follow-up rollback", "--candidates", str(candidates_file), "--json"]) == 0
     ctx_out = json.loads(capsys.readouterr().out)
     assert ctx_out["stage"] == "filter"
@@ -507,11 +526,11 @@ def test_v1_linear_and_geometric_receipts_validate_replay_and_observe_while_v2_i
     beliefs = engine.memory_beliefs()
     assert beliefs["unscored_runs"] == 0
     by_expert = {e["key"]: e for e in beliefs["experts"]}
-    assert by_expert["filter:llm"]["evidence_count"] == 3
+    assert by_expert["filter:llm"]["evidence_count"] == 4
 
     assert main(["report", "--json"]) == 0
     rep_out = json.loads(capsys.readouterr().out)
-    assert len(rep_out["filter_quality"]["executions"]) == 3
+    assert len(rep_out["filter_quality"]["executions"]) == 4
 
     # Tampered worlds on v1 (corrupted probability or mixed linear/geometric across experts) are rejected.
     tampered_v1 = deepcopy(loaded_linear)
@@ -525,7 +544,7 @@ def test_v1_linear_and_geometric_receipts_validate_replay_and_observe_while_v2_i
     with pytest.raises(HowHardError, match="prior probabilities do not match the filter"):
         load(engine.config, mixed_v1)
 
-    # Tampered worlds or legacy linear worlds on v2 are rejected; unsupported format versions are rejected.
+    # Tampered worlds or legacy linear worlds on v2/v3 are rejected; unsupported format versions are rejected.
     tampered_v2 = deepcopy(loaded_v2)
     tampered_v2["capability"]["worlds"]["filter:llm"][overpowered_key] = 0.919999
     with pytest.raises(HowHardError, match="prior probabilities do not match the filter"):
@@ -536,7 +555,12 @@ def test_v1_linear_and_geometric_receipts_validate_replay_and_observe_while_v2_i
     with pytest.raises(HowHardError, match="prior probabilities do not match the filter"):
         load(engine.config, linear_in_v2)
 
-    unsupported_fmt = deepcopy(loaded_v2)
-    unsupported_fmt["capability"]["format"] = "howhard-capability-v3"
+    tampered_v3 = deepcopy(loaded_v3)
+    tampered_v3["capability"]["worlds"]["filter:llm"][overpowered_key] = 0.919999
+    with pytest.raises(HowHardError, match="prior probabilities do not match the filter"):
+        load(engine.config, tampered_v3)
+
+    unsupported_fmt = deepcopy(loaded_v3)
+    unsupported_fmt["capability"]["format"] = "howhard-capability-v4"
     with pytest.raises(HowHardError, match="decision.capability.format: unsupported version"):
         load(engine.config, unsupported_fmt)

@@ -131,8 +131,10 @@ do not dilute the selected evidence. See the [retrieval contract](retrieval.md).
 
 For the cell actually executed, the system compares each pre-recorded expert forecast
 with the independent no-memory LLM forecast. Log probability ratios for clean/loud/silent outcomes,
-plus broad log-normal resource scores when measurements are present, accumulate into
-tempered predictive weights. Older exposures are mildly discounted so weights can adapt.
+plus broad log-normal resource scores for tokens and `effective_active_seconds` (`active_seconds`
+when measured, otherwise scalar `seconds`) when measurements are present, accumulate into
+tempered predictive weights. Forecasted `seconds` explicitly estimates active execution
+duration excluding external queue wait. Older exposures are mildly discounted so weights can adapt.
 All scales and priors ship in `data/semantic.toml`; users do not tune them.
 
 Only explicit, changed memory overrides earn exposure. Unspecified/unretrieved cells
@@ -180,9 +182,12 @@ failure leaves the outcome durable and does not create a second execution.
 Routing seeds reproduce selection given recorded forecasts. They do not make fresh
 LLM calls deterministic. Cached forecasts and content-addressed receipts support replay;
 operational timing/cache metadata may differ between invocations.
-Receipts use `howhard-decision-v7` with capability and accepted-result selection state.
-Requests use `howhard-agent-request-v5` and semantic state uses `howhard-semantic-v4`. Older
-decision receipts v1–v6 remain in the store but are excluded from predictive scoring; raw
+New receipts use `howhard-decision-v8` with capability (`howhard-capability-v3`) and
+accepted-result selection state. Requests use `howhard-agent-request-v5` and semantic state
+uses `howhard-semantic-v5` (`semantic-reader-v6`). Persisted `howhard-decision-v7`
+(`howhard-semantic-v4`, `howhard-capability-v1`/`v2`) receipts continue to load, validate,
+accept feedback, and participate in belief replay and reporting under their frozen rules.
+Older decision receipts v1–v6 remain in the store but are excluded from predictive scoring; raw
 evidence already linked to them remains intact.
 
 Native host selection supplies `--candidates FILE` to `context` or `pick` before any
@@ -262,11 +267,15 @@ and evidence-count machinery serves both, normalized over each reader's particip
 The threshold posterior applies the retrieved censored likelihood to the weighted
 stage-1 prior; it has no independent observation store or feedback path.
 
-Fine selection charges expected same-cell retries to an accepted result. Its silent
-cap uses joint-expert accepted-result defect ratios. Sampling uses envelope/spread and
-recorded expert exposures to calibrate bounded Dirichlet concentration. Mean-cost and
-cost-uncertainty bands restrict exploration; an unmet cap disables all draws and
-requires review. Receipts preserve the formula, constants, calibration and explanation.
+Fine selection charges expected same-cell retries to an accepted result and calibrates
+active duration from expert `seconds` forecasts plus shrunk `effective_active_seconds`
+log-residuals on similar retrieved executions, pricing the log-normal right-tail
+expectation `exp(mu + sigma^2 / 2)`. Its silent cap uses joint-expert accepted-result
+defect ratios. Sampling uses envelope/spread and recorded expert exposures to calibrate
+bounded Dirichlet concentration alongside log-normal active-duration draws. Mean-cost and
+cost-uncertainty bands (including log-normal and between-expert duration variance)
+restrict exploration; an unmet cap disables all draws and requires review. Receipts
+preserve the formula, constants, calibration and explanation.
 A consistency disagreement compares raw stage-2 `P_clean` with stage-1 `P_clear`; it
 does not substitute the accepted-result risk ratio or silently alter the chosen cell.
 See [capability filtering](capability.md) and {ref}`selection <accepted-result-selection>`.

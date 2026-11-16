@@ -74,7 +74,14 @@ replacing every example value with verified invocation evidence:
 ```
 
 `start` and `end` are byte offsets, not lines or character counts; use the exact captured
-range, with `end` exclusive. Optional `coordinate_id` names the same append-only
+range, with `end` exclusive. Optional finite nonnegative `seconds`, `active_seconds`, and
+`queue_wait_seconds` may also be supplied in the manifest (and emitted in
+`howhard-execution-usage-v1`); when both `active_seconds` and `queue_wait_seconds` are
+given and `seconds` is omitted, `seconds` is derived as their sum, and when all three are
+given they must agree within `1e-6`. Duration fields remain valid even when token
+telemetry is `partial` or `unavailable`; when no usage artifact is collected, still pass
+measured `--seconds` (and `--active-seconds` / `--queue-wait-seconds` when known) directly
+to `howhard observe`. Optional `coordinate_id` names the same append-only
 artifact across relocations; its default is the absolute source path plus adapter.
 Offsets on different artifact coordinates cannot establish disjoint ownership for the
 same session. A newly created output file starts at zero; obtain its final

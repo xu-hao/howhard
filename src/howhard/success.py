@@ -5,11 +5,37 @@ import math
 
 import numpy as np
 
+from .context import DECISION_FORMAT, LEGACY_DECISION_V7
 from .llm import SETTINGS
 from .validation import HowHardError, keys, number
 
 DEFAULTS = {"min_concentration": 8., "max_concentration": 1000000., "prior_strength": 8.,
             "explore_within": .1, "uncertainty_multiplier": 1.}
+DURATION_PRIOR_STRENGTH = 1.0
+MAX_DURATION_LOG_SD = 2.0
+
+
+def calibrate_duration(forecast_seconds, pair, duration_observations):
+    forecast = number(forecast_seconds, "duration.forecast_seconds", nonnegative=True)
+    matching = [obs for obs in duration_observations if (obs["family"], obs["effort"]) == pair and obs["weight"] > 0]
+    weight = math.fsum(obs["weight"] for obs in matching)
+    if weight <= 0:
+        mu = math.log(max(1.0, forecast)) if forecast > 0 else 0.0
+        return {"forecast_seconds": forecast, "expected_seconds": forecast,
+                "mu": mu, "sigma": 0.0, "evidence_weight": 0.0}
+    y0 = math.log(max(1.0, forecast))
+    ys = [math.log(max(1.0, obs["active_seconds"])) for obs in matching]
+    ws = [obs["weight"] for obs in matching]
+    y_bar = math.fsum(w * y for w, y in zip(ws, ys)) / weight
+    alpha = weight / (weight + DURATION_PRIOR_STRENGTH)
+    delta = y_bar - y0
+    mu = y0 + alpha * delta
+    sample_var = math.fsum(w * (y - y_bar) ** 2 for w, y in zip(ws, ys)) / weight
+    sigma_sq = min(MAX_DURATION_LOG_SD ** 2, alpha * sample_var + alpha * (1.0 - alpha) * (delta ** 2))
+    sigma = math.sqrt(max(0.0, sigma_sq))
+    expected = math.exp(mu + 0.5 * sigma_sq)
+    return {"forecast_seconds": forecast, "expected_seconds": expected,
+            "mu": mu, "sigma": sigma, "evidence_weight": weight}
 
 
 def validate_policy(policy):
@@ -69,28 +95,43 @@ def calibration(result, state, expert, cell, row):
         estimates[name] = {"between_experts": spread, "envelope": width_variance, "evidence": count_variance}
         concentrations.append(p*(1-p)/variance-1)
     concentration = max(policy["min_concentration"], min(policy["max_concentration"], min(concentrations)))
+    duration_obs = state.get("duration_observations", [])
+    dur = calibrate_duration(row["seconds"], pair, duration_obs)
+    expert_durations = {}
+    for e in state["beliefs"]["experts"]:
+        prediction = panel_lookup(state["worlds"][e["key"]])[pair]
+        expert_durations[e["key"]] = calibrate_duration(prediction["seconds"], pair, duration_obs)
+    mean_mu = sum(e["weight"] * expert_durations[e["key"]]["mu"] for e in state["beliefs"]["experts"])
+    between_log_var = sum(e["weight"] * (expert_durations[e["key"]]["mu"] - mean_mu) ** 2
+                          for e in state["beliefs"]["experts"])
+    dur["between_experts_log_variance"] = between_log_var
     # Delta-method uncertainty for the same-cell retry objective, including
-    # the covariance between loud and silent probabilities in the Dirichlet.
+    # Dirichlet outcome covariance and log-normal active-duration right-tail variance.
     run = forecast_session_cost(row, cell) if cell["money_included"] else 0.
     constants = result["constants"]
-    expected = cost(run, row["seconds"]/3600, probabilities[1], probabilities[2], constants)
+    hours = dur["expected_seconds"] / 3600
+    expected = cost(run, hours, probabilities[1], probabilities[2], constants)
     d = denominator(probabilities[1])
     gradient = np.array([0., (constants["C_loud"]+expected)/d, constants["C_silent"]/d])
     covariance = (np.diag(probabilities)-np.outer(probabilities, probabilities))/(concentration+1)
-    variance = max(0., float(gradient @ covariance @ gradient))
+    outcome_variance = max(0., float(gradient @ covariance @ gradient))
+    sigma_cost_sq = min(MAX_DURATION_LOG_SD ** 2, max(dur["sigma"] ** 2, between_log_var))
+    hours_variance = (math.exp(sigma_cost_sq) - 1.0) * (hours ** 2)
+    variance = outcome_variance + ((constants["lambda_per_hour"] / d) ** 2) * hours_variance
     expert_costs = []
     for e in state["beliefs"]["experts"]:
         prediction = panel_lookup(state["worlds"][e["key"]])[pair]
         money = forecast_session_cost(prediction, cell) if cell["money_included"] else 0.
-        expert_costs.append((e["weight"], cost(money, prediction["seconds"]/3600, prediction["loud"], prediction["silent"], constants)))
+        e_hours = expert_durations[e["key"]]["expected_seconds"] / 3600
+        expert_costs.append((e["weight"], cost(money, e_hours, prediction["loud"], prediction["silent"], constants)))
     mean_cost = sum(w*j for w, j in expert_costs)
     variance = max(variance, sum(w*(j-mean_cost)**2 for w, j in expert_costs))
     return {"family": cell["family"], "effort": cell["effort"], "expert": expert["key"],
             "evidence_count": count, "probabilities": probabilities.tolist(), "variance_sources": estimates,
-            "concentration": concentration, "cost_sd": math.sqrt(variance)}
+            "concentration": concentration, "duration": dur, "cost_sd": math.sqrt(variance)}
 
 
-def validate_selection(selection, semantic, capability, cost_policy):
+def validate_selection(selection, semantic, capability, cost_policy, *, decision_format=DECISION_FORMAT):
     """Validate frozen objective/cap meanings without reinterpreting older receipts."""
     keys(selection, ["objective", "retry_policy", "constants", "sampling_policy", "cells", "exploration", "cap_met", "needs_review", "on_cap_unmet"], where="decision.selection")
     if selection["objective"] != "cost-to-accepted-result" or selection["retry_policy"] != "same-cell-until-non-loud":
@@ -160,8 +201,15 @@ def validate_selection(selection, semantic, capability, cost_policy):
         expected_risk = envelope([(accepted_risk(panels[e["key"]][pair]["loud"], panels[e["key"]][pair]["silent"]), e["weight"]) for e in experts], accepted_risk(loud, silent))
         if row["P_silent_accepted"] != expected_risk or row["admissible"] != (expected_risk["upper"] <= constants["epsilon"]):
             raise HowHardError("decision.selection: accepted-result risk/cap mismatch")
-        expected_hours = sum(e["weight"]*panels[e["key"]][pair]["seconds"] for e in experts)/3600
-        if abs(row["T"]-expected_hours) > 1e-10:
+        if decision_format == LEGACY_DECISION_V7:
+            expected_hours = sum(e["weight"]*panels[e["key"]][pair]["seconds"] for e in experts)/3600
+        else:
+            duration_obs = semantic["duration_observations"]
+            expected_hours = sum(
+                e["weight"] * calibrate_duration(panels[e["key"]][pair]["seconds"], pair, duration_obs)["expected_seconds"]
+                for e in experts
+            ) / 3600
+        if abs(row["T"]-expected_hours) > 1e-10 * max(1., expected_hours):
             raise HowHardError("decision.selection: expected time mismatch")
         run = row["session_cost_usd"] if cost_policy["worker_money_included"] else 0.
         if run is not None:

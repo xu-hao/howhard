@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Separate active execution duration from passive queue wait with optional
+  `active_seconds` and `queue_wait_seconds` across `observe`, `--measurement-corrections`,
+  `howhard-usage-manifest-v1` / `howhard-execution-usage-v1`, `evidence`, and `report`,
+  scoring forecasted active `seconds` against `effective_active_seconds`, calibrating
+  empirical active duration and log-normal right-tail variance (`exp(mu + sigma^2 / 2)`)
+  in `J`, `cost_sd`, and Thompson `sample()`, preventing slow `clean` runs with severe
+  active-duration overruns from prematurely capping capability `upper` (`P_timely`), and
+  versioning new receipts as `howhard-decision-v8` (`howhard-semantic-v5`,
+  `howhard-capability-v3`) while preserving frozen `howhard-decision-v7` validation and
+  replay (#99).
+
 ## 3.2.0 — 2026-11-14
 
 - Separate actual session money cost from list-price quota credit with optional

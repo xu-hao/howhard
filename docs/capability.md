@@ -29,9 +29,15 @@ includes a reliable cell when one exists. If no cell reaches that target, the ta
 is unattainable within this inventory and cannot anchor the band. "No reliable cell" is
 then an explicit case: the anchor is the lower cut, and the gain cut alone, measured
 against the best attained probability, ends the band. The upper cut never falls back
-to the strongest cell merely because the target is unmet. Stronger cells remain
-reachable through stronger-only widening. Price, retry cost, and accepted-result silent
-risk belong to stage 2.
+to the strongest cell merely because the target is unmet. To prevent slow, high-thrash
+clean runs from prematurely pruning faster stronger cells as overpowered before stage 2
+can compare time, the upper cut also checks a monotone timely-clearing posterior
+`P_timely`: clean precedents whose effective active duration exceeds `1.5x` their
+decision forecast or faster stronger clean precedents receive reduced timely-clearing
+strength (`(1.5 / overrun_ratio)^2`), keeping `hi = max(hi_clear, hi_timely)` wide enough
+for `J` to evaluate faster stronger cells without counting internal tool exit codes.
+Stronger cells remain reachable through stronger-only widening. Price, retry cost, and
+accepted-result silent risk belong to stage 2.
 
 The order assumes a useful scalar approximation to the demands of this task. Related
 tasks and noisy outcomes do not establish a universal ranking, causal explanation,
@@ -153,12 +159,14 @@ retain the selected cell's original classification and position. Excluded cells 
 never ran contribute no outcome. Reported rates are descriptive diagnostics.
 
 Configuration defaults and validation are in [configuration](configuration.md).
-Decision v6 receipts freeze the full filter, expert priors, task-specific order,
-probabilities, band, widening, disagreement data, fine forecasts, and accepted-result
-selection. Newly aggregated capability blocks carry `format = "howhard-capability-v2"`
-and require geometric overpowered-tail expert priors; existing decision v6 receipts
-carrying `"howhard-capability-v1"` remain valid for loading, feedback, belief replay,
-and reporting when all participating expert priors uniformly match either the legacy
-linear overpowered tail or the geometric overpowered tail. Older decision formats
-remain inspectable as raw artifacts but cannot supply new receipt-bound feedback or
-predictive scores; old observation rows remain evidence.
+Decision v8 receipts freeze the full filter, expert priors, task-specific order,
+clearing and timely-clearing probabilities, band, widening, disagreement data, fine
+forecasts, and accepted-result selection. Newly aggregated capability blocks carry
+`format = "howhard-capability-v3"`, require geometric overpowered-tail expert priors, and
+record `P_timely` alongside precedent active-duration overrun metadata. Persisted decision
+v7 receipts carrying `"howhard-capability-v2"` or `"howhard-capability-v1"` remain valid
+for loading, feedback, belief replay, and reporting under their frozen version rules (when
+v1 expert priors uniformly match either the legacy linear overpowered tail or the
+geometric overpowered tail). Older decision formats v1–v6 remain inspectable as raw
+artifacts but cannot supply new receipt-bound feedback or predictive scores; old
+observation rows remain evidence.

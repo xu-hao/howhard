@@ -51,7 +51,8 @@ the host's actual tools execute the task.
    retrieved experience for up to eight cited `memory_filters`. Submit the combined
    filter to `decide`, then use its NEW `stage=forecast` request ID to obtain calibrated
    rows only for the band. Supply `forecasts` and up to eight `memory_forecasts` under
-   the same independent-baseline rule. Handle one explicit re-filter and stronger-only
+   the same independent-baseline rule; forecasted `seconds` is expected **active**
+   execution duration excluding external scheduler/queue wait. Handle one explicit re-filter and stronger-only
    widening requests; never truncate an inventory/band or forecast excluded cells.
    The backend learns the order and threshold from actual similar executions, with
    prior-only placement labels for unseen cells. Placement is task-specific; there is
@@ -87,9 +88,12 @@ the host's actual tools execute the task.
    provenance note, without attaching the unexecuted decision. If neither accepted
    controls nor exact reported identity establishes a match and the actual cell is
    unknown, leave it unscored and report that; do not fabricate a registration.
-   Record the outcome before collecting usage. Read [portable accounting](references/accounting.md)
+   Record the outcome before collecting usage, and **always** record measured wall-clock
+   `--seconds` (plus `--active-seconds` and `--queue-wait-seconds` when external queue
+   wait is known; if both breakdown fields are passed, `--seconds` may be omitted and is
+   derived as their sum) even when token telemetry is unavailable. Read [portable accounting](references/accounting.md)
    to collect an explicitly owned artifact and attach it with a stable amendment ID.
-   Missing binding or usage remains unknown; host-control acceptance is not token evidence.
+   Missing token binding or usage remains unknown; host-control acceptance is not token evidence.
 7. Append changed feedback to clean/loud/silent with `amends`, preserving original
    context and measurements. Use `memory learn-context` and its full `outcome_history`
    to consider original and correction notes. Apply the writer response with the exact

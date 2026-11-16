@@ -52,8 +52,8 @@ def parser():
             command.add_argument("--decision", metavar="ID_OR_PATH", help="use the original task text and project snapshot")
             command.add_argument("--cause", choices=("depth", "capability", "unrecorded"))
             command.add_argument("--execution-usage", metavar="FILE", help="normalized execution usage envelope")
-            command.add_argument("--measurement-corrections", metavar="FILE", help="amendment-only JSON map of tokens/seconds/cost_usd replacements; null clears to unknown")
-            for option, kind in (("tokens", int), ("seconds", float), ("cost-usd", float), ("ticket", str), ("note", str), ("amends", str), ("date", str), ("id", str)):
+            command.add_argument("--measurement-corrections", metavar="FILE", help="amendment-only JSON map of tokens/seconds/active_seconds/queue_wait_seconds/cost_usd replacements; null clears to unknown")
+            for option, kind in (("tokens", int), ("seconds", float), ("active-seconds", float), ("queue-wait-seconds", float), ("cost-usd", float), ("ticket", str), ("note", str), ("amends", str), ("date", str), ("id", str)):
                 command.add_argument(f"--{option}", type=kind)
         if name in ("decide", "retrieve"):
             command.add_argument("request_id")
@@ -248,7 +248,7 @@ def main(argv=None):
             result = {"observed": engine.attach_usage(args.execution_id, read_json(args.manifest), id=args.id),
                       "memory_update": engine.last_memory_update}
         elif args.command == "observe":
-            options = {key: getattr(args, key) for key in ("cause", "tokens", "seconds", "cost_usd", "ticket", "note", "amends", "date", "id") if getattr(args, key) is not None}
+            options = {key: getattr(args, key) for key in ("cause", "tokens", "seconds", "active_seconds", "queue_wait_seconds", "cost_usd", "ticket", "note", "amends", "date", "id") if getattr(args, key) is not None}
             if args.execution_usage is not None:
                 options["execution_usage"] = read_json(args.execution_usage)
             if args.measurement_corrections is not None:

@@ -60,9 +60,21 @@ def report(engine):
     known_worker = sum(row["cost_usd"] for row in engine.rows if row["cost_usd"] is not None)
     unknown_worker = sum(row["cost_usd"] is None for row in engine.rows)
     from .accounting import summary
+    from .storage import effective_active_seconds
+    def _time_summary(values):
+        known = sum(v for v in values if v is not None)
+        unknown = sum(v is None for v in values)
+        return {"known_seconds": known, "unknown_runs": unknown, "total_seconds": known if not unknown else None}
+    worker_time = {
+        "seconds": _time_summary([row.get("seconds") for row in engine.rows]),
+        "active_seconds": _time_summary([row.get("active_seconds") for row in engine.rows]),
+        "queue_wait_seconds": _time_summary([row.get("queue_wait_seconds") for row in engine.rows]),
+        "effective_active_seconds": _time_summary([effective_active_seconds(row) for row in engine.rows]),
+    }
     return {"filter_quality": filter_quality(engine), "execution_accounting": summary(engine.rows), "project": engine.config.data["project"], "runs": len(engine.rows), "outcomes": {k: outcomes[k] for k in OUTCOMES},
             "forecast_metrics": metrics, "missing_receipts": missing, "unsupported_receipts": unsupported,
             "worker_cost": {"basis": "legacy-unspecified", "known_usd": known_worker, "unknown_runs": unknown_worker, "total_usd": known_worker if not unknown_worker else None},
+            "worker_time": worker_time,
             "inference": {"calls": len(measured), "failed_calls": sum(e["status"] == "failed" for e in measured),
                           "seconds": sum(e["seconds"] for e in measured), "known_usd": known_inference,
                           "external_submissions": len(external), "external_cost_and_latency": "unknown" if external else "none",

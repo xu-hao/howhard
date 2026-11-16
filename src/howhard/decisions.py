@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import re
 
-from .context import DECISION_FORMAT, FORMAT, canonical, digest, validate_project, validate_text
+from .context import DECISION_FORMAT, FORMAT, LEGACY_DECISION_V7, canonical, digest, validate_project, validate_text
 from .files import atomic_write
 from .validation import HowHardError, keys, text
 
@@ -55,7 +55,7 @@ def load(config, source, *, for_scoring=False):
         "howhard-decision-v1", "howhard-decision-v2", "howhard-decision-v3", "howhard-decision-v4", "howhard-decision-v5", "howhard-decision-v6"
     }:
         return None  # Preserve old evidence without replaying a removed predictor.
-    if not isinstance(value, dict) or value.get("format") != DECISION_FORMAT:
+    if not isinstance(value, dict) or value.get("format") not in (DECISION_FORMAT, LEGACY_DECISION_V7):
         raise HowHardError("decision.format: unsupported version; prepare a new capability-filtered decision")
     keys(value, ["format", "project", "project_identity", "task_type", "risk_class", "chosen", "seed", "context", "cost_policy", "native_candidates", "semantic", "capability", "selection"], ["request_snapshot"], where="decision")
     if "request_snapshot" in value:
@@ -75,7 +75,7 @@ def load(config, source, *, for_scoring=False):
     def priced(c):
         return all(v is not None for v in c["rate_card"]["rates"].values()) if "rate_card" in c else c.get("usd_per_mtok") is not None
     from .semantic import validate_receipt as validate_semantic
-    validate_semantic(value["semantic"])
+    validate_semantic(value["semantic"], decision_format=value["format"])
     if "request_snapshot" in value and value["request_snapshot"]["memory_revision"] != value["semantic"]["memory_revision"]:
         raise HowHardError("request_snapshot: memory revision differs from frozen semantic inputs")
     forecast_pairs = {(c["family"], c["effort"]) for c in value["semantic"]["worlds"]["llm"]}
@@ -112,9 +112,10 @@ def load(config, source, *, for_scoring=False):
     validate_project(value["context"]["project_context"])
     if "semantic" in value:
         from .capability import validate_receipt as validate_capability
-        validate_capability(value["capability"], inventory, value["semantic"], value["chosen"])
+        validate_capability(value["capability"], inventory, value["semantic"], value["chosen"],
+                            decision_format=value["format"], constants=value["selection"].get("constants"))
         from .success import validate_selection
-        validate_selection(value["selection"], value["semantic"], value["capability"], value["cost_policy"])
+        validate_selection(value["selection"], value["semantic"], value["capability"], value["cost_policy"], decision_format=value["format"])
         by_pair = {(c["model"], c["effort"]): c for c in inventory}
         for row in value["selection"]["cells"]:
             candidate = by_pair.get((row["model"], row["effort"]))

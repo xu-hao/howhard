@@ -78,8 +78,17 @@ def validate_measurement(value, key, where):
             raise HowHardError(f"{where}.{key}: expected integer or null")
 
 
+def effective_active_seconds(row):
+    active = row.get("active_seconds")
+    if active is not None:
+        return float(active)
+    seconds = row.get("seconds")
+    return float(seconds) if seconds is not None else None
+
+
 def validate_row(row, config, where):
-    keys(row, ROW_KEYS, ["task_text", "project_context", "context_encoder", "decision_id", "measurement_corrections", "execution_usage"], where=where)
+    from .accounting import validate_duration_breakdown
+    keys(row, ROW_KEYS, ["active_seconds", "queue_wait_seconds", "task_text", "project_context", "context_encoder", "decision_id", "measurement_corrections", "execution_usage"], where=where)
     try:
         if not isinstance(row["observed_at"], str) or datetime.fromisoformat(row["observed_at"]).utcoffset() is None:
             raise ValueError
@@ -121,6 +130,10 @@ def validate_row(row, config, where):
         raise HowHardError(f"{where}.cause: expected depth, capability or unrecorded")
     for key in ("tokens", "seconds", "cost_usd"):
         validate_measurement(row[key], key, where)
+    for key in ("active_seconds", "queue_wait_seconds"):
+        if key in row:
+            validate_measurement(row[key], key, where)
+    validate_duration_breakdown(row["seconds"], row.get("active_seconds"), row.get("queue_wait_seconds"), where)
     if "execution_usage" in row:
         if row["amends"] is not None:
             raise HowHardError("execution_usage: amendments use measurement_corrections")
@@ -129,12 +142,15 @@ def validate_row(row, config, where):
             validate(row["execution_usage"])
             if row["execution_usage"]["execution_id"] != row["id"]:
                 raise HowHardError("execution_usage.execution_id: must match original row ID")
+            for key in ("seconds", "active_seconds", "queue_wait_seconds"):
+                if row.get(key) is not None and row["execution_usage"].get(key) is not None and abs(float(row[key]) - float(row["execution_usage"][key])) > 1e-6:
+                    raise HowHardError(f"{where}.{key}: conflicts with execution_usage.{key}")
     if "measurement_corrections" in row:
         corrections = row["measurement_corrections"]
         location = f"{where}.measurement_corrections"
         if row["amends"] is None:
             raise HowHardError(f"{location}: only permitted on amendments")
-        keys(corrections, [], ["tokens", "seconds", "cost_usd", "execution_usage"], where=location)
+        keys(corrections, [], ["tokens", "seconds", "active_seconds", "queue_wait_seconds", "cost_usd", "execution_usage"], where=location)
         if not corrections:
             raise HowHardError(f"{location}: expected at least one corrected measurement")
         for key, value in corrections.items():
@@ -144,9 +160,13 @@ def validate_row(row, config, where):
                     validate(value)
             else:
                 validate_measurement(value, key, location)
+        if any(k in corrections for k in ("seconds", "active_seconds", "queue_wait_seconds")):
+            validate_duration_breakdown(
+                corrections.get("seconds"), corrections.get("active_seconds"), corrections.get("queue_wait_seconds"), location
+            )
     if row["amends"] is not None:
-        if any(row[k] is not None for k in ("tokens", "seconds", "cost_usd")):
-            raise HowHardError(f"{where}.amends: amendments require null tokens, seconds and cost_usd")
+        if any(row.get(k) is not None for k in ("tokens", "seconds", "active_seconds", "queue_wait_seconds", "cost_usd")):
+            raise HowHardError(f"{where}.amends: amendments require null tokens, seconds, active_seconds, queue_wait_seconds and cost_usd")
 
 
 def parse_rows(blobs, config):
@@ -212,20 +232,45 @@ def snapshot(config):
 
 
 def effective_rows(config, rows):
+    from .accounting import validate_duration_breakdown
     originals, roots = {}, {}
     for row in rows:
         if row["amends"] is None:
             roots[row["id"]] = row["id"]
             model = config.data["models"][row["model"]]
-            originals[row["id"]] = {**row, "family": model["family"], "weight": model.get("weight", 1.0),
-                                     "resolved_effort": row["effort"]}
+            eff = {**row, "family": model["family"], "weight": model.get("weight", 1.0),
+                   "resolved_effort": row["effort"]}
+            usage = eff.get("execution_usage")
+            if usage is not None:
+                for key in ("active_seconds", "queue_wait_seconds", "seconds"):
+                    if eff.get(key) is None and usage.get(key) is not None:
+                        eff[key] = float(usage[key])
+            if eff.get("seconds") is None and eff.get("active_seconds") is not None and eff.get("queue_wait_seconds") is not None:
+                eff["seconds"] = float(eff["active_seconds"]) + float(eff["queue_wait_seconds"])
+            originals[row["id"]] = eff
         else:
             root = roots[row["amends"]]
             roots[row["id"]] = root
-            originals[root]["outcome"] = row["outcome"]
-            originals[root]["cause"] = row["cause"]
-            originals[root].update(row.get("measurement_corrections", {}))
+            target = originals[root]
+            target["outcome"] = row["outcome"]
+            target["cause"] = row["cause"]
+            corrections = row.get("measurement_corrections", {})
+            if "execution_usage" in corrections and corrections["execution_usage"] is not None:
+                usage = corrections["execution_usage"]
+                for key in ("active_seconds", "queue_wait_seconds", "seconds"):
+                    if key not in corrections and usage.get(key) is not None:
+                        target[key] = float(usage[key])
+                if "seconds" not in corrections and usage.get("seconds") is None and usage.get("active_seconds") is not None and usage.get("queue_wait_seconds") is not None:
+                    target["seconds"] = float(usage["active_seconds"]) + float(usage["queue_wait_seconds"])
+            target.update(corrections)
+            if ("active_seconds" in corrections or "queue_wait_seconds" in corrections) and "seconds" not in corrections:
+                if target.get("active_seconds") is not None and target.get("queue_wait_seconds") is not None:
+                    target["seconds"] = float(target["active_seconds"]) + float(target["queue_wait_seconds"])
     for row in originals.values():
+        validate_duration_breakdown(
+            row.get("seconds"), row.get("active_seconds"), row.get("queue_wait_seconds"),
+            f"effective row {row['id']!r}",
+        )
         usage = row.get("execution_usage")
         if usage is not None and usage["provenance"].get("completed") and usage["segments"] and all(s.get("reported_tokens") is not None for s in usage["segments"]):
             row["tokens"] = sum(s["reported_tokens"] for s in usage["segments"])
@@ -246,7 +291,7 @@ def append_bytes(path, blob):
 
 
 def observe(config, task_type, model, effort, outcome, *, _automatic_context=(), native=False, _preserve_outcome=False, **options):
-    allowed = {"cause", "tokens", "seconds", "cost_usd", "ticket", "note", "amends", "date", "id", "task_text", "project_context", "decision_id", "risk_class", "measurement_corrections", "execution_usage"}
+    allowed = {"cause", "tokens", "seconds", "active_seconds", "queue_wait_seconds", "cost_usd", "ticket", "note", "amends", "date", "id", "task_text", "project_context", "decision_id", "risk_class", "measurement_corrections", "execution_usage"}
     unknown = options.keys() - allowed
     if unknown:
         raise HowHardError(f"observe: unknown keys {sorted(unknown)}")
@@ -273,13 +318,23 @@ def observe(config, task_type, model, effort, outcome, *, _automatic_context=(),
         registry = validation_config.data["models"].get(model)
         if registry is None:
             raise HowHardError(f"model: unknown model id {model!r}; add it to the registry or use native actual feedback")
+        seconds = options.get("seconds")
+        if options.get("amends") is None and ("active_seconds" in options or "queue_wait_seconds" in options):
+            from .accounting import validate_duration_breakdown
+            seconds, _, _ = validate_duration_breakdown(
+                seconds, options.get("active_seconds"), options.get("queue_wait_seconds"), "observe"
+            )
         row = dict(id=options.get("id", secrets.token_hex(6)), date=options.get("date", date.today().isoformat()),
                    observed_at=datetime.now(timezone.utc).isoformat(),
                    ticket=options.get("ticket"), task_type=task_type, risk_class=options.get("risk_class", config.task_types.get(task_type, "standard")),
                    model=model, effort=effort,
                    outcome=outcome, cause=options.get("cause", None if outcome == "clean" else "unrecorded"),
-                   tokens=options.get("tokens"), seconds=options.get("seconds"), cost_usd=options.get("cost_usd"),
+                   tokens=options.get("tokens"), seconds=seconds, cost_usd=options.get("cost_usd"),
                    note=options.get("note", ""), amends=options.get("amends"))
+        if "active_seconds" in options:
+            row["active_seconds"] = options["active_seconds"]
+        if "queue_wait_seconds" in options:
+            row["queue_wait_seconds"] = options["queue_wait_seconds"]
         if "execution_usage" in options:
             row["execution_usage"] = deepcopy(options["execution_usage"])
         if "measurement_corrections" in options:
