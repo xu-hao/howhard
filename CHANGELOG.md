@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 3.3.0 — 2026-11-16
+
 - Separate active execution duration from passive queue wait with optional
   `active_seconds` and `queue_wait_seconds` across `observe`, `--measurement-corrections`,
   `howhard-usage-manifest-v1` / `howhard-execution-usage-v1`, `evidence`, and `report`,
