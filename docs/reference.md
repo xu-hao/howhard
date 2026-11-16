@@ -52,17 +52,25 @@ before taking envelope quantiles, then include the ratio of weighted means. This
 the expert's loud/silent relationship instead of dividing unrelated marginal bounds.
 There is no additional statistical risk floor.
 
-`pick` samples one expert by its weight and draws outcome probabilities using an
-evidence-calibrated Dirichlet. The concentration uses the maximum of between-expert
-variance, squared envelope width divided by `3.92²`, and
-`p*(1-p)/(prior_strength + expert_evidence_count + 1)`. Moment-matching gives
-`p*(1-p)/variance - 1`; take the most conservative outcome and apply configured bounds.
-Agreeing, well-observed experts tighten; weak priors and disagreement stay wider.
-Selection admits exploration only inside both the mean-J fraction and a delta-method
-cost-uncertainty band. Receipts retain concentrations, evidence counts, variance sources,
-the seed and the reason for a sampled non-best choice. Tokens and time come directly from the forecast.
-`summary` returns the same means and envelope without sampling a selection. A fixed
-seed reproduces selection given frozen forecasts; it does not make inference deterministic.
+`pick` samples one expert by its weight, draws outcome probabilities using an
+evidence-calibrated Dirichlet, and calibrates active duration `T` alongside outcomes.
+Forecasted `seconds` represents expected **active** execution duration excluding external
+queue wait. For each cell, empirical log-duration residuals from retrieved similar
+executions (`effective_active_seconds`, shrunk by similarity/recency evidence weight so
+zero-evidence cells preserve the expert forecast) calibrate log-normal parameters `(mu, sigma)`
+and price the right-tail expectation `E[T] = exp(mu + sigma^2 / 2)` in `T` and `J`.
+Outcome concentration uses the maximum of between-expert variance, squared envelope width
+divided by `3.92²`, and `p*(1-p)/(prior_strength + expert_evidence_count + 1)`.
+Moment-matching gives `p*(1-p)/variance - 1`; take the most conservative outcome and apply
+configured bounds. Agreeing, well-observed experts tighten; weak priors and disagreement
+stay wider. Selection admits exploration only inside both the mean-J fraction and a
+delta-method cost-uncertainty band (`cost_sd`) that includes Dirichlet outcome covariance,
+empirical log-normal active-duration variance, and between-expert spread; Thompson
+sampling draws log-normal active duration in `parts["time"]` when duration variance is
+present. Receipts retain concentrations, duration calibration parameters, evidence counts,
+variance sources, the seed and the reason for a sampled non-best choice. `summary` returns
+the same calibrated means and envelope without sampling a selection. A fixed seed
+reproduces selection given frozen forecasts; it does not make inference deterministic.
 
 Loud attempts are retried on the same cell until a non-loud result is accepted.
 `1/(1-P_loud)` charges the expected attempts; `C_loud` is extra detection/rework overhead
@@ -85,9 +93,14 @@ unknown values stay null, and `cost_policy` labels the partial risk/time compari
 Fully priced inventories with a uniform rate basis use the full objective. Candidate
 `usd_per_mtok` and `rate_card` rates measure list-price quota credit; they do not
 establish actual host money cost when that differs. `cost_per_credit` supplies that
-conversion. Tokens include cached/uncached input and output; T is hours.
-Actual `tokens`, `seconds` and `cost_usd` remain null unless measured. Observations
-update both the threshold reader and shared predictive evidence from one stored row.
+conversion. Tokens include cached/uncached input and output; T is calibrated active hours.
+Actual `tokens`, `seconds`, optional `active_seconds` and `queue_wait_seconds`, and
+`cost_usd` remain null unless measured. When both `active_seconds` and `queue_wait_seconds`
+are supplied and `seconds` is omitted, `seconds` is derived as their sum; when all three
+are supplied, `abs((active_seconds + queue_wait_seconds) - seconds) <= 1e-6` is enforced.
+`effective_active_seconds(row)` uses `active_seconds` when non-null and falls back to
+scalar `seconds` otherwise. Observations update both the threshold reader and shared
+predictive evidence from one stored row.
 
 An optional candidate `credit_budget` object enforces hard scheduling feasibility against
 forecasted `needed_credit_usd`, independently of the session money cost. It requires
@@ -113,7 +126,10 @@ Execution accounting is evidence about an actual invocation, independent of its 
 An optional `execution_usage` envelope (`howhard-execution-usage-v1`) belongs to the
 existing observation store; no second ledger is created. `usage collect --manifest FILE`
 reads only explicitly owned artifacts with an explicit adapter version and execution
-span. It never discovers transcripts, retains prompt/code text, or contacts providers.
+span, and accepts optional finite nonnegative `seconds`, `active_seconds`, and
+`queue_wait_seconds` fields (deriving `seconds` when both breakdown fields are given and
+reconciling within `1e-6` when all three are present, independently of token telemetry
+completeness). It never discovers transcripts, retains prompt/code text, or contacts providers.
 `usage attach EXECUTION_ID --manifest FILE --id AMENDMENT_ID` appends a measurement
 correction after the outcome is durable. Failed collection leaves that outcome intact;
 retry the same execution once with the same amendment ID, then report the unavailable
@@ -175,7 +191,9 @@ when every segment has its authoritative receipt; partial tokens alone do not ma
 known bill unknown. Subscription execution
 may have no per-run billed charge. Measured tokens do not require prices. Historical
 `cost_usd` retains an unspecified basis and is never relabeled billed. Reports show these
-bases separately and preserve unknown coverage instead of treating missing values as zero.
+bases separately, summarize `seconds`, `active_seconds`, `queue_wait_seconds`, and
+`effective_active_seconds` coverage in `worker_time` and `execution_accounting.duration`,
+and preserve unknown coverage instead of treating missing values as zero.
 
 Native candidates may provide an explicit versioned `rate_card` with source, effective
 date, provider/model/tier, credit-rate basis and category rates in USD per million tokens.
@@ -207,6 +225,7 @@ Every JSONL row requires these base keys:
 | `cause` | Null for clean; depth, capability or unrecorded otherwise |
 | `tokens` | Nonnegative integer or null |
 | `seconds`, `cost_usd` | Finite nonnegative number or null |
+| `active_seconds`, `queue_wait_seconds` | Optional finite nonnegative number or null; reconciled with `seconds` within `1e-6` |
 | `note` | String, possibly empty |
 | `amends` | Earlier row id or null |
 
@@ -243,9 +262,11 @@ acyclic dependency graph. Dependency ordering keeps amendments valid when flushi
 them into the first log ahead of a target in an additional log.
 
 An amendment may additionally carry `measurement_corrections`, a nonempty object with
-only `tokens`, `seconds`, `cost_usd` and/or `execution_usage`. Values follow the corresponding base-field
-types and ranges; null explicitly clears a value to unknown. Original rows refuse this
-field, and ordinary amendment `tokens`, `seconds` and `cost_usd` must still be null.
+only `tokens`, `seconds`, `active_seconds`, `queue_wait_seconds`, `cost_usd` and/or `execution_usage`. Values follow the corresponding base-field
+types and ranges; null explicitly clears a value to unknown. Supplying both `active_seconds`
+and `queue_wait_seconds` without `seconds` updates `seconds` to their sum, and effective
+rows must still satisfy the `1e-6` duration breakdown constraint. Original rows refuse this
+field, and ordinary amendment `tokens`, `seconds`, `active_seconds`, `queue_wait_seconds` and `cost_usd` must still be null.
 For example, `Engine.observe(..., amends="run-id", measurement_corrections={"tokens": 100,
 "cost_usd": None})` replaces only those effective values. Unlisted measurements retain
 their current effective values across a chain. Supply the intended current outcome/cause
@@ -281,8 +302,12 @@ or memory writes. All receipts require that identity and their native inventory/
 policy. The resolved state subtree is excluded from capture and
 `project.read`, including symlink aliases; a state root equal to or containing the capture
 root is refused. Prepared calling-agent requests bind the worktree and reject sibling
-retrieve/decide. Requests use `howhard-agent-request-v5` and receipts use
-`howhard-decision-v7`, with required capability and accepted-result selection state.
+retrieve/decide. Requests use `howhard-agent-request-v5` and new receipts use
+`howhard-decision-v8` (`howhard-semantic-v5` / `semantic-reader-v6`,
+`howhard-capability-v3`), with required capability and accepted-result selection state.
+Persisted `howhard-decision-v7` receipts (`howhard-semantic-v4` / `semantic-reader-v5`,
+`howhard-capability-v1` or `howhard-capability-v2`) continue to load, validate, accept
+feedback, and participate in belief replay and reporting under their frozen version rules.
 Receipts v1–v6 remain recognizable as historical store entries but are not replayed as
 new decisions; prepare a fresh request and decision to attach new feedback.
 Frozen-receipt observations and learning share the store across that project's worktrees.
@@ -298,9 +323,11 @@ returns a typed conflict and refreshed request; see [concurrent clients](concurr
 Calling-agent submissions are audited with unknown external
 inference costs and latency rather than being counted as free provider calls.
 
-Receipts use `howhard-decision-v7`, requests `howhard-agent-request-v5`, semantic state
-`howhard-semantic-v4`. Older receipts and requests are refused for new execution feedback;
-v1–v6 receipt forecasts are excluded from replay/report scoring. Existing raw observations
+New receipts use `howhard-decision-v8`, requests `howhard-agent-request-v5`, semantic state
+`howhard-semantic-v5`, and capability state `howhard-capability-v3`. Persisted
+`howhard-decision-v7` (`howhard-semantic-v4`, `howhard-capability-v1`/`v2`) receipts
+remain valid under their frozen rules; v1–v6 receipts and older requests are refused for
+new execution feedback and excluded from replay/report scoring. Existing raw observations
 and semantic memories remain stored. Old posterior/prior artifacts are unused and left
 untouched. Removed interfaces include `--llm`, `HOWHARD_LLM`, `--cache`, `Engine(cache_path=...)`,
 `fit`, posterior/prior attributes, `export-prior`, `import-prior`, and prior/cache/transfer

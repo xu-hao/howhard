@@ -35,6 +35,27 @@ def total(value):
     return sum(value.values()) if all(v is not None for v in value.values()) else None
 
 
+def validate_duration_breakdown(seconds, active_seconds, queue_wait_seconds, where):
+    if seconds is not None:
+        seconds = number(seconds, f"{where}.seconds", nonnegative=True)
+    if active_seconds is not None:
+        active_seconds = number(active_seconds, f"{where}.active_seconds", nonnegative=True)
+    if queue_wait_seconds is not None:
+        queue_wait_seconds = number(queue_wait_seconds, f"{where}.queue_wait_seconds", nonnegative=True)
+    if active_seconds is not None and queue_wait_seconds is not None:
+        combined = active_seconds + queue_wait_seconds
+        if seconds is None:
+            seconds = combined
+        elif abs(combined - seconds) > 1e-6:
+            raise HowHardError(f"{where}: active_seconds + queue_wait_seconds must match seconds within 1e-6")
+    elif seconds is not None:
+        if active_seconds is not None and active_seconds - seconds > 1e-6:
+            raise HowHardError(f"{where}.active_seconds: cannot exceed seconds")
+        if queue_wait_seconds is not None and queue_wait_seconds - seconds > 1e-6:
+            raise HowHardError(f"{where}.queue_wait_seconds: cannot exceed seconds")
+    return seconds, active_seconds, queue_wait_seconds
+
+
 def rate_card(value):
     keys(value, ['format', 'source', 'version', 'effective_at', 'provider', 'model', 'service_tier', 'basis', 'rates'], where='rate_card')
     if value['format'] != RATE_FORMAT or value['basis'] not in ('estimate', 'charge'):
@@ -83,7 +104,12 @@ def money(value, *, billed=False):
 
 
 def validate(value):
-    keys(value, ['format', 'execution_id', 'status', 'provenance', 'claims', 'segments'], where='execution_usage')
+    keys(value, ['format', 'execution_id', 'status', 'provenance', 'claims', 'segments'],
+         ['seconds', 'active_seconds', 'queue_wait_seconds'], where='execution_usage')
+    if any(k in value for k in ('seconds', 'active_seconds', 'queue_wait_seconds')):
+        validate_duration_breakdown(
+            value.get('seconds'), value.get('active_seconds'), value.get('queue_wait_seconds'), 'execution_usage'
+        )
     if value['format'] != USAGE_FORMAT or value['status'] not in ('complete', 'partial', 'unavailable'):
         raise HowHardError('execution_usage: unsupported format or status')
     text(value['execution_id'], 'execution_usage.execution_id')
@@ -238,7 +264,13 @@ def _claude(u, *, sdk=False):
 
 
 def collect(manifest):
-    keys(manifest, ['format', 'execution_id', 'host_version', 'adapter', 'source', 'session_id', 'scope', 'start', 'end', 'completed', 'provider', 'model', 'service_tier'], ['included_sessions', 'included_agents', 'rate_card', 'baseline', 'coordinate_id', 'agent_id'], where='usage manifest')
+    keys(manifest, ['format', 'execution_id', 'host_version', 'adapter', 'source', 'session_id', 'scope', 'start', 'end', 'completed', 'provider', 'model', 'service_tier'],
+         ['included_sessions', 'included_agents', 'rate_card', 'baseline', 'coordinate_id', 'agent_id', 'seconds', 'active_seconds', 'queue_wait_seconds'], where='usage manifest')
+    duration_fields = any(k in manifest for k in ('seconds', 'active_seconds', 'queue_wait_seconds'))
+    if duration_fields:
+        derived_seconds, derived_active, derived_queue = validate_duration_breakdown(
+            manifest.get('seconds'), manifest.get('active_seconds'), manifest.get('queue_wait_seconds'), 'usage manifest'
+        )
     if manifest['format'] != 'howhard-usage-manifest-v1' or manifest['adapter'] not in ADAPTERS:
         raise HowHardError('usage manifest: unsupported format/adapter')
     if manifest['host_version'] not in SUPPORTED_HOSTS[manifest['adapter']]:
@@ -307,6 +339,13 @@ def collect(manifest):
     claims = [{'session_id': source_session, 'start': start, 'end': end, 'coordinate_id': coordinate}] + [{'session_id': s, 'start': 0, 'end': None, 'coordinate_id': '*'} for s in children] + [{'session_id': session + ':agent:' + a, 'start': 0, 'end': None, 'coordinate_id': '*'} for a in agents]
     result = dict(format=USAGE_FORMAT, execution_id=manifest['execution_id'], status='unavailable',
                   provenance={k: manifest[k] for k in ('adapter', 'host_version', 'session_id', 'start', 'end', 'scope')}, claims=claims, segments=[])
+    if duration_fields:
+        if derived_seconds is not None or 'seconds' in manifest:
+            result['seconds'] = derived_seconds
+        if 'active_seconds' in manifest:
+            result['active_seconds'] = derived_active
+        if 'queue_wait_seconds' in manifest:
+            result['queue_wait_seconds'] = derived_queue
     result['provenance']['coordinate_id'] = coordinate
     if 'agent_id' in manifest:
         result['provenance']['agent_id'] = manifest['agent_id']
@@ -500,4 +539,9 @@ def summary(rows):
                     result['tokens'][key]['known'] += count
     for category in result['tokens'].values():
         category['total'] = category['known'] if not category['unknown_runs'] else None
+    result['duration'] = {}
+    for field in ('seconds', 'active_seconds', 'queue_wait_seconds'):
+        known = sum(float(u[field]) for r in rows if (u := r.get('execution_usage')) and u.get(field) is not None)
+        unknown = sum(1 for r in rows if not (u := r.get('execution_usage')) or u.get(field) is None)
+        result['duration'][field] = dict(known_seconds=known, unknown_runs=unknown, total_seconds=known if not unknown else None)
     return result

@@ -10,12 +10,15 @@ from datetime import datetime, timezone
 
 import numpy as np
 
-from .context import canonical, digest, SOURCE_SUFFIXES, MANIFESTS, IGNORED
+from .context import DECISION_FORMAT, IGNORED, LEGACY_DECISION_V7, MANIFESTS, SOURCE_SUFFIXES, canonical, digest
 from .llm import LLMError, SETTINGS
 from .files import atomic_write
+from .storage import effective_active_seconds
 from .validation import HowHardError, keys, number, text
 
 FORMAT = SETTINGS["format"]
+LEGACY_FORMAT_V4 = "howhard-semantic-v4"
+LEGACY_PROMPT_V5 = "semantic-reader-v5"
 OUTCOMES = ("clean", "loud", "silent")
 FIELDS = ("family", "effort", "clean", "loud", "silent", "tokens", "seconds")
 
@@ -30,10 +33,14 @@ def panel_lookup(panel):
 
 def execution_memory(row):
     """A read-only expert backed by an effective observed execution, never an invented run."""
+    summary = {k: row.get(k) for k in (
+        "task_text", "model", "effort", "outcome", "cause", "tokens", "seconds", "cost_usd", "execution_usage", "note")}
+    for extra in ("active_seconds", "queue_wait_seconds"):
+        if extra in row:
+            summary[extra] = row[extra]
     return {"id": "execution:" + row["id"], "version": int(digest(row)[:12], 16) + 1,
             "active": True, "title": "Observed execution: " + row["task_type"],
-            "body": "Observed execution (read-only): " + json.dumps({k: row.get(k) for k in (
-                "task_text", "model", "effort", "outcome", "cause", "tokens", "seconds", "cost_usd", "execution_usage", "note")}, ensure_ascii=True),
+            "body": "Observed execution (read-only): " + json.dumps(summary, ensure_ascii=True),
             "scope": "project", "evidence_ids": [row["id"]], "parents": []}
 
 
@@ -84,7 +91,7 @@ def beliefs(engine, snapshot=None):
                 score = math.log(max(floor, p)) - math.log(max(floor, baseline))
                 reference = panel_lookup(state["worlds"]["llm"])[cell]
                 candidate = panel_lookup(panel)[cell]
-                for field, measurement in (("tokens", row["tokens"]), ("seconds", row["seconds"])):
+                for field, measurement in (("tokens", row["tokens"]), ("seconds", effective_active_seconds(row))):
                     if measurement is not None:
                         observed = math.log(max(1, measurement))
                         residual = observed - math.log(max(1, candidate[field]))
@@ -191,7 +198,7 @@ def request(engine, prepared):
                "beliefs": state, "evidence": evidence,
                "retrieval": [{"request": {"tool": "experience.search", "query": task_text(result["task_type"], result["context"])}, "result": retrieved["trace"]}],
                "tools": ["memory.search", "memory.read", "evidence.search", "evidence.read", "project.read"],
-               "contract": {"forecasts": "One row for EVERY supplied cell: family, effort, clean, loud, silent, tokens, seconds. Probabilities sum to 1; usage estimates are nonnegative. category-v1 cells also REQUIRE token_usage with disjoint input/output/cache_read/cache_write/cache_write_5m/cache_write_1h summing to tokens; total-v1 accepts the scalar tokens forecast.",
+               "contract": {"forecasts": "One row for EVERY supplied cell: family, effort, clean, loud, silent, tokens, seconds. Probabilities sum to 1; usage estimates are nonnegative; seconds is expected active execution duration excluding external queue wait. category-v1 cells also REQUIRE token_usage with disjoint input/output/cache_read/cache_write/cache_write_5m/cache_write_1h summing to tokens; total-v1 accepts the scalar tokens forecast.",
                             "memory_forecasts": "Array of {id, version, forecasts}: predictions conditional on each relevant supplied/read ACTIVE memory. execution: IDs are read-only observed runs; their original outcomes are evidence for related tasks, not counterfactual results. Infer model AND reasoning effort jointly. Broader/narrower tasks can transfer imperfectly. Rows may override a subset of baseline forecasts. No invented memories or unrun outcomes.",
                             "reason": "Brief explanation grounded in task/project semantics and actual evidence.",
                             "request_more": "Instead of forecasts, optionally return ONLY {request_more: [{tool, query/id/path}]} to retrieve more evidence. At most 3 requests per round."}}
@@ -243,7 +250,7 @@ def baseline_request(payload):
     if "cost_policy" in payload:
         clean["cost_policy"] = deepcopy(payload["cost_policy"])
     clean.update(phase="baseline", cells=[{k: c[k] for k in ("family", "effort", "model", "forecast_format") if k in c} for c in payload["cells"]],
-                 contract="Return {forecasts: [{family,effort,clean,loud,silent,tokens,seconds}], reason: string}. Forecast EVERY supplied cell; probabilities sum to 1. category-v1 cells require token_usage with disjoint input/output/cache_read/cache_write/cache_write_5m/cache_write_1h summing to tokens; total-v1 accepts scalar tokens. No memory, evidence or retrieval is available in this independent call.")
+                 contract="Return {forecasts: [{family,effort,clean,loud,silent,tokens,seconds}], reason: string}. Forecast EVERY supplied cell; probabilities sum to 1; seconds is expected active execution duration excluding external queue wait. category-v1 cells require token_usage with disjoint input/output/cache_read/cache_write/cache_write_5m/cache_write_1h summing to tokens; total-v1 accepts scalar tokens. No memory, evidence or retrieval is available in this independent call.")
     return clean
 
 
@@ -433,8 +440,31 @@ def complete(engine, payload, snapshot):
     raise LLMError("LLM did not return forecasts")
 
 
-def augment(engine, prepared, response, payload, snapshot, usage):
+def duration_observations(engine, payload, *, scores=None):
+    from .capability import evidence_scores
+    evidence = payload["evidence"][:SETTINGS["evidence_limit"]]
+    if not evidence:
+        return []
+    scores = evidence_scores(engine, payload) if scores is None else scores
+    recency_order = {r["id"]: age for age, r in enumerate(reversed(engine.rows))}
+    result = []
+    for row in evidence:
+        active = effective_active_seconds(row)
+        if active is None:
+            continue
+        age = recency_order.get(row["id"], 0)
+        score = float(scores["evidence:" + row["id"]])
+        similarity = 1 / (1 + math.exp(-max(-60, min(60, score))))
+        result.append({"id": row["id"], "family": row["family"], "effort": row["resolved_effort"],
+                       "active_seconds": float(active), "score": score, "similarity": similarity,
+                       "weight": row["weight"] * similarity * SETTINGS["belief"]["recency"] ** age})
+    return result
+
+
+def augment(engine, prepared, response, payload, snapshot, usage, *, duration_obs=None):
+    from .success import accepted_risk, calibrate_duration, cost, denominator, envelope
     result, cells = deepcopy(prepared[0]), prepared[1]
+    duration_obs = duration_observations(engine, payload) if duration_obs is None else deepcopy(duration_obs)
     baseline = deepcopy(response["forecasts"])
     worlds = {"llm": baseline}
     entries = {(m["id"], m["version"]): m for m in snapshot["memories"]}
@@ -469,7 +499,10 @@ def augment(engine, prepared, response, payload, snapshot, usage):
             row[f"P_{outcome}"]["mean"] = sum(weights[k] * indexed[k][pair][outcome] for k in weights)
             row[f"P_{outcome}"]["lower"] = min(quantile(.025), row[f"P_{outcome}"]["mean"])
             row[f"P_{outcome}"]["upper"] = max(quantile(.975), row[f"P_{outcome}"]["mean"])
-        seconds = sum(weights[k] * indexed[k][pair]["seconds"] for k in weights)
+        seconds = sum(
+            weights[k] * calibrate_duration(indexed[k][pair]["seconds"], pair, duration_obs)["expected_seconds"]
+            for k in weights
+        )
         cell = next(c for c in cells if (c["family"], c["effort"]) == pair)
         needed_credit = sum(weights[k] * forecast_credit(indexed[k][pair], cell) for k in weights) if cell["priced"] else None
         row["cost_per_credit"] = cell["cost_per_credit"]
@@ -484,7 +517,6 @@ def augment(engine, prepared, response, payload, snapshot, usage):
         )
         row["T"] = seconds / 3600
         c = result["constants"]
-        from .success import cost, denominator, accepted_risk, envelope
         loud, silent = row["P_loud"]["mean"], row["P_silent"]["mean"]
         row["expected_attempts"] = 1/denominator(loud)
         row["J"] = cost(row["session_cost_usd"] if cell["money_included"] else 0., row["T"], loud, silent, c)
@@ -494,7 +526,7 @@ def augment(engine, prepared, response, payload, snapshot, usage):
     result["semantic"] = {"format": FORMAT, "prompt_version": SETTINGS["prompt_version"], "backend": usage["backend"],
                           "memory_revision": snapshot["revision"], "memories": deepcopy(snapshot["memories"]),
                           "worlds": worlds, "exposures": exposures, "beliefs": state, "reason": response["reason"], "retrieval": payload["retrieval"],
-                          "evidence": deepcopy(payload["evidence"]),
+                          "evidence": deepcopy(payload["evidence"]), "duration_observations": duration_obs,
                           "reader_usage": {k: usage[k] for k in ("backend", "seconds", "cost_usd", "calls")}, "interval_kind": "weighted-forecast-envelope"}
     result["sampling_policy"] = deepcopy(engine.config.data["sampling"])
     result["backend"] = {"mode": "semantic", "name": usage["backend"], "inference_cached": usage["cached"]}
@@ -544,20 +576,28 @@ def sample(prepared, seed):
         calibrated = calibration(result, state, expert, cell, row)
         calibration_rows.append(calibrated)
         p = rng.dirichlet(np.asarray(calibrated["probabilities"])*calibrated["concentration"])
+        dur = calibrated["duration"]
+        sampled_seconds = float(rng.lognormal(dur["mu"], dur["sigma"])) if dur["sigma"] > 0 else dur["expected_seconds"]
         d = denominator(p[1])
         parts["run"][0, i] = forecast_session_cost(row, cell)/d if cell["money_included"] else 0.
         parts["loud"][0, i] = p[1]*constants["C_loud"]/d
         parts["silent"][0, i] = p[2]*constants["C_silent"]/d
-        parts["time"][0, i] = row["seconds"]/3600*constants["lambda_per_hour"]/d
+        parts["time"][0, i] = sampled_seconds/3600*constants["lambda_per_hour"]/d
     state["sampling"] = {"enabled": True, "reason": "evidence-calibrated-dirichlet",
                          "policy": deepcopy(result["sampling_policy"]), "cells": calibration_rows}
     return parts
 
 
-def validate_receipt(state):
+def validate_receipt(state, *, decision_format=DECISION_FORMAT):
     """Validate portable frozen semantic inputs before they affect feedback weights."""
-    keys(state, ["format", "prompt_version", "backend", "memory_revision", "memories", "worlds", "exposures", "beliefs", "reason", "retrieval", "evidence", "reader_usage", "interval_kind", "sampling"], ["sampled_expert"], "decision.semantic")
-    if state["format"] != FORMAT or state["prompt_version"] != SETTINGS["prompt_version"]:
+    required = ["format", "prompt_version", "backend", "memory_revision", "memories", "worlds", "exposures", "beliefs", "reason", "retrieval", "evidence", "reader_usage", "interval_kind", "sampling"]
+    if decision_format != LEGACY_DECISION_V7:
+        required.append("duration_observations")
+    keys(state, required, ["sampled_expert"], "decision.semantic")
+    if decision_format == LEGACY_DECISION_V7:
+        if state["format"] != LEGACY_FORMAT_V4 or state["prompt_version"] != LEGACY_PROMPT_V5:
+            raise HowHardError("decision.semantic: unsupported forecast format or prompt version")
+    elif state["format"] != FORMAT or state["prompt_version"] != SETTINGS["prompt_version"]:
         raise HowHardError("decision.semantic: unsupported forecast format or prompt version")
     if type(state["memory_revision"]) is not int or state["memory_revision"] < 0:
         raise HowHardError("decision.semantic.memory_revision: expected non-negative integer")
@@ -618,7 +658,19 @@ def validate_receipt(state):
             raise HowHardError("decision.semantic.expert.evidence_count: expected non-negative integer")
     if not {"llm"} <= seen or abs(mass - 1) > 1e-6 or set(state["worlds"]) - seen:
         raise HowHardError("decision.semantic.beliefs: expert weights must cover forecasts and sum to one")
-    from .success import validate_policy as validate_sampling
+    from .success import calibrate_duration, validate_policy as validate_sampling
+    if decision_format != LEGACY_DECISION_V7:
+        duration_obs = state["duration_observations"]
+        if not isinstance(duration_obs, list) or len(duration_obs) > SETTINGS["evidence_limit"]:
+            raise HowHardError("decision.semantic.duration_observations: invalid array")
+        for obs in duration_obs:
+            keys(obs, ["id", "family", "effort", "active_seconds", "score", "similarity", "weight"], where="decision.semantic.duration_observation")
+            for field in ("id", "family", "effort"):
+                text(obs[field], "duration_observation." + field)
+            number(obs["active_seconds"], "duration_observation.active_seconds", nonnegative=True)
+            number(obs["score"], "duration_observation.score")
+            for field in ("similarity", "weight"):
+                number(obs[field], "duration_observation." + field, nonnegative=True)
     sampling = state["sampling"]
     keys(sampling, ["enabled", "reason", "policy", "cells"], where="decision.semantic.sampling")
     validate_sampling(sampling["policy"])
@@ -627,11 +679,39 @@ def validate_receipt(state):
     if sampling["enabled"]:
         if {(c["family"], c["effort"]) for c in sampling["cells"]} != allowed or len(sampling["cells"]) != len(allowed):
             raise HowHardError("decision.semantic.sampling: calibration must cover forecasted cells")
+        panels_by_key = {k: panel_lookup(p) for k, p in state["worlds"].items()}
         for c in sampling["cells"]:
             number(c["concentration"], "sampling concentration", positive=True)
             number(c["cost_sd"], "sampling cost standard deviation", nonnegative=True)
             if not sampling["policy"]["min_concentration"] <= c["concentration"] <= sampling["policy"]["max_concentration"]:
                 raise HowHardError("decision.semantic.sampling: concentration outside bounds")
+            if decision_format == LEGACY_DECISION_V7:
+                if "duration" in c:
+                    raise HowHardError("decision.semantic.sampling: unexpected v8 duration calibration in v7 receipt")
+            else:
+                if "duration" not in c:
+                    raise HowHardError("decision.semantic.sampling: missing duration calibration")
+                dur = c["duration"]
+                keys(dur, ["forecast_seconds", "expected_seconds", "mu", "sigma", "evidence_weight", "between_experts_log_variance"], where="sampling.duration")
+                for field in ("forecast_seconds", "expected_seconds", "sigma", "evidence_weight", "between_experts_log_variance"):
+                    number(dur[field], "sampling.duration." + field, nonnegative=True)
+                number(dur["mu"], "sampling.duration.mu")
+                pair = c["family"], c["effort"]
+                expert_key = c.get("expert")
+                if expert_key not in panels_by_key:
+                    raise HowHardError("decision.semantic.sampling: unknown calibrated expert")
+                expected_dur = calibrate_duration(panels_by_key[expert_key][pair]["seconds"], pair, state["duration_observations"])
+                expert_durs = {
+                    e["key"]: calibrate_duration(panels_by_key[e["key"]][pair]["seconds"], pair, state["duration_observations"])
+                    for e in belief["experts"]
+                }
+                mean_mu = sum(e["weight"] * expert_durs[e["key"]]["mu"] for e in belief["experts"])
+                expected_dur["between_experts_log_variance"] = sum(
+                    e["weight"] * (expert_durs[e["key"]]["mu"] - mean_mu) ** 2 for e in belief["experts"]
+                )
+                for field, expected_val in expected_dur.items():
+                    if abs(dur[field] - expected_val) > 1e-10 * max(1.0, abs(expected_val)):
+                        raise HowHardError("decision.semantic.sampling: inconsistent duration calibration")
     elif sampling["cells"] or "sampled_expert" in state:
         raise HowHardError("decision.semantic.sampling: disabled sampling cannot claim draws")
     if "sampled_expert" in state and state["sampled_expert"] not in seen:

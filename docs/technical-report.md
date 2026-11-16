@@ -38,8 +38,10 @@ An execution retains its actual model, effort, outcome and measured usage. An
 alternative that never ran has forecasts but no observed outcome.
 
 For each candidate, define {math}`C_{\mathrm{run}}` as forecast worker cost,
-{math}`T` as forecast hours, {math}`p_l` as loud-failure probability and
-{math}`p_s` as silent-failure probability. The selection objective is:
+{math}`T` as calibrated expected active execution hours (combining expert active-duration
+forecasts with shrunk log-residuals from similar executions and pricing log-normal
+right-tail variance {math}`\mathbb{E}[T]=\exp(\mu+\sigma^2/2)`), {math}`p_l` as loud-failure
+probability and {math}`p_s` as silent-failure probability. The selection objective is:
 
 ```{math}
 J(a)=\frac{C_{\mathrm{run}}(a)+\lambda T(a)
@@ -185,8 +187,11 @@ The posterior cumulative probability {math}`P(H\leq r\mid D,x)` estimates how
 likely a candidate is to clear the task's capability threshold. The lower fit
 boundary reaches the minimum clearing probability. The upper boundary retains a
 reliable candidate when one exists, then excludes stronger candidates whose
-remaining clearing-probability gain is below the margin. If the reliability target
-is unattainable, the gain rule is anchored at the lower boundary instead.
+remaining clearing-probability gain is below the margin, while also checking a
+timely-clearing posterior so clean precedents with severe active-duration overruns
+do not prematurely prune faster stronger candidates as overpowered before {math}`J`
+compares time. If the reliability target is unattainable, the gain rule is anchored
+at the lower boundary instead.
 
 Cross-model placements can change through constrained local search using marginal
 threshold evidence and an order-distance penalty. This is approximate posterior/MAP
@@ -218,8 +223,10 @@ S_{k,i}=\log\frac{\max(\delta,p_{k,i}(y_i))}
                          {\max(\delta,p_{0,i}(y_i))}.
 ```
 
-Measured tokens and elapsed time add broad log-normal resource scores relative
-to the baseline. Unknown measurements add no resource evidence. A compact
+Measured tokens and effective active duration (`active_seconds` when recorded,
+otherwise wall-clock `seconds`) add broad log-normal resource scores relative
+to the baseline, excluding passive external queue wait when broken out. Unknown
+measurements add no resource evidence. A compact
 expression for the resulting fine-expert support is:
 
 ```{math}
