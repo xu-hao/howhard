@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 3.4.0 — 2026-11-20
+
 - Replace point outcome forecasts with per-cell Dirichlet–multinomial posteriors: each
   expert forecast is a bounded prior (`kappa_0 <= prior_strength`) updated only by that
   `(family, effort)` cell's own recency-weighted `outcome_observations` (up to
