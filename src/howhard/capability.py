@@ -51,7 +51,7 @@ def request(payload, policy):
     result["filter_policy"] = deepcopy(policy)
     result["contract"] = {
         "filter": "Return {order: [opaque cell keys], lower: key, upper: key}. Order EVERY supplied key exactly once, weakest to strongest FOR THIS TASK AND PROJECT only. Inclusive lower/upper delimit a nonempty fit band. Known efforts within a model are ordinal low < medium < high < xhigh < max < ultra; keep custom controls in your proposed within-model order. No universal model ranking. Exclude only for capability fit, not price or silent-risk policy. Keep the band within max_forecast_cells where justified; never omit inventory keys.",
-        "memory_filters": "Array of up to eight {id,version,filter}: full conditional order/cut-point adjustments for relevant ACTIVE retrieved memories, including read-only execution experts. Cite exact id/version. No invented outcomes. Omitted experts have no adjustment.",
+        "memory_filters": "Array of up to eight {id,version,filter}: full conditional order/cut-point adjustments for relevant ACTIVE retrieved memories, including read-only execution experts. Interrupted executions (such as usage_limit, provider_error, host_error or cancelled) are operational interruptions, not capability failures. Cite exact id/version. No invented outcomes. Omitted experts have no adjustment.",
         "reason": "Brief explanation of task-specific placement and cut points.",
         "request_more": payload["contract"]["request_more"]}
     return result
@@ -180,14 +180,16 @@ def _decision_forecast_seconds(engine, row):
 def observations(engine, payload, *, scores=None):
     """Retrieve bounded actual observations with absolute, non-normalized relevance."""
     evidence = payload["evidence"][:SETTINGS["evidence_limit"]]
-    if not evidence:
+    eligible = [row for row in evidence if row["outcome"] != "interrupted"]
+    if not eligible:
         return []
     scores = evidence_scores(engine, payload) if scores is None else scores
     known = {cell_key(c) for c in payload["cells"]}
     policy = payload["filter_policy"]
     result = []
-    recency_order = {r["id"]: age for age, r in enumerate(reversed(engine.rows))}
-    for row in evidence:
+    scored_rows = [r for r in engine.rows if r["outcome"] != "interrupted"]
+    recency_order = {r["id"]: age for age, r in enumerate(reversed(scored_rows))}
+    for row in eligible:
         age = recency_order.get(row["id"], 0)
         key = cell_key(row)
         if key not in known:

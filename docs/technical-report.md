@@ -30,8 +30,9 @@ task and captured project context. The outcome categories are:
 | Outcome | Recorded meaning | Consequence for selection |
 | --- | --- | --- |
 | `clean` | No defect has been observed | A non-loud result is accepted; later evidence may correct the label |
-| `loud` | A gate or review caught a failure | The cost model charges another attempt on the same candidate |
+| `loud` | A gate or review caught a model failure | The cost model charges another attempt on the same candidate |
 | `silent` | A defect escaped acceptance and was discovered later | Selection includes an escaped-defect penalty and an accepted-result risk cap |
+| `interrupted` | Execution stopped operationally (`usage_limit`, `provider_error`, `host_error`, `cancelled`, `unrecorded`) | Preserved for usage/cost accounting and audit; excluded from ternary forecasts, capability thresholds, active-duration calibration and belief scoring |
 
 Acceptance is therefore observable workflow behavior, not proof of correctness.
 An execution retains its actual model, effort, outcome and measured usage. An

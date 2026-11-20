@@ -12,6 +12,10 @@ from .context import FORMAT as CONTEXT_FORMAT, capture_project, validate_row_con
 
 ROW_KEYS = ("id", "date", "ticket", "task_type", "risk_class", "model", "effort",
             "outcome", "cause", "tokens", "seconds", "cost_usd", "note", "amends", "observed_at")
+OBSERVATION_OUTCOMES = ("clean", "loud", "silent", "interrupted")
+MODEL_FAILURE_CAUSES = ("depth", "capability", "unrecorded")
+INTERRUPTED_CAUSES = ("usage_limit", "provider_error", "host_error", "cancelled", "unrecorded")
+ALL_CAUSES = ("depth", "capability", "usage_limit", "provider_error", "host_error", "cancelled", "unrecorded")
 
 
 @contextmanager
@@ -121,12 +125,15 @@ def validate_row(row, config, where):
         raise HowHardError(f"{where}.model: unknown model id {row['model']!r}; add it to the model registry")
     if row["effort"] not in model["efforts"]:
         raise HowHardError(f"{where}.effort: unsupported by models.{row['model']}")
-    if row["outcome"] not in ("clean", "loud", "silent"):
+    if row["outcome"] not in OBSERVATION_OUTCOMES:
         raise HowHardError(f"{where}.outcome: unknown outcome")
     if row["outcome"] == "clean":
         if row["cause"] is not None:
             raise HowHardError(f"{where}.cause: must be null for clean")
-    elif row["cause"] not in ("depth", "capability", "unrecorded"):
+    elif row["outcome"] == "interrupted":
+        if row["cause"] not in INTERRUPTED_CAUSES:
+            raise HowHardError(f"{where}.cause: expected usage_limit, provider_error, host_error, cancelled or unrecorded")
+    elif row["cause"] not in MODEL_FAILURE_CAUSES:
         raise HowHardError(f"{where}.cause: expected depth, capability or unrecorded")
     for key in ("tokens", "seconds", "cost_usd"):
         validate_measurement(row[key], key, where)

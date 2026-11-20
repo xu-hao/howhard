@@ -2,7 +2,7 @@
 
 The retrieval query is the new **project context and task**. The primary precedents are
 effective observed executions, each retaining its original project snapshot, task,
-actual model **and** reasoning effort, clean/loud/silent outcome, tokens, time and
+actual model **and** reasoning effort, `clean`/`loud`/`silent`/`interrupted` outcome, tokens, time and
 cost. Related failures are useful evidence. A narrower or broader task can be relevant;
 similarity does not establish that an outcome transfers to an unrun action.
 

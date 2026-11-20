@@ -221,8 +221,8 @@ Every JSONL row requires these base keys:
 | `model` | Concrete id from the registry |
 | `effort` | Exact registered effort/control identity |
 | `observed_at` | ISO timestamp with timezone |
-| `outcome` | clean, loud or silent |
-| `cause` | Null for clean; depth, capability or unrecorded otherwise |
+| `outcome` | `clean`, `loud`, `silent` or `interrupted` |
+| `cause` | Null for `clean`; `depth`, `capability` or `unrecorded` for `loud`/`silent`; `usage_limit`, `provider_error`, `host_error`, `cancelled` or `unrecorded` for `interrupted` |
 | `tokens` | Nonnegative integer or null |
 | `seconds`, `cost_usd` | Finite nonnegative number or null |
 | `active_seconds`, `queue_wait_seconds` | Optional finite nonnegative number or null; reconciled with `seconds` within `1e-6` |
@@ -250,8 +250,13 @@ Disk duplicate rows remain errors. Errors name the file, line and key.
 Original rows require `task_text`, `project_context` and `context_encoder` together,
 with optional `decision_id`. Empty task text or null project context represents an
 explicitly unknown input; missing fields are refused. Every row requires `observed_at`.
-Amendments carry null measurements/cost and correct an outcome to clean, loud or silent,
-with the usual cause rule. Superseded rows without timestamps/context and unresolved
+Amendments carry null measurements/cost and correct an outcome to `clean`, `loud`, `silent` or `interrupted`,
+with the usual cause rule. Effective `interrupted` runs represent operational interruptions (such as usage limits,
+provider/host errors, or cancellations) rather than model task failures: they retain their original ID, decision,
+usage/cost/duration accounting, amendment chains and `report` counts (including `interrupted_causes`), while being
+excluded from stage-1/stage-2 predictive belief replay, capability threshold likelihoods, active-duration
+calibration, forecast error metrics, and `filter_quality` failure/disagreement resolution. Amending a misclassified
+`loud` execution to `interrupted` removes its predictive and threshold penalty on replay. Superseded rows without timestamps/context and unresolved
 `model_default` efforts are refused; no context or control is inferred retrospectively.
 Chains replace the original run's effective outcome and cause, counting that run once
 and retaining its original ID, decision, cell, task text, project snapshot, project,

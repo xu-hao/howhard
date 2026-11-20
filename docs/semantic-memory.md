@@ -146,9 +146,15 @@ also scale these updates.
 These are approximate predictive-evidence weights, not probabilities that statements
 are true and not an exact posterior over all possible natural-language memories.
 They measure predictive support and do not establish causal explanations. The LLM's
-own confidence is not evidence. Outcome amendments to clean, loud or silent replay the
+own confidence is not evidence. Outcome amendments to `clean`, `loud`, `silent` or `interrupted` replay the
 original run's forecasts against its effective result once, replacing its earlier score
-rather than adding another independent run. Original measurements and registry evidence
+rather than adding another independent run. Effective `interrupted` outcomes (such as
+`usage_limit`, `provider_error`, `host_error` or `cancelled`) are operational
+interruptions rather than model task failures: they are excluded from stage-1/stage-2
+predictive scoring and active-duration calibration, while remaining durable in the store,
+counted in `report`, and visible in `execution:RUN_ID` and `outcome_history`. Amending a
+misclassified `loud` execution to `interrupted` removes its earlier predictive penalty on
+replay. Original measurements and registry evidence
 weight still apply; an amendment does not create a new forecast exposure.
 
 Selection samples the LLM and memory experts and retains the cost objective. Intervals
