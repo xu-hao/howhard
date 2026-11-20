@@ -6,14 +6,18 @@ import math
 
 from .decisions import load, receipt_path
 from .semantic import OUTCOMES, SETTINGS, panel_lookup
+from .storage import INTERRUPTED_CAUSES, OBSERVATION_OUTCOMES
 from .validation import HowHardError
 
 
 def report(engine):
     outcomes = Counter(row["outcome"] for row in engine.rows)
+    interrupted_causes = Counter(row["cause"] for row in engine.rows if row["outcome"] == "interrupted")
     scored = {key: [] for key in ("llm", "weighted_memory")}
     missing, unsupported = [], []
     for row in engine.rows:
+        if row["outcome"] == "interrupted":
+            continue
         decision_id = row.get("decision_id")
         if not decision_id:
             continue
@@ -71,7 +75,8 @@ def report(engine):
         "queue_wait_seconds": _time_summary([row.get("queue_wait_seconds") for row in engine.rows]),
         "effective_active_seconds": _time_summary([effective_active_seconds(row) for row in engine.rows]),
     }
-    return {"filter_quality": filter_quality(engine), "execution_accounting": summary(engine.rows), "project": engine.config.data["project"], "runs": len(engine.rows), "outcomes": {k: outcomes[k] for k in OUTCOMES},
+    return {"filter_quality": filter_quality(engine), "execution_accounting": summary(engine.rows), "project": engine.config.data["project"], "runs": len(engine.rows), "outcomes": {k: outcomes[k] for k in OBSERVATION_OUTCOMES},
+            "interrupted_causes": {k: interrupted_causes[k] for k in INTERRUPTED_CAUSES},
             "forecast_metrics": metrics, "missing_receipts": missing, "unsupported_receipts": unsupported,
             "worker_cost": {"basis": "legacy-unspecified", "known_usd": known_worker, "unknown_runs": unknown_worker, "total_usd": known_worker if not unknown_worker else None},
             "worker_time": worker_time,
@@ -103,6 +108,7 @@ def filter_quality(engine):
     times = {e["decision_id"]: e["at_utc"] for e in (json.loads(line) for line in events.read_text().splitlines())
              if e.get("decision_id")} if events.exists() else {}
     fit = Counter()
+    fit_interrupted = 0
     executions, comparisons = [], []
     floor = SETTINGS["belief"]["probability_floor"]
     for row in engine.rows:
@@ -112,6 +118,13 @@ def filter_quality(engine):
         state = decision["capability"]
         actual = cell_key(row)
         c = next(c for c in state["cells"] if c["key"] == actual)
+        if row["outcome"] == "interrupted":
+            if c["classification"] == "fit":
+                fit_interrupted += 1
+            executions.append({"execution_id": row["id"], "decision_id": row["decision_id"],
+                               "classification": c["classification"], "position": c["position"],
+                               "outcome": row["outcome"], "cause": row["cause"]})
+            continue
         if c["classification"] == "fit":
             fit[row["outcome"]] += 1
         executions.append({"execution_id": row["id"], "decision_id": row["decision_id"],
@@ -150,6 +163,7 @@ def filter_quality(engine):
     total_fit = sum(fit.values())
     return {"decisions": n, "executions": executions,
             "fit_failures": {"executed": total_fit, "loud": fit["loud"], "silent": fit["silent"],
+                             "interrupted": fit_interrupted,
                              "failure_rate": (fit["loud"]+fit["silent"])/total_fit if total_fit else None},
             "widening": {"decisions": widened, "rate": widened/n if n else None},
             "underpowered_later_clean": strict,

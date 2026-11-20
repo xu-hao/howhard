@@ -81,7 +81,10 @@ An explicit `cause=capability` retains that strength; depth/unrecorded failures 
 half strength. For those otherwise unattributed failures, an explicit
 `capability_caused=false` assertion in the note gives zero threshold evidence. Ordinary
 prose is not interpreted as a causal label. Recorded cause takes precedence over a
-contradictory note. Outcomes always remain clean/loud/silent in the single store.
+contradictory note. Operational `interrupted` outcomes (`usage_limit`, `provider_error`,
+`host_error`, `cancelled`, `unrecorded`) remain in the single observation store for
+accounting and audit, but are excluded from threshold likelihoods and timely-clearing
+updates rather than being recorded as `loud` model failures.
 
 Cross-model order updates use the same marginal threshold likelihood with an initial
 normalized order-distance penalty. Deterministic improving cross-model swaps preserve effort

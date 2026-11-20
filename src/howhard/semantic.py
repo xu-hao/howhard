@@ -67,6 +67,8 @@ def beliefs(engine, snapshot=None):
         roots[raw["id"]] = roots[raw["amends"]] if raw["amends"] else raw["id"]
         latest[roots[raw["id"]]] = index
     for row in sorted(engine.rows, key=lambda r: latest.get(r["id"], -1)):
+        if row["outcome"] == "interrupted":
+            continue
         decision_id = row.get("decision_id")
         if not decision_id:
             continue
@@ -199,7 +201,7 @@ def request(engine, prepared):
                "retrieval": [{"request": {"tool": "experience.search", "query": task_text(result["task_type"], result["context"])}, "result": retrieved["trace"]}],
                "tools": ["memory.search", "memory.read", "evidence.search", "evidence.read", "project.read"],
                "contract": {"forecasts": "One row for EVERY supplied cell: family, effort, clean, loud, silent, tokens, seconds. Probabilities sum to 1; usage estimates are nonnegative; seconds is expected active execution duration excluding external queue wait. category-v1 cells also REQUIRE token_usage with disjoint input/output/cache_read/cache_write/cache_write_5m/cache_write_1h summing to tokens; total-v1 accepts the scalar tokens forecast.",
-                            "memory_forecasts": "Array of {id, version, forecasts}: predictions conditional on each relevant supplied/read ACTIVE memory. execution: IDs are read-only observed runs; their original outcomes are evidence for related tasks, not counterfactual results. Infer model AND reasoning effort jointly. Broader/narrower tasks can transfer imperfectly. Rows may override a subset of baseline forecasts. No invented memories or unrun outcomes.",
+                            "memory_forecasts": "Array of {id, version, forecasts}: predictions conditional on each relevant supplied/read ACTIVE memory. execution: IDs are read-only observed runs; their original outcomes are evidence for related tasks, not counterfactual results. Interrupted runs (such as usage_limit, provider_error, host_error or cancelled) are operational interruptions, not model task failures. Infer model AND reasoning effort jointly. Broader/narrower tasks can transfer imperfectly. Rows may override a subset of baseline forecasts. No invented memories or unrun outcomes.",
                             "reason": "Brief explanation grounded in task/project semantics and actual evidence.",
                             "request_more": "Instead of forecasts, optionally return ONLY {request_more: [{tool, query/id/path}]} to retrieve more evidence. At most 3 requests per round."}}
     if "cost_policy" in result:
@@ -443,15 +445,15 @@ def complete(engine, payload, snapshot):
 def duration_observations(engine, payload, *, scores=None):
     from .capability import evidence_scores
     evidence = payload["evidence"][:SETTINGS["evidence_limit"]]
-    if not evidence:
+    eligible = [row for row in evidence if row["outcome"] != "interrupted" and effective_active_seconds(row) is not None]
+    if not eligible:
         return []
     scores = evidence_scores(engine, payload) if scores is None else scores
-    recency_order = {r["id"]: age for age, r in enumerate(reversed(engine.rows))}
+    scored_rows = [r for r in engine.rows if r["outcome"] != "interrupted"]
+    recency_order = {r["id"]: age for age, r in enumerate(reversed(scored_rows))}
     result = []
-    for row in evidence:
+    for row in eligible:
         active = effective_active_seconds(row)
-        if active is None:
-            continue
         age = recency_order.get(row["id"], 0)
         score = float(scores["evidence:" + row["id"]])
         similarity = 1 / (1 + math.exp(-max(-60, min(60, score))))
@@ -762,7 +764,7 @@ def learning_request(engine, evidence_id):
         if roots[raw["id"]] == row["id"]:
             history.append(deepcopy(raw))
     request["outcome_history"] = history
-    request["contract"] += " Use observation for current effective outcome and usage. outcome_history is an audit trail: measurement_corrections replace values, never add runs or usage."
+    request["contract"] += " Use observation for current effective outcome and usage. outcome_history is an audit trail: measurement_corrections replace values, never add runs or usage. Interrupted outcomes (usage_limit, provider_error, host_error, cancelled, unrecorded) represent operational interruptions rather than model task failures."
     return request, event_key
 
 

@@ -94,7 +94,10 @@ the host's actual tools execute the task.
    derived as their sum) even when token telemetry is unavailable. Read [portable accounting](references/accounting.md)
    to collect an explicitly owned artifact and attach it with a stable amendment ID.
    Missing token binding or usage remains unknown; host-control acceptance is not token evidence.
-7. Append changed feedback to clean/loud/silent with `amends`, preserving original
+7. Record operational interruptions such as usage/rate limits, provider/host errors or
+   cancellations as `interrupted` with `--cause` (`usage_limit`, `provider_error`,
+   `host_error`, `cancelled` or `unrecorded`), never as `loud` model failures. Append
+   changed feedback to `clean`/`loud`/`silent`/`interrupted` with `amends`, preserving original
    context and measurements. Use `memory learn-context` and its full `outcome_history`
    to consider original and correction notes. Apply the writer response with the exact
    revision/event key. Retry an unchanged failed writer once; if stale, refresh and

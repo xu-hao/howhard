@@ -91,7 +91,7 @@ labels that limit.
 
 The skill records feedback only after actual execution. When inspecting the workflow,
 replace `DECISION_ID` with the returned receipt, `EXECUTION_ID` with a stable ID for
-that invocation, and `OUTCOME` with `clean`, `loud` or `silent`:
+that invocation, and `OUTCOME` with `clean`, `loud`, `silent` or `interrupted`:
 
 ```sh
 howhard observe DECISION_ID OUTCOME --id EXECUTION_ID --json
@@ -99,8 +99,10 @@ howhard evidence EXECUTION_ID --raw --json
 howhard memory learn-context EXECUTION_ID --json
 ```
 
-`clean` means no observed defect, `loud` means a gate or review caught a failure, and
-`silent` means a failure escaped and was discovered later. Record real work and actual
+`clean` means no observed defect, `loud` means a gate or review caught a model failure,
+`silent` means a failure escaped and was discovered later, and `interrupted` means an
+operational interruption (with `--cause usage_limit`, `provider_error`, `host_error`,
+`cancelled` or `unrecorded`) rather than a model failure. Record real work and actual
 outcomes; setup examples and mechanical checks do not establish routing quality.
 
 Accepted explicit native model/effort overrides plus completed execution establish a

@@ -8,6 +8,7 @@ from pathlib import Path
 from . import __version__
 from .engine import Engine
 from .config import load_config
+from .storage import ALL_CAUSES, OBSERVATION_OUTCOMES
 from .validation import HowHardError
 
 
@@ -48,9 +49,9 @@ def parser():
             command.add_argument("--native", action="store_true", help="admit a known actual native model/control for raw feedback without a decision")
             command.add_argument("model", nargs="?", help="model ID, or outcome when the first argument is a decision ID")
             command.add_argument("effort", nargs="?", help="exact registered effort/control identity")
-            command.add_argument("outcome", nargs="?", choices=("clean", "loud", "silent"))
+            command.add_argument("outcome", nargs="?", choices=OBSERVATION_OUTCOMES)
             command.add_argument("--decision", metavar="ID_OR_PATH", help="use the original task text and project snapshot")
-            command.add_argument("--cause", choices=("depth", "capability", "unrecorded"))
+            command.add_argument("--cause", choices=ALL_CAUSES)
             command.add_argument("--execution-usage", metavar="FILE", help="normalized execution usage envelope")
             command.add_argument("--measurement-corrections", metavar="FILE", help="amendment-only JSON map of tokens/seconds/active_seconds/queue_wait_seconds/cost_usd replacements; null clears to unknown")
             for option, kind in (("tokens", int), ("seconds", float), ("active-seconds", float), ("queue-wait-seconds", float), ("cost-usd", float), ("ticket", str), ("note", str), ("amends", str), ("date", str), ("id", str)):
@@ -254,7 +255,7 @@ def main(argv=None):
             if args.measurement_corrections is not None:
                 options["measurement_corrections"] = read_json(args.measurement_corrections)
             if args.effort is None and args.outcome is None:
-                if args.model not in ("clean", "loud", "silent") or args.decision is not None or context_options:
+                if args.model not in OBSERVATION_OUTCOMES or args.decision is not None or context_options:
                     raise HowHardError("observe: expected DECISION_ID OUTCOME, or TASK_TYPE MODEL EFFORT OUTCOME")
                 observed = engine.observe_decision(args.task_type, args.model, native=args.native, **options)
             elif args.model is not None and args.effort is not None and args.outcome is not None:

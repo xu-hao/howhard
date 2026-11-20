@@ -159,8 +159,11 @@ howhard evidence EXECUTION_ID --raw --json
 If reported actual identity/control establishes the match instead, describe that host
 metadata in `--note`; do not claim accepted overrides unless they were accepted.
 
-Use the returned decision ID and a stable per-execution ID. OUTCOME is clean, loud or
-silent based on actual feedback. **Always** record measured elapsed `--seconds` (and
+Use the returned decision ID and a stable per-execution ID. OUTCOME is `clean`, `loud`,
+`silent` or `interrupted` based on actual feedback. Use `interrupted` with `--cause`
+(`usage_limit`, `provider_error`, `host_error`, `cancelled` or `unrecorded`) when a run
+stopped due to a usage/quota limit or other operational interruption rather than a model
+failure; do not assign usage-limit aborts to `loud`. **Always** record measured elapsed `--seconds` (and
 `--active-seconds` / `--queue-wait-seconds` when active vs. external queue-wait time is
 known), even when token telemetry or cost is unavailable. When both `--active-seconds`
 and `--queue-wait-seconds` are supplied, `--seconds` is derived as their sum if omitted
@@ -230,8 +233,10 @@ same amendment ID/input to retry, and inspect `evidence ID` for effective values
 `evidence ID --raw` for audit rows. Use writer `observation` for current effective usage;
 `outcome_history` correction maps replace usage rather than adding runs or measurements.
 
-Use actual historical identities. Amendments accept clean/loud/silent with null
+Use actual historical identities. Amendments accept `clean`/`loud`/`silent`/`interrupted` with null
 measurement/cost fields, retaining the original context, weight and uncorrected measurements.
+Amending a misclassified `loud` run to `interrupted --cause usage_limit` removes its
+predictive and capability-threshold penalty on replay.
 They replace effective evidence and score one original forecast once. Direct `evidence`
 returns the current effective root; `--raw` returns the queried original/amendment row.
 

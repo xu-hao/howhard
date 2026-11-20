@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Add `interrupted` as an operational observation `outcome` alongside `clean`, `loud`, and
+  `silent`, with structured causes (`usage_limit`, `provider_error`, `host_error`,
+  `cancelled`, and `unrecorded`) so usage-limit and operational aborts are not misclassified
+  as `loud` model failures. Keep LLM forecasts and `J` ternary while excluding `interrupted`
+  runs from predictive belief replay, capability threshold learning, active-duration
+  calibration, forecast error metrics, and `filter_quality` failure/disagreement resolution,
+  preserving durable usage/cost/time accounting, amendment reversibility, and separate
+  `outcomes.interrupted` / `interrupted_causes` report counts (#104).
+
 ## 3.3.0 — 2026-11-16
 
 - Separate active execution duration from passive queue wait with optional
