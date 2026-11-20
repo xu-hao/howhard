@@ -171,7 +171,7 @@ def test_empirical_duration_calibration_and_right_tail_variance_price_out_slow_c
         {"model": "fixture/fast-strong", "effort": "high", "usd_per_mtok": 10.0},
     ]
 
-    def decide_once(eng, seed=42):
+    def prepare_band(eng):
         pending = eng.prepare("task", "Repair rollback", native_candidates=candidates)
         band = eng.decide(pending["request_id"], filtering(pending["baseline_request"], 0, 1))
         specs = {
@@ -183,11 +183,16 @@ def test_empirical_duration_calibration_and_right_tail_variance_price_out_slow_c
             {"family": c["family"], "effort": c["effort"], **specs[c["model"]]}
             for c in band["baseline_request"]["cells"]
         ]
-        return eng.decide(band["request_id"], {"forecasts": rows, "memory_forecasts": [], "reason": "Optimistic stateless duration"}, seed=seed)
+        return band["request_id"], {"forecasts": rows, "memory_forecasts": [], "reason": "Optimistic stateless duration"}
+
+    def decide_once(eng, seed=42):
+        req_id, resp = prepare_band(eng)
+        return eng.decide(req_id, resp, seed=seed)
 
     # 1. Zero duration evidence preserves the expert's 900s (0.25h) forecast and picks the cheap cell.
     zero_engine = Engine(directory=tmp_path / "zero", retrieval=SimilarityDouble())
-    zero_result = decide_once(zero_engine, seed=1)
+    zero_req, zero_resp = prepare_band(zero_engine)
+    zero_result = zero_engine.decide(zero_req, zero_resp, seed=1)
     cells_zero = {c["model"]: c for c in zero_result["cells"]}
     assert cells_zero["fixture/cheap-thrasher"]["T"] == pytest.approx(0.25)
     assert zero_result["chosen"]["model"] == "fixture/cheap-thrasher"
@@ -201,7 +206,8 @@ def test_empirical_duration_calibration_and_right_tail_variance_price_out_slow_c
             task_text="Repair rollback", id=f"thrash-{i}",
             active_seconds=active, queue_wait_seconds=60.0,
         )
-    calibrated_result = decide_once(thrash_engine, seed=1)
+    thrash_req, thrash_resp = prepare_band(thrash_engine)
+    calibrated_result = thrash_engine.decide(thrash_req, thrash_resp, seed=1)
     cells_cal = {c["model"]: c for c in calibrated_result["cells"]}
     # Geometric mean of [7200, 10800, 14400, 10800] is ~10392s; shrunk + exp(sigma^2/2) exceeds 2.5 hours (> $62 time cost).
     assert cells_cal["fixture/cheap-thrasher"]["T"] > 2.5
@@ -214,9 +220,11 @@ def test_empirical_duration_calibration_and_right_tail_variance_price_out_slow_c
     assert cal_by_family[weak_family]["duration"]["sigma"] > 0
     assert cal_by_family[weak_family]["cost_sd"] > zero_by_family[weak_family]["cost_sd"]
 
-    # Across 200 Thompson seeds, the fast strong cell wins consistently.
-    winners = {decide_once(thrash_engine, seed=s)["chosen"]["model"] for s in range(200)}
-    assert winners == {"fixture/fast-strong"}
+    # Across 200 Thompson seeds, multi-hour active duration shifts selection strongly to the fast strong cell
+    # (unseen fast-strong retains bounded Dirichlet outcome uncertainty, so rare high-silent draws still explore).
+    zero_wins = [zero_engine.decide(zero_req, zero_resp, seed=s)["chosen"]["model"] for s in range(200)].count("fixture/fast-strong")
+    thrash_wins = [thrash_engine.decide(thrash_req, thrash_resp, seed=s)["chosen"]["model"] for s in range(200)].count("fixture/fast-strong")
+    assert thrash_wins >= 165 and thrash_wins > zero_wins + 50
     load(thrash_engine.config, calibrated_result["decision_id"])
 
     # 3. Passive external queue wait (900s active + 9900s queue wait = 10800s wall-clock) does NOT penalize the cell.
@@ -337,29 +345,22 @@ def test_frozen_v7_receipts_and_historical_journals_load_validate_observe_replay
     engine = Engine(directory=tmp_path, retrieval=SimilarityDouble())
     cells = [{"model": f"fixture/model-{i:03d}", "effort": "high", "usd_per_mtok": 1.0} for i in range(4)]
 
-    # Mint a new v8 receipt and derive an authentic frozen v7 receipt from its base structure.
+    # Mint a current receipt and derive authentic frozen v8 and v7 receipts from its base structure.
+    from legacy_receipts import to_v7, to_v8
     p = engine.prepare("task", "Repair rollback", native_candidates=cells)
     b = engine.decide(p["request_id"], filtering(p["baseline_request"], 0, 1))
-    v8_result = engine.decide(b["request_id"], forecasts(b["baseline_request"]), seed=11)
-    v8_id = v8_result["decision_id"]
+    current = load(engine.config, engine.decide(b["request_id"], forecasts(b["baseline_request"]), seed=11)["decision_id"])
+    assert current["format"] == "howhard-decision-v9"
+    assert current["semantic"]["format"] == "howhard-semantic-v6"
+    assert current["capability"]["format"] == "howhard-capability-v3"
+    v8_receipt = to_v8(current)
+    v8_id = digest(v8_receipt)
+    atomic_write(receipt_path(engine.config, v8_id), canonical(v8_receipt) + b"\n")
     v8_loaded = load(engine.config, v8_id)
     assert v8_loaded["format"] == "howhard-decision-v8"
     assert v8_loaded["semantic"]["format"] == "howhard-semantic-v5"
-    assert v8_loaded["capability"]["format"] == "howhard-capability-v3"
 
-    v7_receipt = deepcopy(v8_loaded)
-    v7_receipt["format"] = "howhard-decision-v7"
-    v7_receipt["semantic"]["format"] = "howhard-semantic-v4"
-    v7_receipt["semantic"]["prompt_version"] = "semantic-reader-v5"
-    v7_receipt["semantic"].pop("duration_observations", None)
-    for sc in v7_receipt["semantic"]["sampling"]["cells"]:
-        sc.pop("duration", None)
-    v7_receipt["capability"]["format"] = "howhard-capability-v2"
-    for cc in v7_receipt["capability"]["cells"]:
-        cc.pop("P_timely", None)
-    for ev in v7_receipt["capability"]["evidence"]:
-        for extra in ("active_seconds", "forecast_active_seconds", "timely_strength"):
-            ev.pop(extra, None)
+    v7_receipt = to_v7(current)
     v7_id = digest(v7_receipt)
     atomic_write(receipt_path(engine.config, v7_id), canonical(v7_receipt) + b"\n")
 

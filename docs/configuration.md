@@ -128,8 +128,9 @@ unpinned model overrides are rejected before state is created. Selecting Qwen do
 load weights or invoke a provider while parsing configuration; if its optional runtime
 is missing when inference is needed, the error is explicit.
 
-The same configuration applies to initial context, `memory search`, and evidence
-search. Prepared requests are bound to configuration; changing policy requires a new
+The same configuration applies to initial context, per-cell outcome-observation
+retrieval, `memory search`, and evidence search. Prepared requests are bound to
+configuration; changing policy requires a new
 request. An application-supplied `Engine(retrieval=pipeline)` still takes precedence
 over file-based construction. See [retrieval stages](retrieval.md) for replacing
 components through Python.
@@ -214,11 +215,12 @@ silent_weight = 1.0
 unknown_cause_weight = 0.5
 
 [sampling]
-min_concentration = 8.0
+min_concentration = 2.0
 max_concentration = 1000000.0
 prior_strength = 8.0
-explore_within = 0.10
 uncertainty_multiplier = 1.0
+admission_quantile = 0.80
+outcome_recency = 0.95
 ```
 
 The full inventory has no size bound. An oversized fit band gets one re-filter round
@@ -228,12 +230,24 @@ overpowered cell per round, within the same total forecast budget.
 `max_forecast_cells` is a positive integer; widening rounds are nonnegative integers.
 Require `0 < min_clear_probability < reliability_probability < 1` and observation noise
 in `(0,0.5)`. Probability/strength margins are in `[0,1]`; order penalty is nonnegative.
-Concentration bounds satisfy `1 <= min <= max`, prior strength and uncertainty multiplier
-are positive, and sampling `explore_within` lies in `[0,1]`. A risk class's optional
-`explore_within` further narrows that fraction. The supported uncertainty allowance is
-`uncertainty_multiplier * (sd_best + sd_candidate)` using delta-method retry-cost
-standard deviations; a candidate must satisfy both that allowance and the mean fraction.
-No exploration occurs when no cell passes the accepted-result silent cap.
+Concentration bounds satisfy `1 <= min_concentration <= prior_strength` and
+`min_concentration <= max_concentration`; uncertainty multiplier is positive,
+`admission_quantile` lies in `[0.5, 1)` and `outcome_recency` in `(0, 1]`.
+`prior_strength` caps the pseudo-observations any forecast prior contributes to a cell's
+[Dirichlet outcome posterior](outcome-posterior); optional forecast credible intervals
+can lower it to `min_concentration` but never raise it. `max_concentration` caps the
+posterior after observed outcomes are added. `outcome_recency` discounts each older observation of the same cell across up to
+24 task-similar executions retrieved per forecasted cell (`outcome_evidence_limit`
+in `data/semantic.toml`), and `admission_quantile` is the posterior quantile of
+accepted-result silent risk compared with epsilon.
+
+Thompson sampling considers every admissible cell whose posterior cost overlaps the
+mean-best cell: `J - J_best <= uncertainty_multiplier * (sd_best + sd_candidate)` using
+delta-method retry-cost standard deviations. A risk class's optional `explore_within`
+additionally caps the gap at that fraction of `|J_best|`; it applies only when set on
+the class. The former global `sampling.explore_within` is rejected with an error that
+points to the risk-class setting. No exploration occurs when no cell passes the
+accepted-result silent cap.
 
 `C_loud` now prices extra overhead for each loud failure on top of its redo. Epsilon
 caps defects among accepted non-loud results, not the raw per-attempt silent rate.

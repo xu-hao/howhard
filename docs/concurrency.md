@@ -114,7 +114,7 @@ when the resulting request is used.
 
 New v5 requests persist the read snapshot and a dependency manifest. It contains exact
 content/active versions of surfaced memories, effective-row digests of surfaced evidence
-(including execution experts and capability inputs), and the bound configuration digest.
+(including execution experts, capability inputs and per-cell outcome observations), and the bound configuration digest.
 Dependencies accumulate across filtering, extra retrieval, forecasting and widening.
 Additional memory/evidence retrieval reads the original snapshot. It cannot silently
 replace old content with a newer version. Edits to unsurfaced memories, new observations
@@ -122,7 +122,7 @@ and unrelated learning commits leave the request valid. Amendments or usage corr
 to a surfaced execution invalidate it when its effective contents change.
 
 The weight policy is **snapshot**. Both readers use the captured belief/expert scores,
-evidence counts and capability observation/recency weights throughout the workflow.
+evidence counts and capability, duration and outcome observation/recency weights throughout the workflow.
 They do not replay concurrent outcomes into an in-flight forecast. The receipt's optional
 `request_snapshot` records this policy, the dependency manifest, the captured evidence
 hash and memory revision. These are decision-time provenance; the global revision is

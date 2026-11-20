@@ -52,7 +52,11 @@ the host's actual tools execute the task.
    filter to `decide`, then use its NEW `stage=forecast` request ID to obtain calibrated
    rows only for the band. Supply `forecasts` and up to eight `memory_forecasts` under
    the same independent-baseline rule; forecasted `seconds` is expected **active**
-   execution duration excluding external scheduler/queue wait. Handle one explicit re-filter and stronger-only
+   execution duration excluding external scheduler/queue wait. When genuinely unsure of a
+   cell's loud or silent probability, add `loud_ci`/`silent_ci` as a `[lo, hi]` 95%
+   credible interval containing the value; wide intervals let observed outcomes dominate
+   sooner, narrow ones cannot strengthen the bounded prior, and rows without intervals
+   remain valid. Handle one explicit re-filter and stronger-only
    widening requests; never truncate an inventory/band or forecast excluded cells.
    The backend learns the order and threshold from actual similar executions, with
    prior-only placement labels for unseen cells. Placement is task-specific; there is

@@ -157,12 +157,22 @@ misclassified `loud` execution to `interrupted` removes its earlier predictive p
 replay. Original measurements and registry evidence
 weight still apply; an amendment does not create a new forecast exposure.
 
-Selection samples the LLM and memory experts and retains the cost objective. Intervals
-use the weighted forecast envelope, expanded to contain its weighted mean. The silent
-cap checks this envelope directly, with no fitted statistical floor. Tiny-weight
-pessimistic experts do not automatically veto every cell. This is a heuristic envelope,
-not a calibrated risk guarantee. Results identify the interval method and preserve the
-review-required policy when the cap is unmet.
+Selection samples the LLM and memory experts and retains the cost objective. Each
+expert's forecast row is a bounded Dirichlet prior for its cell (at most
+`prior_strength` pseudo-observations), updated by that cell's own recency-weighted
+`outcome_observations` (up to `outcome_evidence_limit = 24` task-similar executions
+retrieved independently per forecasted `(family, effort)` cell). Forecasters may attach
+`silent_ci` and/or `loud_ci` 95% credible intervals to a row; wider intervals weaken the
+prior so real outcomes dominate sooner, while a narrow interval cannot strengthen it
+beyond `prior_strength`. Rows without intervals remain valid. Intervals are credible
+intervals of the support-weighted mixture of per-expert Beta posteriors, so a lone `llm`
+forecast still reports its posterior uncertainty. The silent cap compares the 80%
+posterior quantile of accepted-result risk with epsilon, with no fitted statistical
+floor. Tiny-weight pessimistic experts do not automatically veto every cell. The
+posterior is a model assumption, not a calibrated risk guarantee. Results identify the
+interval method and preserve the review-required policy when the cap is unmet. Predictive
+support (`evidence_count`, `log_score`) weights experts; it never stands in for a cell's
+own sample size. See the {ref}`outcome posterior <outcome-posterior>`.
 
 ## Writer, failures and replay
 
@@ -188,9 +198,10 @@ failure leaves the outcome durable and does not create a second execution.
 Routing seeds reproduce selection given recorded forecasts. They do not make fresh
 LLM calls deterministic. Cached forecasts and content-addressed receipts support replay;
 operational timing/cache metadata may differ between invocations.
-New receipts use `howhard-decision-v8` with capability (`howhard-capability-v3`) and
+New receipts use `howhard-decision-v9` with capability (`howhard-capability-v3`) and
 accepted-result selection state. Requests use `howhard-agent-request-v5` and semantic state
-uses `howhard-semantic-v5` (`semantic-reader-v6`). Persisted `howhard-decision-v7`
+uses `howhard-semantic-v6` (`semantic-reader-v7`). Persisted `howhard-decision-v8`
+(`howhard-semantic-v5`, `howhard-capability-v3`) and `howhard-decision-v7`
 (`howhard-semantic-v4`, `howhard-capability-v1`/`v2`) receipts continue to load, validate,
 accept feedback, and participate in belief replay and reporting under their frozen rules.
 Older decision receipts v1–v6 remain in the store but are excluded from predictive scoring; raw
@@ -276,12 +287,13 @@ stage-1 prior; it has no independent observation store or feedback path.
 Fine selection charges expected same-cell retries to an accepted result and calibrates
 active duration from expert `seconds` forecasts plus shrunk `effective_active_seconds`
 log-residuals on similar retrieved executions, pricing the log-normal right-tail
-expectation `exp(mu + sigma^2 / 2)`. Its silent cap uses joint-expert accepted-result
-defect ratios. Sampling uses envelope/spread and recorded expert exposures to calibrate
-bounded Dirichlet concentration alongside log-normal active-duration draws. Mean-cost and
-cost-uncertainty bands (including log-normal and between-expert duration variance)
-restrict exploration; an unmet cap disables all draws and requires review. Receipts
+expectation `exp(mu + sigma^2 / 2)`. Its silent cap uses each expert's joint
+accepted-result posterior `Beta(alpha_silent, alpha_clean)` at the admission quantile.
+Sampling draws from the sampled expert's per-cell Dirichlet posterior alongside
+log-normal active-duration draws. Posterior cost overlap (including log-normal and
+between-expert duration variance) gates exploration, optionally capped by an explicit
+risk-class `explore_within`; an unmet cap disables all draws and requires review. Receipts
 preserve the formula, constants, calibration and explanation.
-A consistency disagreement compares raw stage-2 `P_clean` with stage-1 `P_clear`; it
+A consistency disagreement compares the raw stage-2 clean forecast (before outcome updates) with stage-1 `P_clear`; it
 does not substitute the accepted-result risk ratio or silently alter the chosen cell.
 See [capability filtering](capability.md) and {ref}`selection <accepted-result-selection>`.

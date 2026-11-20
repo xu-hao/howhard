@@ -89,7 +89,7 @@ def test_unbounded_inventory_runs_both_stages_and_validates_receipt(tmp_path, co
     assert len(receipt["native_candidates"]) == count
     assert len(receipt["capability"]["cells"]) == count
     assert len(receipt["semantic"]["worlds"]["llm"]) == 4
-    assert receipt["format"] == "howhard-decision-v8"
+    assert receipt["format"] == "howhard-decision-v9"
 
 
 @pytest.mark.parametrize("defect", ["missing", "duplicate", "unknown", "empty"])
@@ -451,19 +451,10 @@ def test_v1_linear_and_geometric_receipts_validate_replay_and_observe_while_v2_i
         return finish(engine, band)["decision_id"]
 
     def to_decision_v7(receipt, cap_format):
-        receipt["format"] = "howhard-decision-v7"
-        receipt["semantic"]["format"] = "howhard-semantic-v4"
-        receipt["semantic"]["prompt_version"] = "semantic-reader-v5"
-        receipt["semantic"].pop("duration_observations", None)
-        for sc in receipt["semantic"]["sampling"]["cells"]:
-            sc.pop("duration", None)
-        cap = receipt["capability"]
-        cap["format"] = cap_format
-        for c in cap["cells"]:
-            c.pop("P_timely", None)
-        for ev in cap["evidence"]:
-            for extra in ("active_seconds", "forecast_active_seconds", "timely_strength"):
-                ev.pop(extra, None)
+        from legacy_receipts import to_v7
+        legacy = to_v7(receipt, cap_format)
+        receipt.clear()
+        receipt.update(legacy)
 
     # 1. Mint a pre-#77 linear-tail howhard-capability-v1 v7 receipt (after_count == 4).
     raw_linear_id = mint_with_memory()

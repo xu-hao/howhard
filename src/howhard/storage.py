@@ -281,7 +281,7 @@ def effective_rows(config, rows):
         usage = row.get("execution_usage")
         if usage is not None and usage["provenance"].get("completed") and usage["segments"] and all(s.get("reported_tokens") is not None for s in usage["segments"]):
             row["tokens"] = sum(s["reported_tokens"] for s in usage["segments"])
-    return [originals[key] for key in sorted(originals)]
+    return list(originals.values())
 
 
 def append_bytes(path, blob):

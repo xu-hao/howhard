@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import re
 
-from .context import DECISION_FORMAT, FORMAT, LEGACY_DECISION_V7, canonical, digest, validate_project, validate_text
+from .context import DECISION_FORMAT, FORMAT, LEGACY_DECISION_V7, LEGACY_DECISION_V8, canonical, digest, validate_project, validate_text
 from .files import atomic_write
 from .validation import HowHardError, keys, text
 
@@ -55,7 +55,7 @@ def load(config, source, *, for_scoring=False):
         "howhard-decision-v1", "howhard-decision-v2", "howhard-decision-v3", "howhard-decision-v4", "howhard-decision-v5", "howhard-decision-v6"
     }:
         return None  # Preserve old evidence without replaying a removed predictor.
-    if not isinstance(value, dict) or value.get("format") not in (DECISION_FORMAT, LEGACY_DECISION_V7):
+    if not isinstance(value, dict) or value.get("format") not in (DECISION_FORMAT, LEGACY_DECISION_V8, LEGACY_DECISION_V7):
         raise HowHardError("decision.format: unsupported version; prepare a new capability-filtered decision")
     keys(value, ["format", "project", "project_identity", "task_type", "risk_class", "chosen", "seed", "context", "cost_policy", "native_candidates", "semantic", "capability", "selection"], ["request_snapshot"], where="decision")
     if "request_snapshot" in value:

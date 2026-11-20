@@ -59,43 +59,62 @@ def test_one_thousand_seeds_never_choose_the_low_clean_probability_cells(tmp_pat
 
 @pytest.mark.parametrize("loud,silent,clean", [(.4, .13, .47), (1., 0., 0.)])
 def test_retry_formula_and_denominator_floor_are_finite(tmp_path, loud, silent, clean):
-    engine = Engine(directory=tmp_path)
+    engine = Engine(directory=tmp_path, retrieval=SimilarityDouble())
     request, response = prepare(engine, [("fixture/worker", "high", clean, loud, silent, 2.)])
     result = engine.decide(request["request_id"], response, seed=1)
-    expected = (25*2+50*loud+1000*silent)/max(.0001, 1-loud)
-    assert result["cells"][0]["J"] == pytest.approx(expected)
-    assert math.isfinite(result["cells"][0]["J"])
+    row = result["cells"][0]
+    p_loud, p_silent = row["P_loud"]["mean"], row["P_silent"]["mean"]
+    expected = (25*2+50*p_loud+1000*p_silent)/max(.0001, 1-p_loud)
+    assert row["J"] == pytest.approx(expected)
+    assert math.isfinite(row["J"]) and math.isfinite(row["sampled_J"])
+    if loud == 1.:
+        # Push posterior P_loud past 1 - 1e-4 to exercise the denominator floor directly.
+        for i in range(12):
+            engine.observe("task", "fixture/worker", "high", "loud", native=True,
+                           task_text="Repair rollback", note="capability_caused=false", id=f"loud-{i}")
+        floored_req, floored_resp = prepare(engine, [("fixture/worker", "high", clean, loud, silent, 2.)])
+        floored = engine.decide(floored_req["request_id"], floored_resp, seed=1)["cells"][0]
+        assert 1 - floored["P_loud"]["mean"] < .0001
+        assert floored["expected_attempts"] == pytest.approx(1/.0001)
+        assert floored["J"] == pytest.approx(
+            (25*2+50*floored["P_loud"]["mean"]+1000*floored["P_silent"]["mean"])/.0001)
+        assert math.isfinite(floored["J"])
 
 
 def test_cap_targets_the_accepted_result_even_when_raw_silent_risk_is_small(tmp_path):
     engine = Engine(directory=tmp_path)
-    request, response = prepare(engine, [("fixture/worker", "high", .01, .98, .01, 1.)])
+    request, response = prepare(engine, [("fixture/worker", "high", .005, .99, .005, 1.)])
     result = engine.decide(request["request_id"], response, seed=1)
     row = result["cells"][0]
     assert row["P_silent"]["upper"] < result["constants"]["epsilon"]
-    assert row["P_silent_accepted"]["upper"] == pytest.approx(.5)
+    assert row["P_silent_accepted"]["mean"] == pytest.approx(.5)
+    assert row["P_silent_accepted"]["upper"] > row["admission_risk"] > result["constants"]["epsilon"]
     assert not result["cap_met"] and result["needs_review"]
     assert result["exploration"]["reason"] == "disabled-cap-unmet"
 
 
-def test_evidence_tightens_agreeing_forecasts_while_a_weak_prior_can_explore(tmp_path):
+def test_evidence_tightens_only_the_observed_cell_while_a_weak_prior_can_explore(tmp_path):
     engine = Engine(directory=tmp_path, retrieval=SimilarityDouble())
-    # Actual synthetic execution rows calibrate the same prospective baseline expert.
-    history, history_response = prepare(engine, [("fixture/history-worker", "high", .99, .01, 0., 4.)])
-    historical = engine.decide(history["request_id"], history_response, seed=0)
-    table = [("fixture/a", "high", .99, .01, 0., 4.), ("fixture/b", "high", .99, .01, 0., 4.2)]
+    table = [("fixture/a", "high", .99, .01, 0., 4.2), ("fixture/b", "high", .99, .01, 0., 4.)]
     weak, weak_response = prepare(engine, table)
     initial = engine.decide(weak["request_id"], weak_response, seed=0)
     assert "sampling" in initial["semantic"]
-    weak_choices = {engine.decide(weak["request_id"], weak_response, seed=seed)["chosen"]["model"] for seed in range(1000)}
-    assert weak_choices == {"fixture/a", "fixture/b"}
-    for i in range(100):
-        engine.observe_decision(historical["decision_id"], "clean", id=f"historical-{i}")
+    weak_choices = [engine.decide(weak["request_id"], weak_response, seed=seed)["chosen"]["model"] for seed in range(1000)]
+    assert set(weak_choices) == {"fixture/a", "fixture/b"}
+    # Actual synthetic executions of fixture/b update only fixture/b's own posterior
+    # while keeping weaker unseen fixture/a inside the stage-1 fit band.
+    for i in range(8):
+        engine.observe("task", "fixture/b", "high", "clean", native=True, task_text="Repair rollback", id=f"historical-{i}")
     strong, strong_response = prepare(engine, table)
     first = engine.decide(strong["request_id"], strong_response, seed=0)
-    assert first["semantic"]["sampling"]["cells"][0]["concentration"] > initial["semantic"]["sampling"]["cells"][0]["concentration"]
+    concentration = lambda result: {c["family"]: c["concentration"] for c in result["semantic"]["sampling"]["cells"]}
+    families = {c["model"]: c["family"] for c in first["cells"]}
+    added_weight = sum(o["weight"] for o in first["semantic"]["outcome_observations"])
+    assert added_weight > 6.5
+    assert concentration(first)[families["fixture/b"]] == pytest.approx(concentration(initial)[families["fixture/b"]] + added_weight)
+    assert concentration(first)[families["fixture/a"]] == concentration(initial)[families["fixture/a"]]
     strong_choices = [engine.decide(strong["request_id"], strong_response, seed=seed)["chosen"]["model"] for seed in range(1000)]
-    assert strong_choices.count("fixture/a") >= 990
+    assert strong_choices.count("fixture/b") > weak_choices.count("fixture/b")
 
 
 def test_unmet_cap_does_not_create_a_random_generator(tmp_path, monkeypatch):
@@ -115,8 +134,12 @@ def test_accepted_risk_envelope_uses_each_experts_joint_probabilities(tmp_path):
     override = {**response["forecasts"][0], "clean": .01, "loud": .98, "silent": .01}
     response["memory_forecasts"] = [{"id": memory["id"], "version": memory["version"], "forecasts": [override]}]
     result = engine.decide(request["request_id"], response, seed=42)
-    # Per-expert ratios are .1 and .5; mixing unrelated marginal upper bounds would exceed 1.
-    assert result["cells"][0]["P_silent_accepted"]["upper"] == pytest.approx(.5)
+    # Per-expert joint ratios are .1 and .5; mixing unrelated marginal bounds could exceed 1.
+    weights = {e["key"]: e["weight"] for e in result["semantic"]["beliefs"]["experts"]}
+    expected = weights["llm"] * .1 + weights[f"memory:{memory['id']}:{memory['version']}"] * .5
+    accepted = result["cells"][0]["P_silent_accepted"]
+    assert accepted["mean"] == pytest.approx(expected, rel=1e-3)
+    assert accepted["lower"] < accepted["mean"] < accepted["upper"] <= 1
 
 
 def test_forecasted_band_owns_worker_money_comparison(tmp_path):

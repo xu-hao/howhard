@@ -43,34 +43,73 @@ unretrieved memories use the independent LLM forecast. No learned probability ta
 or synthetic forecast is supplied to either call. Provider absence, invalid forecasts
 and provider failures are explicit errors; none produces a routing recommendation.
 
-Probability means are weighted by predictive expert support. Lower/upper bounds use
-the weighted 2.5%/97.5% forecast quantiles expanded to include the mean. This is a
-heuristic forecast envelope, not a Bayesian credible interval or calibrated guarantee.
-Admissibility compares the accepted-result defect envelope to the risk class epsilon.
-For each expert, transform its joint row to `P_silent / max(probability_floor, 1-P_loud)`
-before taking envelope quantiles, then include the ratio of weighted means. This retains
-the expert's loud/silent relationship instead of dividing unrelated marginal bounds.
-There is no additional statistical risk floor.
+(outcome-posterior)=
+### Per-cell outcome posterior
 
-`pick` samples one expert by its weight, draws outcome probabilities using an
-evidence-calibrated Dirichlet, and calibrates active duration `T` alongside outcomes.
-Forecasted `seconds` represents expected **active** execution duration excluding external
-queue wait. For each cell, empirical log-duration residuals from retrieved similar
-executions (`effective_active_seconds`, shrunk by similarity/recency evidence weight so
-zero-evidence cells preserve the expert forecast) calibrate log-normal parameters `(mu, sigma)`
-and price the right-tail expectation `E[T] = exp(mu + sigma^2 / 2)` in `T` and `J`.
-Outcome concentration uses the maximum of between-expert variance, squared envelope width
-divided by `3.92²`, and `p*(1-p)/(prior_strength + expert_evidence_count + 1)`.
-Moment-matching gives `p*(1-p)/variance - 1`; take the most conservative outcome and apply
-configured bounds. Agreeing, well-observed experts tighten; weak priors and disagreement
-stay wider. Selection admits exploration only inside both the mean-J fraction and a
-delta-method cost-uncertainty band (`cost_sd`) that includes Dirichlet outcome covariance,
-empirical log-normal active-duration variance, and between-expert spread; Thompson
-sampling draws log-normal active duration in `parts["time"]` when duration variance is
-present. Receipts retain concentrations, duration calibration parameters, evidence counts,
-variance sources, the seed and the reason for a sampled non-best choice. `summary` returns
-the same calibrated means and envelope without sampling a selection. A fixed seed
-reproduces selection given frozen forecasts; it does not make inference deterministic.
+Each expert forecast row is a bounded Dirichlet prior for that `(family, effort)` cell,
+updated only by that cell's own observed outcomes:
+
+```text
+p_0     = floored, normalized (clean, loud, silent) forecast
+kappa_0 = prior_strength, lowered by optional credible intervals, within
+          [min_concentration, prior_strength]
+alpha   = kappa_0 * p_0 + (n_clean, n_loud, n_silent)
+```
+
+`n_*` are recency-weighted counts from per-cell `outcome_observations`: for each
+forecasted `(family, effort)` cell (and any widened cell), up to
+`outcome_evidence_limit` (packaged default `24`) task-similar `clean`/`loud`/`silent`
+executions (`interrupted` runs are excluded) are retrieved
+independently from that cell's own historical runs and scored with the configured
+reranker (`similarity = sigmoid(score)`), each weighted by
+`evidence_weight * similarity * outcome_recency ** age`. `age` counts newer recorded
+non-`interrupted` observations of that same cell in chronological journal order, so heavy history on
+another cell cannot crowd out this cell's evidence, a regression or recovery dominates
+promptly, and unrelated workload does not erase a cell's history. A never-observed
+cell keeps its prior variance no matter how many runs other cells have; an expert's
+global `evidence_count` affects only its predictive weight, never a cell's sample size.
+
+A forecast row may add `silent_ci` and/or `loud_ci` as `[lo, hi]` with
+`0 <= lo <= value <= hi <= 1`, a central 95% credible interval for that probability.
+Moment matching gives `kappa = p*(1-p)/((hi-lo)/3.92)^2 - 1`; the smallest such value is
+clamped to `[min_concentration, prior_strength]`. Intervals can therefore widen a prior
+but an overconfident narrow interval can never make a forecast stronger than
+`prior_strength` pseudo-observations. Bare `clean`/`loud`/`silent` rows remain valid and
+use `kappa_0 = prior_strength`.
+
+`P_clean`, `P_loud` and `P_silent` report `{mean, lower, upper}` from the
+support-weighted mixture of the experts' Beta marginals `Beta(alpha_i, sum(alpha) - alpha_i)`:
+the mean and the equal-tailed 2.5%/97.5% quantiles, expanded to contain the mean. This is
+a real posterior interval even when only the `llm` expert participates. Accepted-result
+risk `P_silent / (1 - P_loud)` is, under each Dirichlet, `Beta(alpha_silent, alpha_clean)`;
+`P_silent_accepted` reports the same mixture mean and 95% interval. A cell is
+`admissible` when its `admission_risk`, the `admission_quantile` (default 0.80) posterior
+quantile of accepted risk, is at most the risk class epsilon. Using q80 rather than the
+97.5% bound keeps unseen cells with an ordinary forecast admissible while still rejecting
+high-silent cells. There is no additional statistical risk floor, and the posterior is a
+model assumption, not a calibrated coverage guarantee. `J` uses the posterior means.
+
+`pick` samples one expert by its weight and draws outcome probabilities from that
+expert's per-cell Dirichlet posterior `alpha`, and calibrates active duration `T`
+alongside outcomes. Forecasted `seconds` represents expected **active** execution
+duration excluding external queue wait. For each cell, empirical log-duration residuals
+from retrieved similar executions (`effective_active_seconds`, shrunk by
+similarity/recency evidence weight so zero-evidence cells preserve the expert forecast)
+calibrate log-normal parameters `(mu, sigma)` and price the right-tail expectation
+`E[T] = exp(mu + sigma^2 / 2)` in `T` and `J`. `cost_sd` is the delta-method retry-cost
+standard deviation from the posterior Dirichlet covariance
+`(diag(m) - m m^T) / (sum(alpha) + 1)` and log-normal active-duration variance, raised to
+the between-expert spread of per-expert posterior costs when larger. Thompson sampling
+considers every admissible, schedulable cell whose posterior cost overlaps the mean-best
+cell: `J - J_best <= uncertainty_multiplier * (sd_best + sd_cell)`. Only an explicit
+risk-class `explore_within` additionally caps that gap at `explore_within * |J_best|`.
+Thompson sampling draws log-normal active duration in `parts["time"]` when duration
+variance is present. Receipts retain `outcome_observations`, each sampled cell's
+`outcome_posterior` (`prior`, `prior_concentration`, `counts`, `evidence_weight`,
+`alpha`), concentrations, duration calibration parameters, each cell's `admission_risk`,
+the seed and the reason for a sampled non-best choice. `summary` returns the same
+posterior means and intervals without sampling a selection. A fixed seed reproduces
+selection given frozen forecasts; it does not make inference deterministic.
 
 Loud attempts are retried on the same cell until a non-loud result is accepted.
 `1/(1-P_loud)` charges the expected attempts; `C_loud` is extra detection/rework overhead
@@ -79,11 +118,17 @@ a near-certain loud failure finite but very costly. Retry-on-another-cell is not
 
 If the cap is unmet after stronger-only capability widening, no expert or probability
 sample is drawn. `flag-review` chooses the minimum mean J; `lowest-bound` chooses the
-lowest accepted-result silent upper envelope, with mean J breaking ties. Both require
+lowest accepted-result `admission_risk`, with mean J breaking ties. Both require
 review. `exploration.reason` records `disabled-cap-unmet`. Risk-class `explore_within`
-can further tighten the default sampling band; it cannot permit exploration outside
-the uncertainty-supported band. Cheaper alternatives include signed cost
-component explanations or the policy that excluded them.
+can further tighten the posterior-overlap band; it cannot permit exploration outside
+it. Cheaper alternatives include signed cost component explanations or the policy that
+excluded them.
+
+New receipts use `howhard-decision-v9` (`howhard-semantic-v6`, reader prompt
+`semantic-reader-v7`, interval kind `dirichlet-posterior-mixture`). Frozen
+`howhard-decision-v8` and `howhard-decision-v7` receipts keep their original weighted
+forecast envelopes, upper-envelope admission and sampling policy shape; they still load,
+validate, accept outcomes and replay into predictive weights.
 
 ## Prices and measurements
 
@@ -259,8 +304,8 @@ calibration, forecast error metrics, and `filter_quality` failure/disagreement r
 `loud` execution to `interrupted` removes its predictive and threshold penalty on replay. Superseded rows without timestamps/context and unresolved
 `model_default` efforts are refused; no context or control is inferred retrospectively.
 Chains replace the original run's effective outcome and cause, counting that run once
-and retaining its original ID, decision, cell, task text, project snapshot, project,
-weight and uncorrected measurements. Raw rows remain intact. Amendments cannot override
+in original chronological journal order and retaining its original ID, decision, cell,
+task text, project snapshot, project, weight and uncorrected measurements. Raw rows remain intact. Amendments cannot override
 historical context through the observation API. Targets within a file must precede their amendments.
 Across files, targets must exist, have dates no later than their amendments, and form an
 acyclic dependency graph. Dependency ordering keeps amendments valid when flushing moves
@@ -308,9 +353,10 @@ policy. The resolved state subtree is excluded from capture and
 `project.read`, including symlink aliases; a state root equal to or containing the capture
 root is refused. Prepared calling-agent requests bind the worktree and reject sibling
 retrieve/decide. Requests use `howhard-agent-request-v5` and new receipts use
-`howhard-decision-v8` (`howhard-semantic-v5` / `semantic-reader-v6`,
+`howhard-decision-v9` (`howhard-semantic-v6` / `semantic-reader-v7`,
 `howhard-capability-v3`), with required capability and accepted-result selection state.
-Persisted `howhard-decision-v7` receipts (`howhard-semantic-v4` / `semantic-reader-v5`,
+Persisted `howhard-decision-v8` receipts (`howhard-semantic-v5` / `semantic-reader-v6`,
+`howhard-capability-v3`, weighted forecast envelopes) and `howhard-decision-v7` receipts (`howhard-semantic-v4` / `semantic-reader-v5`,
 `howhard-capability-v1` or `howhard-capability-v2`) continue to load, validate, accept
 feedback, and participate in belief replay and reporting under their frozen version rules.
 Receipts v1–v6 remain recognizable as historical store entries but are not replayed as
@@ -328,8 +374,9 @@ returns a typed conflict and refreshed request; see [concurrent clients](concurr
 Calling-agent submissions are audited with unknown external
 inference costs and latency rather than being counted as free provider calls.
 
-New receipts use `howhard-decision-v8`, requests `howhard-agent-request-v5`, semantic state
-`howhard-semantic-v5`, and capability state `howhard-capability-v3`. Persisted
+New receipts use `howhard-decision-v9`, requests `howhard-agent-request-v5`, semantic state
+`howhard-semantic-v6`, and capability state `howhard-capability-v3`. Persisted
+`howhard-decision-v8` (`howhard-semantic-v5`, `howhard-capability-v3`) and
 `howhard-decision-v7` (`howhard-semantic-v4`, `howhard-capability-v1`/`v2`) receipts
 remain valid under their frozen rules; v1–v6 receipts and older requests are refused for
 new execution feedback and excluded from replay/report scoring. Existing raw observations

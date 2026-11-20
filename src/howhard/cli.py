@@ -129,7 +129,7 @@ def render(result):
         if result["needs_review"]:
             lines.append("Independent review is required before release.")
     lines.append(f"Task: {result['task_type']}  Risk: {result['risk_class']}  Constants: {json.dumps(result['constants'], sort_keys=True)}")
-    lines.append("family/effort  P_clean [95%]  P_loud [95%]  P_silent [95%]  P_silent accepted [95%]  session_cost_usd (cost)  needed_credit_usd (credit)  time h  J* USD  sampled J*  admissible")
+    lines.append("family/effort  P_clean [95%]  P_loud [95%]  P_silent [95%]  P_silent accepted [95%]  session_cost_usd (cost)  needed_credit_usd (credit)  time h  J* USD  sampled J*  admissible (accepted-risk quantile)")
     for row in result["cells"]:
         fields = [f"{row['family']}/{row['effort']}"]
         for name in ("P_clean", "P_loud", "P_silent", "P_silent_accepted"):
@@ -138,7 +138,8 @@ def render(result):
         fields.extend((f"{row['session_cost_usd']:.4f}" if row["session_cost_usd"] is not None else "unknown",
                        f"{row['needed_credit_usd']:.4f}" if row["needed_credit_usd"] is not None else "unknown",
                        f"{row['T']:.4f}", f"{row['J']:.4f}",
-                       f"{row['sampled_J']:.4f}" if "sampled_J" in row else "—", str(row["admissible"])))
+                       f"{row['sampled_J']:.4f}" if "sampled_J" in row else "—",
+                       f"{row['admissible']} ({row['admission_risk']:.3f})" if "admission_risk" in row else str(row["admissible"])))
         lines.append("  ".join(fields))
     for reason in result.get("why", []):
         lines.append(f"Why {reason['family']}/{reason['effort']} lost: {reason['message']}")
