@@ -1,8 +1,9 @@
-format = "howhard-semantic-v5"
-prompt_version = "semantic-reader-v6"
+format = "howhard-semantic-v6"
+prompt_version = "semantic-reader-v7"
 writer_version = "semantic-writer-v1"
 memory_limit = 8
 evidence_limit = 8
+outcome_evidence_limit = 24 # Maximum similar executions retained per forecast cell.
 retrieval_rounds = 2
 timeout_seconds = 180
 claude_model = "sonnet"

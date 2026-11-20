@@ -274,32 +274,47 @@ remains attributed to the invocation that actually ran. The
 [semantic-memory contract](semantic-memory.md) specifies scoring and mutation;
 the [retrieval guide](retrieval.md) specifies precedent selection.
 
-## 5 Risk envelopes and bounded exploration
+## 5 Outcome posteriors and bounded exploration
 
-The fine forecast supplies both an expected cost and an accepted-result defect
-envelope. For each expert, howhard first computes the joint ratio
-{math}`p_s/\max(\delta,1-p_l)`. It then takes weighted 2.5% and 97.5% quantiles
-of those ratios and expands the envelope to include the ratio of aggregate means.
-This preserves each expert's loud/silent relationship. Dividing unrelated
-marginal bounds would lose it.
+Each expert's fine forecast is a prior, not a measurement. For one candidate cell,
+howhard treats the floored forecast {math}`p_0=(p_c,p_l,p_s)` as the mean of a
+Dirichlet prior with concentration {math}`\kappa_0\le\kappa_{\max}` (the configured
+`prior_strength`, 8 by default). An optional 95% credible interval on {math}`p_l` or
+{math}`p_s` lowers {math}`\kappa_0` by moment matching,
+{math}`\kappa=p(1-p)/\sigma^2-1` with {math}`\sigma` equal to the interval width
+divided by 3.92, but never raises it: a forecaster cannot claim the authority of many
+real runs. Up to 24 task-similar historical runs are retrieved independently for each forecasted
+cell—preventing frequently executed cells from crowding out rarer ones—and update the
+prior conjugately, {math}`\alpha=\kappa_0 p_0+(n_c,n_l,n_s)`. Counts are weighted by
+relevance, model evidence weight and an exponential recency decay (0.95 per newer
+observation of the same cell in chronological journal order), so a regression or a
+recovery moves the posterior promptly. A cell with no
+observations keeps its prior variance regardless of how much evidence other cells have;
+global expert support weights experts but is not a per-cell sample size.
 
-A candidate passes the risk policy when the upper accepted-result defect envelope
-is at most the risk class's epsilon. These bounds are heuristic forecast
-envelopes, not Bayesian credible intervals or calibrated frequentist confidence
-intervals. Epsilon is a selection rule, not an empirical guarantee about the
-future defect rate.
+Reported probabilities are the support-weighted mixture of the experts' posterior
+marginals {math}`\mathrm{Beta}(\alpha_i,\sum_j\alpha_j-\alpha_i)`, with equal-tailed
+95% credible intervals. Under a Dirichlet, accepted-result defect risk
+{math}`p_s/(p_c+p_s)` is exactly {math}`\mathrm{Beta}(\alpha_s,\alpha_c)`, which
+preserves each expert's loud/silent relationship. A candidate passes the risk policy
+when the 80% posterior quantile of that mixture is at most the risk class's epsilon.
+The 80% quantile, rather than the 97.5% bound, avoids rejecting every unseen cell for
+prior width alone while still rejecting forecasts or histories with substantial silent
+risk. The intervals are Bayesian under the stated prior and exchangeability
+assumptions; they are not calibrated frequentist guarantees, and epsilon is a selection
+rule, not an empirical guarantee about the future defect rate.
 
-When the cap is met, selection samples a predictive expert and Dirichlet outcome
-probabilities. Concentration is moment-matched from expert disagreement, envelope
-width and recorded evidence counts, within fixed bounds. This is an approximate
-sampling model, rather than a conjugate posterior obtained by counting outcomes.
-
-Exploration is restricted to candidates that satisfy risk and credit constraints
-and whose mean objective is close to the best by both a configured cost fraction
-and an uncertainty-based allowance. After widening is exhausted with no passing
-candidate, selection disables sampling and applies a deterministic fallback that
-requires review. The {ref}`selection reference <accepted-result-selection>` defines the
-envelopes, concentration and fallback policies.
+When the cap is met, selection samples a predictive expert in proportion to its
+support and draws outcome probabilities from that expert's per-cell Dirichlet posterior
+(Thompson sampling). Exploration is restricted to candidates that satisfy risk and
+credit constraints and whose posterior cost distribution overlaps the mean-best
+candidate's, measured by delta-method standard deviations. A fixed fraction of the best
+mean cost caps the gap only when a risk class sets it explicitly; by default a small
+point-forecast difference cannot lock in a favoured cell and starve an unseen cheaper
+one of evidence. After widening is exhausted with no passing candidate, selection
+disables sampling and applies a deterministic fallback that requires review. The
+{ref}`selection reference <accepted-result-selection>` defines the posterior,
+admission and fallback policies.
 
 ## 6 Retrospective defect attribution
 
@@ -399,8 +414,9 @@ The components have distinct statistical meanings:
 | Capability threshold | Generalized Bayesian update with weighted noisy likelihoods | Scalar order and heuristic transfer from related tasks |
 | Cross-model ordering | Constrained local posterior/MAP search | Approximate search over rankings |
 | Memory support | Tempered, recency-weighted predictive evidence | Forecast support does not establish truth or causality |
-| Risk envelope | Weighted expert quantiles including the aggregate estimate | No calibrated coverage guarantee |
-| Selection sampling | Moment-matched Dirichlet with bounded exploration | Approximate uncertainty model |
+| Outcome posterior | Per-cell Dirichlet–multinomial update of a bounded forecast prior | Prior strength and recency decay are fixed modelling choices |
+| Risk admission | 80% quantile of the mixture accepted-defect posterior | No calibrated coverage guarantee |
+| Selection sampling | Thompson sampling within posterior cost overlap | Delta-method overlap is approximate |
 | Outcome amendments | Correction and replay of an earlier execution | Requires supported attribution and preserved provenance |
 
 Together, these mechanisms give routing access to both immediate outcomes and

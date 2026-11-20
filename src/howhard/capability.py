@@ -398,12 +398,17 @@ def aggregate(engine, payload, response, *, observed=None):
 
 
 def disagreements(capability, prepared):
-    indexed = {cell_key(c): c for c in prepared[0]["cells"]}
+    """Compare the two readers' prospective forecasts, before outcome evidence updates either."""
+    semantic = prepared[0]["semantic"]
+    experts = semantic["beliefs"]["experts"]
+    panels = {k: {(c["family"], c["effort"]): c for c in panel} for k, panel in semantic["worlds"].items()}
+    forecast = {cell_key(c): sum(e["weight"]*panels[e["key"]][c["family"], c["effort"]]["clean"] for e in experts)
+                for c in prepared[0]["cells"]}
     margin = capability["policy"]["consistency_margin"]
     return [{"key": c["key"], "model": c["model"], "effort": c["effort"],
-             "P_clear": c["P_clear"], "P_clean": indexed[c["key"]]["P_clean"]["mean"]}
-            for c in capability["cells"] if c["key"] in indexed
-            and abs(c["P_clear"]-indexed[c["key"]]["P_clean"]["mean"]) > margin]
+             "P_clear": c["P_clear"], "P_clean": forecast[c["key"]]}
+            for c in capability["cells"] if c["key"] in forecast
+            and abs(c["P_clear"]-forecast[c["key"]]) > margin]
 
 
 def validate_receipt(state, inventory, semantic, chosen, *, decision_format=DECISION_FORMAT, constants=None):

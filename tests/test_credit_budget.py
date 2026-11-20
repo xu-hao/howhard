@@ -404,8 +404,8 @@ def test_session_cost_drives_sorting_and_selection_while_credit_stays_explicit(t
     config_path = tmp_path / "howhard.toml"
     config_path.write_text(
         'on_cap_unmet = "flag-review"\n'
-        '[sampling]\nexplore_within = 0.0\n'
         '[task_types]\ntask = "standard"\n'
+        '[classes.standard]\nexplore_within = 0.0\n'
     )
     engine = Engine(config_path)
     sampled_runs = {}

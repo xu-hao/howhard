@@ -176,6 +176,7 @@ def test_interrupted_excluded_from_capability_threshold_and_duration_calibration
     receipt = load(int_engine.config, int_decision["decision_id"])
     assert receipt["capability"]["evidence"] == base_decision["capability"]["evidence"]
     assert receipt["semantic"]["duration_observations"] == base_decision["semantic"]["duration_observations"]
+    assert receipt["semantic"]["outcome_observations"] == base_decision["semantic"]["outcome_observations"]
 
     # Capability P_clear, P_timely, band, and calibrated T/J are completely invariant to interrupted runs.
     base_cap = {c["model"]: c for c in base_decision["capability"]["cells"]}

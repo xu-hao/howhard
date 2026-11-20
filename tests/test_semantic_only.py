@@ -137,7 +137,10 @@ def test_memory_forecast_can_raise_risk_and_require_review(tmp_path):
                 "reason": "The observed boundary makes this candidate risky"}
     choice = engine.decide(pending["request_id"], response, seed=1)
     assert not choice["cap_met"] and choice["needs_review"]
-    assert choice["cells"][0]["P_silent"]["upper"] == .4
+    row = choice["cells"][0]
+    assert row["P_silent"]["mean"] == pytest.approx(.8 * .005 + .2 * .4)
+    assert row["P_silent"]["upper"] > .4
+    assert row["admission_risk"] > choice["constants"]["epsilon"]
 
 
 def test_unsurfaced_external_observation_keeps_prepared_request_valid(tmp_path):

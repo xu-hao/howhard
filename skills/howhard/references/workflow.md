@@ -115,9 +115,12 @@ money. The full objective uses `C_run = session_cost_usd` and is
 / max(probability_floor, 1-P_loud)`: loud attempts retry the same cell. Fully priced native
 inventories with a uniform credit-rate basis include worker money using each candidate's
 `cost_per_credit`. Mixed bases omit it uniformly. `needs_review` still requires independent review;
-the risk cap is checked against the joint-expert envelope for accepted-result defects,
-`P_silent/(1-P_loud)`. Concentration is calibrated from forecast spread and actual expert
-evidence. Exploration requires both a close mean J and supporting cost uncertainty.
+each forecast row is a bounded per-cell Dirichlet prior updated only by that cell's own
+recency-weighted observed outcomes, and the risk cap compares the 80% posterior quantile
+of accepted-result defects, `P_silent/(1-P_loud)`, with epsilon (`admission_risk`).
+Reported `P_*` bounds are 95% posterior credible intervals, including for an `llm`-only
+forecast. Exploration (Thompson sampling) covers cells whose posterior cost overlaps the
+mean-best cell; only an explicit risk-class `explore_within` also caps the mean gap.
 An unmet cap disables exploration, chooses minimum mean J (or configured lowest-bound),
 and requires review. Inspect the recorded reason.
 

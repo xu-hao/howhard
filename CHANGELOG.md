@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- Replace point outcome forecasts with per-cell Dirichlet–multinomial posteriors: each
+  expert forecast is a bounded prior (`kappa_0 <= prior_strength`) updated only by that
+  `(family, effort)` cell's own recency-weighted `outcome_observations` (up to
+  `outcome_evidence_limit = 24` task-similar non-`interrupted` executions retrieved
+  independently per forecasted cell, aged in chronological journal order with
+  `sampling.outcome_recency = 0.95`), so global expert evidence counts no longer shrink
+  unseen cells' uncertainty and heavy history on one cell cannot crowd out another.
+  Forecast rows accept optional `silent_ci`/`loud_ci` 95% credible intervals that can
+  only widen the prior (down to `min_concentration`, now 2.0 by default). `P_clean`,
+  `P_loud`, `P_silent` and `P_silent_accepted` report real Beta mixture credible
+  intervals even for `llm`-only forecasts; admission uses the 80% posterior quantile of
+  accepted silent risk (`sampling.admission_quantile`, reported as `admission_risk`);
+  Thompson eligibility uses posterior cost overlap, with `explore_within` honored only
+  when set on a risk class. The global `sampling.explore_within` setting is rejected
+  with a pointer to the risk-class setting. New receipts use `howhard-decision-v9`
+  (`howhard-semantic-v6`, `semantic-reader-v7`) while frozen v8 and v7 receipts still
+  load, validate and replay (#103).
+
 - Add `interrupted` as an operational observation `outcome` alongside `clean`, `loud`, and
   `silent`, with structured causes (`usage_limit`, `provider_error`, `host_error`,
   `cancelled`, and `unrecorded`) so usage-limit and operational aborts are not misclassified

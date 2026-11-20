@@ -126,7 +126,8 @@ def test_unrelated_history_cannot_dilute_selected_memory_support(project):
     stages, _ = pipeline(config)
     engine = Engine(config, retrieval=stages, llm=FixtureLLM())
     memory = engine.memory.add("Relevant lesson", "A useful task precedent")
-    stages.fusion = lambda rankings, limit: [f"memory:{memory['id']}:1"]
+    target = f"memory:{memory['id']}:1"
+    stages.fusion = lambda rankings, limit: [target] if any(target in r for r in rankings) else []
     choice = engine.pick("Y", "New task", native_candidates=inventory([("opus", "high")]), seed=1)
     experts = {e["key"]: e["weight"] for e in choice["semantic"]["beliefs"]["experts"]}
     assert experts == {"llm": .8, f"memory:{memory['id']}:1": .2}

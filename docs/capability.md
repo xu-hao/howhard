@@ -151,7 +151,7 @@ memories have no historical predictive credit; unchanged overrides earn no expos
 Amendments replace the effective outcome and score the original exposure once.
 
 For every forecasted cell, compare the threshold posterior's `P_clear` with stage 2's
-weighted `P_clean`. A difference above `consistency_margin` (default 0.2) is recorded,
+weighted prospective `P_clean` forecast (before per-cell outcome updates). A difference above `consistency_margin` (default 0.2) is recorded,
 without changing stage-2 selection. After the actual outcome, compare the frozen binary
 log losses and report which reader was closer, including ties.
 
@@ -162,7 +162,7 @@ retain the selected cell's original classification and position. Excluded cells 
 never ran contribute no outcome. Reported rates are descriptive diagnostics.
 
 Configuration defaults and validation are in [configuration](configuration.md).
-Decision v8 receipts freeze the full filter, expert priors, task-specific order,
+Decision v9 (and persisted v8) receipts freeze the full filter, expert priors, task-specific order,
 clearing and timely-clearing probabilities, band, widening, disagreement data, fine
 forecasts, and accepted-result selection. Newly aggregated capability blocks carry
 `format = "howhard-capability-v3"`, require geometric overpowered-tail expert priors, and

@@ -207,6 +207,7 @@ class Engine:
             "weights_policy": "snapshot",
             "capability_observations": observations(reader, bundle["payload"], scores=scores),
             "duration_observations": semantic.duration_observations(reader, payload, scores=scores),
+            "outcome_observations": [],
         }
         bundle["inventory_source"] = inventory
         bundle["native_candidates"] = candidates
@@ -312,9 +313,17 @@ class Engine:
     def _forecast_request(self, bundle, requested):
         from copy import deepcopy
         from .capability import cell_key
+        from .request_state import view
         bundle["stage"] = "forecast"
         bundle["payload"] = deepcopy(bundle["forecast_template"])
         bundle["payload"]["cells"] = [c for c in bundle["payload"]["cells"] if cell_key(c) in requested]
+        if "learned_state" in bundle:
+            reader = view(self, bundle["read_state"]) if "read_state" in bundle else self
+            seen_ids = {obs["id"] for obs in bundle["learned_state"]["outcome_observations"]}
+            bundle["learned_state"]["outcome_observations"].extend(
+                obs for obs in semantic.outcome_observations(reader, bundle["payload"])
+                if obs["id"] not in seen_ids
+            )
         all_keys = requested | (set(cell_key(c) for c in bundle["forecast_state"]["cells"]) if bundle["forecast_state"] else set())
         inventory = [c for c in bundle["native_candidates"] if cell_key(c) in all_keys]
         p = bundle["payload"]
@@ -373,7 +382,8 @@ class Engine:
         prepared = deepcopy(full[0]), [deepcopy(c) for c in full[1] if (c["family"], c["effort"]) in forecast_pairs]
         prepared[0]["native_candidates"] = deepcopy(bundle["native_candidates"])
         prepared = semantic.augment(self, prepared, combined, combined_payload, snapshot, usage,
-                                    duration_obs=bundle.get("learned_state", {}).get("duration_observations"))
+                                    duration_obs=bundle.get("learned_state", {}).get("duration_observations"),
+                                    outcome_obs=bundle.get("learned_state", {}).get("outcome_observations"))
         state = deepcopy(bundle["capability"])
         state["disagreements"] = capability.disagreements(state, prepared)
         admissible = any(c["admissible"] for c in prepared[0]["cells"])
