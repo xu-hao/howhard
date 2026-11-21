@@ -36,7 +36,7 @@ howhard pick specified-implementation --candidates /tmp/host-candidates.json --t
 howhard observe DECISION_ID clean --tokens 12000 --seconds 45
 ```
 
-Every pick saves a content-addressed receipt under `decisions/` in the backend state
+Every pick saves a content-addressed receipt in `payloads.sqlite3` in the backend state
 root reported by `howhard paths` (local `.howhard` for plain folders). Its ID is
 printed in text and JSON output. The receipt includes the chosen cell, task description,
 project snapshot, seed and risk class. New receipts also retain `request_snapshot`:

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Store complete request and decision JSON losslessly as zstd-compressed SQLite
+  payloads, migrate and remove verified loose JSON under write admission, and expose
+  indexed decision summaries without decompressing semantic evidence (#109).
+
 - Concentrate the capability prior near the lower cut and keep separate clearing and
   timely-clearing intervals when their combined span exceeds `max_forecast_cells`.
   The complete inventory and both posteriors stay in the receipt. New capability v4

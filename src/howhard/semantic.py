@@ -63,7 +63,7 @@ def memory_snapshot(engine):
 
 def beliefs(engine, snapshot=None):
     """Replay effective outcomes; only pre-recorded forecasts earn predictive support."""
-    from .decisions import load, receipt_path
+    from .decisions import load, exists
     snapshot = memory_snapshot(engine) if snapshot is None else snapshot
     priors = SETTINGS["belief"]
     entries = {"llm": priors["llm_prior"],
@@ -83,7 +83,7 @@ def beliefs(engine, snapshot=None):
         decision_id = row.get("decision_id")
         if not decision_id:
             continue
-        if not receipt_path(engine.config, decision_id).is_file():
+        if not exists(engine.config, decision_id):
             unscored += 1
             continue
         receipt = load(engine.config, decision_id, for_scoring=True)
@@ -840,8 +840,8 @@ def learning_request(engine, evidence_id):
     snapshot = engine.memory.snapshot(include_removed=True)
     receipt = None
     if row.get("decision_id"):
-        from .decisions import load, receipt_path
-        if receipt_path(engine.config, row["decision_id"]).is_file():
+        from .decisions import load, exists
+        if exists(engine.config, row["decision_id"]):
             receipt = load(engine.config, row["decision_id"], for_scoring=True)
     request = {"kind": "learn", "prompt_version": SETTINGS["writer_version"], "observation": row,
                "decision": receipt, "memory_revision": snapshot["revision"], "memories": snapshot["memories"],

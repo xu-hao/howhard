@@ -17,10 +17,11 @@ number may restart after the queue empties; the random ticket suffix distinguish
 | Operation | Serialized boundary |
 | --- | --- |
 | First use | Validate evidence, establish project/store identity; initialize memory schema when needed |
+| Legacy payload migration | Under store write admission, commit and verify bounded SQLite batches before unlinking loose request and decision JSON |
 | Native inventories | Validate and merge historical identity metadata |
-| `context` | Capture one consistent store snapshot; publish the immutable request even if writers ran during retrieval |
+| `context` | Capture one consistent store snapshot; publish the immutable zstd-compressed SQLite request even if writers ran during retrieval |
 | `retrieve` / stage transitions | Recheck surfaced dependencies before publishing the next immutable request |
-| `decide` / `pick` | Commit the receipt after checking its forecast inputs again; audit events have separate turns |
+| `decide` / `pick` | Commit the zstd-compressed SQLite receipt and indexed summary after checking its forecast inputs again; audit events have separate turns |
 | `observe` / amendments | Read current evidence, validate IDs, provenance and corrections, then append/fsync |
 | `usage attach` | Collect the owned source outside admission; validate and append the correction inside admission |
 | Memory operations / learning | Recheck current evidence, event key, expected revision/version, then commit the SQLite transaction |

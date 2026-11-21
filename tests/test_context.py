@@ -109,13 +109,16 @@ def test_receipt_mismatch_and_partial_row_context_refused(project):
 
 
 def test_context_encoder_mismatch_and_corrupt_receipt_refused(project, tmp_path):
-    from howhard.decisions import receipt_path
+    import sqlite3
+    import zstandard as zstd
+    from howhard.payload_store import get
     engine = Engine(project())
     choice = engine.pick("Y", "private task", seed=2, native_candidates=inventory())
-    receipt = receipt_path(engine.config, choice["decision_id"])
-    data = json.loads(receipt.read_bytes())
+    data = json.loads(get(engine.config, "decisions", choice["decision_id"]))
     data["context"]["task_text"] = "tampered"
-    receipt.write_text(json.dumps(data))
+    with sqlite3.connect(engine.config.state_root / "payloads.sqlite3") as db:
+        db.execute("UPDATE decisions SET payload=? WHERE decision_id=?",
+                   (zstd.ZstdCompressor().compress(json.dumps(data).encode()), choice["decision_id"]))
     with pytest.raises(HowHardError, match="match its ID"):
         engine.observe_decision(choice["decision_id"], "clean")
     engine.observe("Y", "claude-opus-5-5", "high", "clean", task_text="task", project_context={"files": 1})

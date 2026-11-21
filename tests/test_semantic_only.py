@@ -90,6 +90,7 @@ def test_removed_statistical_configuration_is_rejected(tmp_path, setting):
 def test_legacy_receipts_do_not_block_evidence_memory_or_reports(tmp_path, version):
     from howhard.context import canonical, digest
     from howhard.decisions import load
+    from howhard.payload_store import get
     from howhard.validation import HowHardError
     engine = Engine(directory=tmp_path, llm=FixtureLLM())
     choice = engine.pick("task", native_candidates=INVENTORY, seed=1)
@@ -105,14 +106,16 @@ def test_legacy_receipts_do_not_block_evidence_memory_or_reports(tmp_path, versi
         legacy.pop("semantic")
     legacy_id = digest(legacy)
     legacy_path = engine.config.state_root / "decisions" / f"{legacy_id}.json"
-    legacy_path.write_bytes(canonical(legacy))
+    legacy_path.parent.mkdir(exist_ok=True)
+    legacy_bytes = canonical(legacy)
+    legacy_path.write_bytes(legacy_bytes)
     if version == "howhard-decision-v6":
         assert load(engine.config, legacy_id, for_scoring=True) is None
     row = engine.observe_decision(choice["decision_id"], "clean", id="historical")
     journal = engine.config.path(engine.config.data["journal"])
     row["decision_id"] = legacy_id
     journal.write_bytes(canonical(row) + b"\n")
-    before = journal.read_bytes(), legacy_path.read_bytes()
+    before = journal.read_bytes(), legacy_bytes
     engine.refresh()
     assert engine.evidence("historical")["outcome"] == "clean"
     assert engine.memory_beliefs()["unscored_runs"] == 1
@@ -120,7 +123,8 @@ def test_legacy_receipts_do_not_block_evidence_memory_or_reports(tmp_path, versi
     assert engine.memory_learning_context("historical")["request"]["decision"] is None
     with pytest.raises(HowHardError):
         engine.observe_decision(legacy_id, "clean", id="unrun")
-    assert (journal.read_bytes(), legacy_path.read_bytes()) == before
+    assert (journal.read_bytes(), get(engine.config, "decisions", legacy_id)) == before
+    assert not legacy_path.exists()
 
 
 def test_memory_forecast_can_raise_risk_and_require_review(tmp_path):

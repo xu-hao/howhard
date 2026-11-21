@@ -5,7 +5,6 @@ from pathlib import Path
 import re
 
 from .context import DECISION_FORMAT, FORMAT, LEGACY_DECISION_V7, LEGACY_DECISION_V8, canonical, digest, validate_project, validate_text
-from .files import atomic_write
 from .validation import HowHardError, keys, text
 
 
@@ -27,8 +26,21 @@ def save(config, result):
     decision_id = digest(value)
     from .storage import locked
     with locked(config, operation="receipt commit"):
-        atomic_write(receipt_path(config, decision_id), canonical(value) + b"\n")
+        from .payload_store import put
+        put(config, "decisions", decision_id, canonical(value) + b"\n")
     return decision_id
+
+
+def exists(config, decision_id):
+    from .payload_store import exists as stored
+    return stored(config, "decisions", decision_id) or receipt_path(config, decision_id).is_file()
+
+
+def summaries(config, **filters):
+    from .payload_store import decision_summaries
+    from .state import check
+    check(config)
+    return decision_summaries(config, **filters)
 
 
 def load(config, source, *, for_scoring=False):
@@ -44,9 +56,17 @@ def load(config, source, *, for_scoring=False):
         if not isinstance(source, (str, Path)):
             raise HowHardError("decision: expected a receipt ID, path or object")
         source = str(source)
-        path = receipt_path(config, source) if re.fullmatch(r"[0-9a-f]{64}", source) else Path(source)
+        is_id = bool(re.fullmatch(r"[0-9a-f]{64}", source))
+        path = receipt_path(config, source) if is_id else Path(source)
         try:
-            value = json.loads(path.read_bytes())
+            if is_id:
+                from .payload_store import get
+                blob = get(config, "decisions", source)
+                if blob is None:
+                    blob = path.read_bytes()
+            else:
+                blob = path.read_bytes()
+            value = json.loads(blob)
         except (OSError, ValueError, UnicodeError) as exc:
             raise HowHardError(f"decision: cannot read valid receipt {path}") from exc
         if re.fullmatch(r"[0-9a-f]{64}", source) and digest(value) != source:

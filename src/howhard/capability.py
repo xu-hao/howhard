@@ -157,10 +157,10 @@ def evidence_scores(engine, payload):
 
 
 def _decision_forecast_seconds(engine, row):
-    from .decisions import load, receipt_path
+    from .decisions import load, exists
     from .semantic import panel_lookup
     decision_id = row.get("decision_id")
-    if not decision_id or not receipt_path(engine.config, decision_id).is_file():
+    if not decision_id or not exists(engine.config, decision_id):
         return None
     receipt = load(engine.config, decision_id, for_scoring=True)
     if receipt is None:

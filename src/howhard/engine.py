@@ -49,6 +49,9 @@ class Engine:
     def refresh(self):
         config = self.config
         claimed = (config.state_root / "store.json").exists()
+        if claimed:
+            from .payload_store import migrate
+            migrate(config)
         boundary = storage.reading(config) if claimed else storage.locked(config, operation="store initialize")
         with boundary:
             from . import native, state
@@ -215,14 +218,14 @@ class Engine:
         return self._save_request(bundle, validate=False)
 
     def _save_request(self, bundle, *, validate=True):
-        from .files import atomic_write
         from .request_state import extend
         extend(self, bundle)
         request_id = digest(bundle)
         with storage.locked(self.config, operation="request commit"):
             if validate:
                 self._check_request(bundle)
-            atomic_write(self.config.state_root / "requests" / f"{request_id}.json", canonical(bundle) + b"\n")
+            from .payload_store import put
+            put(self.config, "requests", request_id, canonical(bundle) + b"\n")
         return {"request_id": request_id, "stage": bundle["stage"], "refilter_round": bundle["refilter_round"],
                 "capability": bundle["capability"], "request": semantic.visible_request(bundle["payload"]),
                 "baseline_request": semantic.baseline_request(bundle["payload"])}
@@ -234,7 +237,11 @@ class Engine:
         if not isinstance(request_id, str) or not re.fullmatch(r"[0-9a-f]{64}", request_id):
             raise HowHardError("request_id: expected SHA-256 request ID")
         try:
-            bundle = json.loads((self.config.state_root / "requests" / f"{request_id}.json").read_bytes())
+            from .payload_store import get
+            blob = get(self.config, "requests", request_id)
+            if blob is None:
+                blob = (self.config.state_root / "requests" / f"{request_id}.json").read_bytes()
+            bundle = json.loads(blob)
         except (OSError, ValueError) as exc:
             raise HowHardError("request_id: unavailable or invalid agent request") from exc
         from .validation import keys
