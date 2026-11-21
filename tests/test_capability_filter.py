@@ -406,6 +406,71 @@ def test_overpowered_tail_band_stays_bounded_across_inventory_sizes(tmp_path):
     assert widths[100] <= widths[20]
 
 
+@pytest.mark.parametrize("case", ["underpowered-prefix", "split-thresholds"])
+def test_large_learned_band_accepts_a_tight_refilter(tmp_path, monkeypatch, case):
+    from howhard import capability
+
+    cells = [{"model": f"agent-{i // 14}/model-{i:03d}", "effort": "high"} for i in range(56)]
+    if case == "underpowered-prefix":
+        samples = [(28, 600, 600, .9)] * 2
+        tighter = (35, 39)
+    else:
+        # Preserve the relative positions of the slow and timely observations through
+        # order learning by making them two ordered efforts of the same model.
+        cells[39] = {"model": cells[55]["model"], "effort": "medium"}
+        samples = [(39, 9000, 800, .95)] * 2 + [(55, 4400, 4200, .32)]
+        tighter = (39, 43)
+    order = [capability.cell_key(cell) for cell in cells]
+    observed = [{"id": f"run-{i}", "key": order[pos], "outcome": "clean", "cause": None,
+                 "active_seconds": active, "forecast_active_seconds": forecast, "score": 10.,
+                 "similarity": 1., "weight": weight}
+                for i, (pos, active, forecast, weight) in enumerate(samples)]
+    monkeypatch.setattr(capability, "observations", lambda *args, **kwargs: observed)
+
+    engine = Engine(directory=tmp_path)
+    pending = start(engine, cells)
+    band = engine.decide(pending["request_id"], filtering(pending["baseline_request"], 35, 45, order))
+    if band["stage"] == "filter":
+        assert band["refilter_round"] == 1
+        assert len(band["baseline_request"]["cells"]) == 56
+        band = engine.decide(band["request_id"], filtering(band["baseline_request"], *tighter, order))
+
+    assert band["stage"] == "forecast"
+    result = finish(engine, band)
+    receipt = load(engine.config, result["decision_id"])
+    state = receipt["capability"]
+    assert state["order"] == order
+    assert len(receipt["native_candidates"]) == len(state["cells"]) == 56
+    forecasted = {capability.cell_key(c) for c in band["baseline_request"]["cells"]}
+    assert forecasted == set(state["band"])
+    assert len(receipt["semantic"]["worlds"]["llm"]) == len(forecasted) <= state["policy"]["max_forecast_cells"]
+    if case == "underpowered-prefix":
+        assert state["cells"][0]["P_clear"] < .01
+        assert order[28] in forecasted
+    else:
+        assert state["cells"][38]["P_clear"] >= state["policy"]["min_clear_probability"]
+        assert state["cells"][38]["P_timely"] < state["policy"]["min_clear_probability"]
+        assert state["cells"][47]["P_timely"] >= state["policy"]["min_clear_probability"]
+        assert order[38] in forecasted and order[47] in forecasted
+        assert order[40] not in forecasted
+        assert state["cells"][40]["classification"] == "intermediate"
+
+        # Widen beyond the stronger interval, and leave the intermediate gap out.
+        wider = engine.decide(band["request_id"], forecasts(band["baseline_request"], silent=.8))
+        assert [capability.cell_key(c) for c in wider["baseline_request"]["cells"]] == [order[48]]
+        widened = finish(engine, wider)
+        assert widened["cap_met"]
+        load(engine.config, widened["decision_id"])
+
+        # A cell with a changed classification cannot be dropped from an interval
+        # even when the receipt otherwise claims it is an intermediate gap cell.
+        invalid = deepcopy(receipt)
+        invalid["capability"]["band"].remove(order[38])
+        invalid["capability"]["cells"][38]["classification"] = "intermediate"
+        with pytest.raises(HowHardError, match="band does not match the frozen probabilities"):
+            load(engine.config, invalid)
+
+
 def _rewrite_stored_receipt(engine, decision_id, mutator):
     from howhard.context import canonical, digest
     from howhard.decisions import receipt_path
@@ -419,21 +484,9 @@ def _rewrite_stored_receipt(engine, decision_id, mutator):
     return new_id, value
 
 
-def _linear_tail_cdf(flt, policy):
-    import numpy as np
-    order = flt["order"]
-    n = len(order)
-    lo, hi = order.index(flt["lower"]), order.index(flt["upper"])
-    minimum, reliable = policy["min_clear_probability"], policy["reliability_probability"]
-    before = np.linspace(minimum * .2, minimum * .8, lo).tolist()
-    fit = np.linspace(max(minimum, reliable - .2), reliable, hi - lo + 1).tolist() if hi > lo else [reliable]
-    tail = min((1 - reliable) * .5, policy["overpowered_gain_margin"] * .5)
-    after = np.linspace(reliable, reliable + tail, n - hi).tolist()[1:]
-    return dict(zip(order, before + fit + after))
-
-
-def test_v1_linear_and_geometric_receipts_validate_replay_and_observe_while_v2_is_strict(tmp_path, monkeypatch, capsys):
+def test_frozen_capability_receipts_validate_replay_and_observe(tmp_path, monkeypatch, capsys):
     from howhard.cli import main
+    from legacy_receipts import legacy_capability_prior, to_v7, with_capability_v3
     monkeypatch.chdir(tmp_path)
     cells = inventory(8)  # lower=1, upper=3 -> after_count = 4 >= 3
     candidates_file = tmp_path / "candidates.json"
@@ -451,7 +504,6 @@ def test_v1_linear_and_geometric_receipts_validate_replay_and_observe_while_v2_i
         return finish(engine, band)["decision_id"]
 
     def to_decision_v7(receipt, cap_format):
-        from legacy_receipts import to_v7
         legacy = to_v7(receipt, cap_format)
         receipt.clear()
         receipt.update(legacy)
@@ -464,8 +516,8 @@ def test_v1_linear_and_geometric_receipts_validate_replay_and_observe_while_v2_i
         to_decision_v7(receipt, "howhard-capability-v1")
         cap = receipt["capability"]
         policy = cap["policy"]
-        cap["worlds"]["filter:llm"] = _linear_tail_cdf(cap["baseline"], policy)
-        cap["worlds"][mem_key] = _linear_tail_cdf(cap["memory_filters"][0]["filter"], policy)
+        cap["worlds"]["filter:llm"] = legacy_capability_prior(cap["baseline"], policy, linear_tail=True)
+        cap["worlds"][mem_key] = legacy_capability_prior(cap["memory_filters"][0]["filter"], policy, linear_tail=True)
         for c in cap["cells"]:
             if c["position"] > 3:
                 c["P_clear"] = cap["worlds"]["filter:llm"][c["key"]]
@@ -481,12 +533,18 @@ def test_v1_linear_and_geometric_receipts_validate_replay_and_observe_while_v2_i
     # Confirm linear and geometric overpowered tails genuinely differ for after_count == 4.
     assert linear_v1_receipt["capability"]["worlds"]["filter:llm"] != geom_v1_receipt["capability"]["worlds"]["filter:llm"]
 
-    # 3. Mint a frozen howhard-capability-v2 v7 receipt and a new howhard-capability-v3 v8 receipt directly.
+    # 3. Mint frozen v2/decision-v7 and v3/decision-v9 receipts.
     raw_v2_id = mint_with_memory()
     v2_id, _ = _rewrite_stored_receipt(engine, raw_v2_id, lambda r: to_decision_v7(r, "howhard-capability-v2"))
-    v3_id = mint_with_memory()
+    current_id = mint_with_memory()
+    current = load(engine.config, current_id)
 
-    # Load all stored receipts cleanly and verify newly minted format is v3 inside decision v8.
+    def to_decision_v9_with_capability_v3(receipt):
+        receipt.update(with_capability_v3(receipt))
+
+    v3_id, _ = _rewrite_stored_receipt(engine, current_id, to_decision_v9_with_capability_v3)
+
+    # Load and replay legacy capability formats in their respective decision formats.
     loaded_linear = load(engine.config, linear_v1_id)
     loaded_geom = load(engine.config, geom_v1_id)
     loaded_v2 = load(engine.config, v2_id)
@@ -494,7 +552,10 @@ def test_v1_linear_and_geometric_receipts_validate_replay_and_observe_while_v2_i
     assert loaded_linear["capability"]["format"] == "howhard-capability-v1"
     assert loaded_geom["capability"]["format"] == "howhard-capability-v1"
     assert loaded_v2["capability"]["format"] == "howhard-capability-v2"
+    assert loaded_v3["format"] == "howhard-decision-v9"
     assert loaded_v3["capability"]["format"] == "howhard-capability-v3"
+    assert current["capability"]["format"] == "howhard-capability-v4"
+    assert loaded_v3["capability"]["worlds"]["filter:llm"] != current["capability"]["worlds"]["filter:llm"]
 
     # CLI observe --decision and positional observe succeed across all four receipts.
     chosen_linear = loaded_linear["chosen"]
@@ -535,7 +596,7 @@ def test_v1_linear_and_geometric_receipts_validate_replay_and_observe_while_v2_i
     with pytest.raises(HowHardError, match="prior probabilities do not match the filter"):
         load(engine.config, mixed_v1)
 
-    # Tampered worlds or legacy linear worlds on v2/v3 are rejected; unsupported format versions are rejected.
+    # Reject corrupted priors, linear tails on v2/v3, and unknown formats.
     tampered_v2 = deepcopy(loaded_v2)
     tampered_v2["capability"]["worlds"]["filter:llm"][overpowered_key] = 0.919999
     with pytest.raises(HowHardError, match="prior probabilities do not match the filter"):
@@ -551,7 +612,12 @@ def test_v1_linear_and_geometric_receipts_validate_replay_and_observe_while_v2_i
     with pytest.raises(HowHardError, match="prior probabilities do not match the filter"):
         load(engine.config, tampered_v3)
 
+    old_prefix_in_v4 = deepcopy(current)
+    old_prefix_in_v4["capability"]["worlds"] = deepcopy(loaded_v3["capability"]["worlds"])
+    with pytest.raises(HowHardError, match="prior probabilities do not match the filter"):
+        load(engine.config, old_prefix_in_v4)
+
     unsupported_fmt = deepcopy(loaded_v3)
-    unsupported_fmt["capability"]["format"] = "howhard-capability-v4"
+    unsupported_fmt["capability"]["format"] = "howhard-capability-v5"
     with pytest.raises(HowHardError, match="decision.capability.format: unsupported version"):
         load(engine.config, unsupported_fmt)

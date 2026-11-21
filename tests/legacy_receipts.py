@@ -2,6 +2,8 @@
 
 from copy import deepcopy
 
+import numpy as np
+
 from howhard.semantic import OUTCOMES, panel_lookup
 from howhard.success import accepted_risk, cost, denominator, envelope
 
@@ -9,9 +11,40 @@ LEGACY_SAMPLING = {"min_concentration": 8., "max_concentration": 1000000., "prio
                    "explore_within": .1, "uncertainty_multiplier": 1.}
 
 
+def legacy_capability_prior(flt, policy, *, linear_tail=False):
+    order = flt["order"]
+    lo, hi = order.index(flt["lower"]), order.index(flt["upper"])
+    minimum, reliable = policy["min_clear_probability"], policy["reliability_probability"]
+    before = np.linspace(minimum * .2, minimum * .8, lo).tolist()
+    fit = np.linspace(max(minimum, reliable - .2), reliable, hi - lo + 1).tolist() if hi > lo else [reliable]
+    tail = min((1 - reliable) * .5, policy["overpowered_gain_margin"] * .5)
+    after_count = len(order) - 1 - hi
+    if linear_tail:
+        after = np.linspace(reliable, reliable + tail, after_count + 1).tolist()[1:]
+    elif after_count:
+        steps = np.arange(1, after_count + 1, dtype=float)
+        after = (reliable + tail * (1.0 - 0.5 ** steps) / (1.0 - 0.5 ** after_count)).tolist()
+    else:
+        after = []
+    return dict(zip(order, before + fit + after))
+
+
+def with_capability_v3(receipt):
+    """Freeze the prior from before v4 for a fixture with a contiguous band."""
+    receipt = deepcopy(receipt)
+    state = receipt["capability"]
+    lo, hi = state["order"].index(state["lower"]), state["order"].index(state["upper"])
+    assert state["band"] == state["order"][lo:hi+1]
+    state["format"] = "howhard-capability-v3"
+    filters = {"filter:llm": state["baseline"]}
+    filters.update({f"filter:memory:{m['id']}:{m['version']}": m["filter"] for m in state["memory_filters"]})
+    state["worlds"] = {key: legacy_capability_prior(flt, state["policy"]) for key, flt in filters.items()}
+    return receipt
+
+
 def to_v8(receipt):
     """A v8 receipt: weighted-forecast envelopes, upper-bound admission, no outcome posteriors."""
-    receipt = deepcopy(receipt)
+    receipt = with_capability_v3(receipt)
     receipt["format"] = "howhard-decision-v8"
     semantic = receipt["semantic"]
     semantic["format"] = "howhard-semantic-v5"

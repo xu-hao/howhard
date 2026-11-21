@@ -352,12 +352,13 @@ def test_frozen_v7_receipts_and_historical_journals_load_validate_observe_replay
     current = load(engine.config, engine.decide(b["request_id"], forecasts(b["baseline_request"]), seed=11)["decision_id"])
     assert current["format"] == "howhard-decision-v9"
     assert current["semantic"]["format"] == "howhard-semantic-v6"
-    assert current["capability"]["format"] == "howhard-capability-v3"
+    assert current["capability"]["format"] == "howhard-capability-v4"
     v8_receipt = to_v8(current)
     v8_id = digest(v8_receipt)
     atomic_write(receipt_path(engine.config, v8_id), canonical(v8_receipt) + b"\n")
     v8_loaded = load(engine.config, v8_id)
     assert v8_loaded["format"] == "howhard-decision-v8"
+    assert v8_loaded["capability"]["format"] == "howhard-capability-v3"
     assert v8_loaded["semantic"]["format"] == "howhard-semantic-v5"
 
     v7_receipt = to_v7(current)
