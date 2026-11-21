@@ -6,12 +6,13 @@ import re
 
 import numpy as np
 
-from .context import DECISION_FORMAT, LEGACY_DECISION_V7, digest
+from .context import DECISION_FORMAT, LEGACY_DECISION_V7, LEGACY_DECISION_V8, digest
 from .llm import LLMError, SETTINGS
 from .storage import effective_active_seconds
 from .validation import HowHardError, keys, number, text
 
-FORMAT = "howhard-capability-v3"
+FORMAT = "howhard-capability-v4"
+LEGACY_FORMAT_V3 = "howhard-capability-v3"
 LEGACY_FORMAT_V2 = "howhard-capability-v2"
 LEGACY_FORMAT_V1 = "howhard-capability-v1"
 OVERRUN_GRACE_RATIO = 1.5
@@ -110,34 +111,28 @@ def validate_response(response, payload, snapshot):
     return response
 
 
-def prior_cdf(value, policy):
-    """Proper smoothed threshold prior, including mass beyond the strongest cell."""
+def prior_cdf(value, policy, *, linear_prefix=False, linear_tail=False):
+    """Smoothed threshold prior, with legacy variants for frozen receipts."""
     n = len(value["order"])
     lo, hi = value["order"].index(value["lower"]), value["order"].index(value["upper"])
     minimum, reliable = policy["min_clear_probability"], policy["reliability_probability"]
-    before = np.linspace(minimum * .2, minimum * .8, lo).tolist()
+    if linear_prefix:
+        before = np.linspace(minimum * .2, minimum * .8, lo).tolist()
+    else:
+        # Each step below the position just before the lower cut halves its CDF.
+        before = (minimum * .8 * 0.5 ** np.arange(lo - 1, -1, -1, dtype=float)).tolist()
     fit = np.linspace(max(minimum, reliable - .2), reliable, hi-lo+1).tolist() if hi > lo else [reliable]
     # Above the upper cut, the maximum possible gain stays below the policy margin.
     # Concentrate the tail geometrically so conditioning cannot stretch it across large inventories.
     tail = min((1-reliable)*.5, policy["overpowered_gain_margin"]*.5)
     after_count = n - 1 - hi
-    if after_count:
+    if linear_tail:
+        after = np.linspace(reliable, reliable+tail, n-hi).tolist()[1:]
+    elif after_count:
         steps = np.arange(1, after_count + 1, dtype=float)
         after = (reliable + tail * (1.0 - 0.5 ** steps) / (1.0 - 0.5 ** after_count)).tolist()
     else:
         after = []
-    return dict(zip(value["order"], before+fit+after))
-
-
-def _linear_prior_cdf(value, policy):
-    """Legacy howhard-capability-v1 linear overpowered-tail prior CDF."""
-    n = len(value["order"])
-    lo, hi = value["order"].index(value["lower"]), value["order"].index(value["upper"])
-    minimum, reliable = policy["min_clear_probability"], policy["reliability_probability"]
-    before = np.linspace(minimum * .2, minimum * .8, lo).tolist()
-    fit = np.linspace(max(minimum, reliable - .2), reliable, hi-lo+1).tolist() if hi > lo else [reliable]
-    tail = min((1-reliable)*.5, policy["overpowered_gain_margin"]*.5)
-    after = np.linspace(reliable, reliable+tail, n-hi).tolist()[1:]
     return dict(zip(value["order"], before+fit+after))
 
 
@@ -285,6 +280,43 @@ def _upper_cut(learned_order, probabilities, lo, policy):
     return next((i for i in range(anchor, n) if best - probabilities[learned_order[i]] < policy["overpowered_gain_margin"]), n - 1)
 
 
+def _forecast_band(order, clear, timely, policy, *, independent_prior=None):
+    minimum = policy["min_clear_probability"]
+    lo_clear = next((i for i, key in enumerate(order) if clear[key] >= minimum), None)
+    if lo_clear is None:
+        raise HowHardError("capability filter: no cell reaches the required capability probability; supply a more capable inventory")
+    if independent_prior is not None:
+        lo = order.index(independent_prior["lower"])
+        hi = order.index(independent_prior["upper"])
+        return order[lo:hi+1]
+
+    hi_clear = _upper_cut(order, clear, lo_clear, policy)
+
+    lo_timely = next((i for i in range(lo_clear, len(order)) if timely[order[i]] >= minimum), None)
+    if lo_timely is None:
+        # The timely minimum is unattainable. Retain the first near-best timely
+        # option among cells that can clear, for the fine reader's time comparison.
+        hi_timely = _upper_cut(order, timely, lo_clear, policy)
+        lo_timely = hi_timely
+    else:
+        hi_timely = _upper_cut(order, timely, lo_timely, policy)
+
+    hi = max(hi_clear, hi_timely)
+    if hi - lo_clear + 1 <= policy["max_forecast_cells"] or lo_timely <= hi_clear + 1:
+        return order[lo_clear:hi+1]
+    # Keep both threshold intervals. In the gap, clearing is already saturated
+    # and timely clearing falls short of the minimum (or near-best fallback).
+    return order[lo_clear:hi_clear+1] + order[lo_timely:hi_timely+1]
+
+
+def _classification(position, lo, hi, in_band):
+    if position < lo:
+        return "underpowered"
+    if position > hi:
+        return "overpowered"
+    return "fit" if in_band else "intermediate"
+
+
 def _learn_order(order, cdf, obs, cells, policy):
     """Local constrained posterior search; never a global model leaderboard."""
     initial = list(order)
@@ -369,30 +401,22 @@ def aggregate(engine, payload, response, *, observed=None):
     for item, strength in zip(obs, timely_targets):
         item["timely_strength"] = strength
     timely_probabilities, _ = _posterior(learned_order, cdf, obs, policy, targets=timely_targets)
-    n = len(learned_order)
-    lo = next((i for i, k in enumerate(learned_order) if probabilities[k] >= policy["min_clear_probability"]), n)
-    if lo == n:
-        raise HowHardError("capability filter: no cell reaches the required capability probability; supply a more capable inventory")
-    # P_clear and P_timely are monotone along the order. Slow clean runs with severe
-    # active_seconds overruns reduce P_timely so weaker thrashing cells cannot prematurely
-    # saturate the upper cut and exclude faster stronger cells before J compares time.
-    hi_clear = _upper_cut(learned_order, probabilities, lo, policy)
-    hi_timely = _upper_cut(learned_order, timely_probabilities, lo, policy)
-    hi = max(hi_clear, hi_timely)
-    # The original LLM cuts are exact when no evidence or memory adjustment exists.
-    if not obs and len(worlds) == 1:
-        lo, hi = learned_order.index(baseline["lower"]), learned_order.index(baseline["upper"])
+    independent_prior = baseline if not obs and len(worlds) == 1 else None
+    band = _forecast_band(learned_order, probabilities, timely_probabilities, policy,
+                          independent_prior=independent_prior)
+    lo, hi = learned_order.index(band[0]), learned_order.index(band[-1])
+    band_keys = set(band)
     observed = {r["key"] for r in obs if r["weight"] > .01}
     by_key = {c["key"]: c for c in payload["cells"]}
     rows = [{**{name: by_key[k][name] for name in ("key", "model", "family", "effort")},
-             "position": i, "classification": "underpowered" if i < lo else "overpowered" if i > hi else "fit",
+             "position": i, "classification": _classification(i, lo, hi, k in band_keys),
              "P_clear": probabilities[k], "P_timely": timely_probabilities[k],
              "placement": "learned" if k in observed else "prior-only",
              "threshold": "learned" if any(r["weight"] > .01 for r in obs) else "prior-only"}
             for i, k in enumerate(learned_order)]
     return {"format": FORMAT, "baseline": deepcopy(baseline), "memory_filters": deepcopy(response["memory_filters"]),
-            "order": learned_order, "lower": learned_order[lo], "upper": learned_order[hi],
-            "band": learned_order[lo:hi+1], "cells": rows, "worlds": worlds, "beliefs": belief,
+            "order": learned_order, "lower": band[0], "upper": band[-1],
+            "band": band, "cells": rows, "worlds": worlds, "beliefs": belief,
             "evidence": obs, "policy": deepcopy(policy), "reason": response["reason"],
             "widening": [], "disagreements": [], "refilter_rounds": 0}
 
@@ -415,20 +439,31 @@ def validate_receipt(state, inventory, semantic, chosen, *, decision_format=DECI
     """Check complete filter coverage and the exact set of prospectively forecast cells."""
     keys(state, ["format", "baseline", "memory_filters", "order", "lower", "upper", "band", "cells", "worlds", "beliefs",
                  "evidence", "policy", "reason", "widening", "disagreements", "refilter_rounds", "reader_usage", "widening_stop", "executed"], where="decision.capability")
-    allowed_formats = (LEGACY_FORMAT_V2, LEGACY_FORMAT_V1) if decision_format == LEGACY_DECISION_V7 else (FORMAT,)
-    if state["format"] not in allowed_formats:
+    allowed_formats = {
+        DECISION_FORMAT: (FORMAT, LEGACY_FORMAT_V3),
+        LEGACY_DECISION_V8: (LEGACY_FORMAT_V3,),
+        LEGACY_DECISION_V7: (LEGACY_FORMAT_V2, LEGACY_FORMAT_V1),
+    }
+    if state["format"] not in allowed_formats.get(decision_format, ()):
         raise HowHardError("decision.capability.format: unsupported version")
+    has_timely = state["format"] in (FORMAT, LEGACY_FORMAT_V3)
     validate_policy(state["policy"])
     cells = [{**c, "key": cell_key(c)} for c in inventory]
     known = {c["key"]: c for c in cells}
     validate_filter(state["baseline"], cells)
-    # Validate the learned order and nonempty band with the same effort constraints.
+    # Validate the learned order and outer band endpoints with the same effort constraints.
     validate_filter({k: state[k] for k in ("order", "lower", "upper")}, cells)
     lo, hi = state["order"].index(state["lower"]), state["order"].index(state["upper"])
-    if state["band"] != state["order"][lo:hi+1] or not isinstance(state["cells"], list) or len(state["cells"]) != len(cells):
-        raise HowHardError("decision.capability: inconsistent band or cell coverage")
+    band = state["band"]
+    if not isinstance(state["cells"], list) or len(state["cells"]) != len(cells):
+        raise HowHardError("decision.capability: inconsistent cell coverage")
+    if (not isinstance(band, list) or not band or band[0] != state["lower"] or band[-1] != state["upper"]
+            or any(not isinstance(key, str) for key in band)
+            or (state["format"] != FORMAT and band != state["order"][lo:hi+1])):
+        raise HowHardError("decision.capability: inconsistent band")
+    forecasted = set(band)
     cell_fields = ["key", "model", "family", "effort", "position", "classification", "P_clear", "placement", "threshold"]
-    if state["format"] == FORMAT:
+    if has_timely:
         cell_fields.insert(7, "P_timely")
     previous = -1.
     previous_timely = -1.
@@ -438,14 +473,14 @@ def validate_receipt(state, inventory, semantic, chosen, *, decision_format=DECI
             raise HowHardError("decision.capability: inconsistent identity or position")
         if (c["model"], c["effort"]) != (known[c["key"]]["model"], known[c["key"]]["effort"]):
             raise HowHardError("decision.capability: inconsistent inventory identity")
-        expected = "underpowered" if i < lo else "overpowered" if i > hi else "fit"
+        expected = _classification(i, lo, hi, c["key"] in forecasted)
         if c["classification"] != expected or c["placement"] not in ("learned", "prior-only") or c["threshold"] not in ("learned", "prior-only"):
             raise HowHardError("decision.capability: inconsistent classification or evidence status")
         value = number(c["P_clear"], "capability.P_clear", nonnegative=True)
         if value > 1 or value < previous - 1e-10:
             raise HowHardError("decision.capability: probabilities must be monotone along this task's order")
         previous = value
-        if state["format"] == FORMAT:
+        if has_timely:
             timely = number(c["P_timely"], "capability.P_timely", nonnegative=True)
             if timely > 1 or timely < previous_timely - 1e-10 or timely > value + 1e-10:
                 raise HowHardError("decision.capability: timely probabilities must be monotone and at most P_clear")
@@ -463,14 +498,13 @@ def validate_receipt(state, inventory, semantic, chosen, *, decision_format=DECI
         filters[key] = item["filter"]
     if not isinstance(state["worlds"], dict) or set(state["worlds"]) != set(filters):
         raise HowHardError("decision.capability: inconsistent expert worlds")
-    if state["format"] in (FORMAT, LEGACY_FORMAT_V2):
-        valid_worlds = all(state["worlds"][key] == prior_cdf(value, state["policy"]) for key, value in filters.items())
-    else:
-        valid_worlds = (
-            all(state["worlds"][key] == prior_cdf(value, state["policy"]) for key, value in filters.items())
-            or all(state["worlds"][key] == _linear_prior_cdf(value, state["policy"]) for key, value in filters.items())
-        )
-    if not valid_worlds:
+
+    def matches_priors(**options):
+        return all(state["worlds"][key] == prior_cdf(value, state["policy"], **options)
+                   for key, value in filters.items())
+
+    if not (matches_priors(linear_prefix=state["format"] != FORMAT)
+            or (state["format"] == LEGACY_FORMAT_V1 and matches_priors(linear_prefix=True, linear_tail=True))):
         raise HowHardError("decision.capability: prior probabilities do not match the filter")
     weights, seen = 0., set()
     for e in state["beliefs"]["experts"]:
@@ -485,7 +519,7 @@ def validate_receipt(state, inventory, semantic, chosen, *, decision_format=DECI
     if not isinstance(state["evidence"], list) or len(state["evidence"]) > SETTINGS["evidence_limit"]:
         raise HowHardError("decision.capability: invalid precedent count")
     evidence_fields = ["id", "key", "outcome", "cause", "score", "similarity", "weight"]
-    if state["format"] == FORMAT:
+    if has_timely:
         evidence_fields = ["id", "key", "outcome", "cause", "active_seconds", "forecast_active_seconds", "timely_strength", "score", "similarity", "weight"]
     for item in state["evidence"]:
         keys(item, evidence_fields, where="capability evidence")
@@ -494,19 +528,24 @@ def validate_receipt(state, inventory, semantic, chosen, *, decision_format=DECI
             raise HowHardError("decision.capability: invalid observed cell/outcome")
         for field in ("score", "similarity", "weight"):
             number(item[field], "capability evidence "+field, nonnegative=field != "score")
-        if state["format"] == FORMAT:
+        if has_timely:
             for field in ("active_seconds", "forecast_active_seconds"):
                 if item[field] is not None:
                     number(item[field], "capability evidence "+field, nonnegative=True)
             strength = number(item["timely_strength"], "capability evidence timely_strength", nonnegative=True)
             if strength > 1:
                 raise HowHardError("decision.capability: timely_strength must be in [0, 1]")
-    if state["format"] == FORMAT:
+    if has_timely:
         fallback_sec = _unanchored_reference_seconds(constants, state["policy"])
         expected_strengths = _timely_strengths(state["order"], state["evidence"], fallback_seconds=fallback_sec)
         if any(abs(item["timely_strength"] - exp) > 1e-12 for item, exp in zip(state["evidence"], expected_strengths)):
             raise HowHardError("decision.capability: inconsistent timely_strength")
-    forecasted = set(state["band"])
+    if state["format"] == FORMAT:
+        independent_prior = state["baseline"] if not state["evidence"] and len(filters) == 1 else None
+        clear = {c["key"]: c["P_clear"] for c in state["cells"]}
+        timely = {c["key"]: c["P_timely"] for c in state["cells"]}
+        if band != _forecast_band(state["order"], clear, timely, state["policy"], independent_prior=independent_prior):
+            raise HowHardError("decision.capability: band does not match the frozen probabilities")
     if not isinstance(state["widening"], list) or len(state["widening"]) > state["policy"]["widening_rounds"]:
         raise HowHardError("decision.capability: invalid widening rounds")
     stronger = state["order"][hi+1:]

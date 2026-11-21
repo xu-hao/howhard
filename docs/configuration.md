@@ -223,9 +223,10 @@ admission_quantile = 0.80
 outcome_recency = 0.95
 ```
 
-The full inventory has no size bound. An oversized fit band gets one re-filter round
-and then a clear error; it is never truncated. Widening forecasts the next stronger
-overpowered cell per round, within the same total forecast budget.
+The full inventory has no size bound. If the span of the clearing and timely intervals
+exceeds the forecast budget, the filter uses their union. If the forecast set still
+exceeds the budget, it gets one re-filter round and then a clear error. Widening
+forecasts the next stronger overpowered cell per round, within the same total budget.
 
 `max_forecast_cells` is a positive integer; widening rounds are nonnegative integers.
 Require `0 < min_clear_probability < reliability_probability < 1` and observation noise

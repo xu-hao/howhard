@@ -198,10 +198,11 @@ failure leaves the outcome durable and does not create a second execution.
 Routing seeds reproduce selection given recorded forecasts. They do not make fresh
 LLM calls deterministic. Cached forecasts and content-addressed receipts support replay;
 operational timing/cache metadata may differ between invocations.
-New receipts use `howhard-decision-v9` with capability (`howhard-capability-v3`) and
+New receipts use `howhard-decision-v9` with capability (`howhard-capability-v4`) and
 accepted-result selection state. Requests use `howhard-agent-request-v5` and semantic state
-uses `howhard-semantic-v6` (`semantic-reader-v7`). Persisted `howhard-decision-v8`
-(`howhard-semantic-v5`, `howhard-capability-v3`) and `howhard-decision-v7`
+uses `howhard-semantic-v6` (`semantic-reader-v7`). Persisted `howhard-decision-v9` with
+capability v3, `howhard-decision-v8` (`howhard-semantic-v5`, `howhard-capability-v3`),
+and `howhard-decision-v7`
 (`howhard-semantic-v4`, `howhard-capability-v1`/`v2`) receipts continue to load, validate,
 accept feedback, and participate in belief replay and reporting under their frozen rules.
 Older decision receipts v1–v6 remain in the store but are excluded from predictive scoring; raw
