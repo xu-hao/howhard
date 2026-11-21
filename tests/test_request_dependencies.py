@@ -335,13 +335,15 @@ def test_capability_recency_weights_do_not_move_with_unsurfaced_appends(tmp_path
 
 def test_legacy_v5_requests_keep_conservative_validation(tmp_path):
     from howhard.context import canonical, digest
+    from howhard.payload_store import get
     engine = engine_at(tmp_path)
     pending = prepare(engine)
     directory = engine.config.state_root / 'requests'
-    bundle = json.loads((directory / (pending['request_id'] + '.json')).read_bytes())
+    bundle = json.loads(get(engine.config, 'requests', pending['request_id']))
     for name in ('read_state', 'dependencies', 'learned_state', 'inventory_source'):
         bundle.pop(name)
     request_id = digest(bundle)
+    directory.mkdir(exist_ok=True)
     (directory / (request_id + '.json')).write_bytes(canonical(bundle))
     write(tmp_path, 'unrelated', id='synthetic-legacy-change')
     with pytest.raises(HowHardError, match='stale evidence or memory') as caught:

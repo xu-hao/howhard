@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Store complete request and decision JSON losslessly as zstd-compressed SQLite
+  payloads, migrate and remove verified loose JSON under write admission, and expose
+  indexed decision summaries without decompressing semantic evidence (#109).
+
 ## 3.4.0 — 2026-11-20
 
 - Replace point outcome forecasts with per-cell Dirichlet–multinomial posteriors: each

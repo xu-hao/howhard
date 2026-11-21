@@ -363,6 +363,31 @@ Receipts v1–v6 remain recognizable as historical store entries but are not rep
 new decisions; prepare a fresh request and decision to attach new feedback.
 Frozen-receipt observations and learning share the store across that project's worktrees.
 
+### Request and decision payload storage
+
+`payloads.sqlite3` in the state root holds content-addressed `requests` and `decisions` rows.
+Each row retains the complete original JSON byte sequence in a zstd-compressed `payload`
+BLOB; the SHA-256 `request_id` or `decision_id` remains the digest of the parsed JSON
+value. No semantic forecast, legacy receipt field, or reproducibility input is omitted.
+If two bytewise JSON variants have the same content ID, the prior exact bytes remain
+in `payload_variants` when the main row takes the migrated bytes.
+The `decisions` table also stores uncompressed `created_at`, `chosen`,
+`context_summary`, `selection`, `task_type`, `risk_class`, `cap_met`, and
+`needs_review` columns. `chosen`, `context_summary`, and `selection` are small JSON
+summaries; `context_summary` includes task text and project fingerprint, while
+`selection` includes objective, retry policy, and cap fallback. Indexes cover creation
+time, task/risk, chosen cell, and review status. The helper
+`howhard.decisions.summaries(config, task_type=...,
+risk_class=..., cap_met=..., needs_review=..., limit=...)` reads them without decompressing receipts.
+Load a full receipt by ID when the complete context or selection is needed.
+
+On opening a claimed store, howhard migrates existing `requests/*.json` and
+`decisions/*.json` in bounded batches under normal write admission. It checks each
+file's content ID, commits its exact bytes, verifies decompression after commit, and
+only then removes the corresponding loose file. A failed migration leaves unverified
+files in place for a later retry. Empty legacy directories are removed. External
+receipt files and `--save-decision PATH` continue to use ordinary JSON files.
+
 ## Inference cache and current interfaces
 
 Validated LLM responses may be cached by complete request, adapter identity, settings,
@@ -383,7 +408,8 @@ new execution feedback and excluded from replay/report scoring. Existing raw obs
 and semantic memories remain stored. Old posterior/prior artifacts are unused and left
 untouched. Removed interfaces include `--llm`, `HOWHARD_LLM`, `--cache`, `Engine(cache_path=...)`,
 `fit`, posterior/prior attributes, `export-prior`, `import-prior`, and prior/cache/transfer
-configuration. No migration or distribution upload is performed automatically.
+configuration. No migration of old posterior/prior artifacts or distribution upload is
+performed automatically.
 
 ## Python API
 
@@ -407,4 +433,5 @@ after durable observation. `refresh()` reloads external evidence; no fitting occ
 `Engine(write_timeout=30, write_cancel=callback)` bounds admission and supports
 cancellation. `write_status()` and CLI `writes --json` expose contention. See
 [concurrent clients](concurrency.md) for boundaries, typed errors and stable-ID retries.
-Python 3.11+ and POSIX are required; runtime dependencies are limited to NumPy.
+Python 3.11+ and POSIX are required; runtime dependencies include NumPy, FastEmbed,
+USearch, and zstandard. SQLite is provided by Python's standard library.

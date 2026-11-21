@@ -342,7 +342,8 @@ def test_new_receipts_refuse_different_repository_with_same_project_label(tmp_pa
         subprocess.run(["git", "-C", str(project), "init", "-q"], check=True)
     first, other = (Engine(directory=p) for p in projects)
     choice = first.pick("task", seed=3, native_candidates=inventory())
-    path = first.config.state_root / "decisions" / f"{choice['decision_id']}.json"
+    path = tmp_path / "foreign-receipt.json"
+    first.save_decision(choice["decision_id"], path)
     assert first.config.data["project"] == other.config.data["project"] == "local"
     with pytest.raises(HowHardError, match="identity"):
         other.observe_decision(path, "clean", id="foreign")

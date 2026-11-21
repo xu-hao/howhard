@@ -408,14 +408,16 @@ def test_overpowered_tail_band_stays_bounded_across_inventory_sizes(tmp_path):
 
 def _rewrite_stored_receipt(engine, decision_id, mutator):
     from howhard.context import canonical, digest
-    from howhard.decisions import receipt_path
-    from howhard.files import atomic_write
-    old_path = receipt_path(engine.config, decision_id)
-    value = json.loads(old_path.read_bytes())
+    from howhard.payload_store import get, put
+    from howhard.storage import locked
+    import sqlite3
+    value = json.loads(get(engine.config, "decisions", decision_id))
     mutator(value)
     new_id = digest(value)
-    old_path.unlink()
-    atomic_write(receipt_path(engine.config, new_id), canonical(value) + b"\n")
+    with locked(engine.config):
+        with sqlite3.connect(engine.config.state_root / "payloads.sqlite3") as db:
+            db.execute("DELETE FROM decisions WHERE decision_id=?", (decision_id,))
+        put(engine.config, "decisions", new_id, canonical(value) + b"\n")
     return new_id, value
 
 

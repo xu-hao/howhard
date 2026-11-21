@@ -4,7 +4,7 @@ from collections import Counter
 import json
 import math
 
-from .decisions import load, receipt_path
+from .decisions import load, exists
 from .semantic import OUTCOMES, SETTINGS, panel_lookup
 from .storage import INTERRUPTED_CAUSES, OBSERVATION_OUTCOMES
 from .validation import HowHardError
@@ -21,7 +21,7 @@ def report(engine):
         decision_id = row.get("decision_id")
         if not decision_id:
             continue
-        if not receipt_path(engine.config, decision_id).is_file():
+        if not exists(engine.config, decision_id):
             missing.append(row["id"])
             continue
         decision = load(engine.config, decision_id, for_scoring=True)
@@ -99,11 +99,13 @@ def filter_quality(engine):
     from .retrieval import records, task_text
     from datetime import datetime
     decisions = {}
+    from .payload_store import decision_ids
     path = engine.config.state_root / "decisions"
-    for file in sorted(path.glob("*.json")):
-        decision = load(engine.config, file.stem, for_scoring=True)
+    ids = set(decision_ids(engine.config)) | {file.stem for file in path.glob("*.json")}
+    for decision_id in sorted(ids):
+        decision = load(engine.config, decision_id, for_scoring=True)
         if decision is not None:
-            decisions[file.stem] = decision
+            decisions[decision_id] = decision
     events = engine.config.state_root / "decision-events.jsonl"
     times = {e["decision_id"]: e["at_utc"] for e in (json.loads(line) for line in events.read_text().splitlines())
              if e.get("decision_id")} if events.exists() else {}

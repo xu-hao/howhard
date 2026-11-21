@@ -94,12 +94,15 @@ def test_prepared_requests_require_current_format_and_worktree_binding(tmp_path)
     from howhard.context import canonical, digest
     engine = Engine(directory=tmp_path)
     prepared = engine.prepare("task", native_candidates=INVENTORY)
-    path = engine.config.state_root / "requests" / f"{prepared['request_id']}.json"
-    value = json.loads(path.read_bytes())
+    from howhard.payload_store import get
+    value = json.loads(get(engine.config, "requests", prepared["request_id"]))
     assert value["format"] == "howhard-agent-request-v5"
+    path = engine.config.state_root / "requests"
+    path.mkdir()
     for changed, match in (({**value, "format": "howhard-agent-request-v1"}, "format"),
                            ({k: v for k, v in value.items() if k != "project_root"}, "project_root")):
         request_id = digest(changed)
-        (path.parent / f"{request_id}.json").write_bytes(canonical(changed))
+        path.mkdir(exist_ok=True)
+        (path / f"{request_id}.json").write_bytes(canonical(changed))
         with pytest.raises(HowHardError, match=match):
             engine.retrieve(request_id, [{"tool": "memory.search", "query": "rollback"}])

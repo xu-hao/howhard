@@ -28,11 +28,13 @@ def validate_store(path):
     known = {"pending.jsonl", "pending.lock", "outcomes.jsonl", "posterior.npz", "memory.sqlite3",
              "decisions", "requests", "llm-cache", "inference.jsonl", "decision-events.jsonl",
              "imported-prior.json", "native-models.json", "store.json", "project.json", "project.lock"}
-    known.update({"write-queue", "write-queue.lock", "storage.lock", "retrieval.sqlite3", "models"})
+    known.update({"write-queue", "write-queue.lock", "storage.lock", "retrieval.sqlite3", "payloads.sqlite3", "models"})
     if names and not names & known:
         raise HowHardError(f"state: refusing unrelated existing directory {path}")
     if "memory.sqlite3" in names and "store.json" not in names:
         raise HowHardError(f"state: refusing unclaimed memory database at {path}")
+    if "payloads.sqlite3" in names and "store.json" not in names:
+        raise HowHardError(f"state: refusing unclaimed payload database at {path}")
 
 
 def read_identity(path):
