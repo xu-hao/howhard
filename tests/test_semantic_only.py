@@ -48,6 +48,7 @@ def test_llm_only_forecasts_determine_cap_without_statistical_floor(tmp_path):
 
 
 def test_no_provider_stops_routing_but_calling_agent_protocol_works(tmp_path, monkeypatch):
+    from howhard.payload_store import decision_ids
     def unavailable(*args, **kwargs):
         raise LLMError("No model available; use the calling-agent protocol")
     monkeypatch.delenv("HOWHARD_LLM_COMMAND", raising=False)
@@ -55,7 +56,7 @@ def test_no_provider_stops_routing_but_calling_agent_protocol_works(tmp_path, mo
     engine = Engine(directory=tmp_path)
     with pytest.raises(LLMError, match="calling-agent"):
         engine.pick("task", native_candidates=INVENTORY, seed=1)
-    assert not (engine.config.state_root / "decisions").exists()
+    assert decision_ids(engine.config) == []
     pending = engine.prepare("task", native_candidates=INVENTORY)
     pending = forecast_request(engine, pending)
     response = FixtureLLM().complete(pending["baseline_request"])
@@ -90,7 +91,8 @@ def test_removed_statistical_configuration_is_rejected(tmp_path, setting):
 def test_legacy_receipts_do_not_block_evidence_memory_or_reports(tmp_path, version):
     from howhard.context import canonical, digest
     from howhard.decisions import load
-    from howhard.payload_store import get
+    from howhard.payload_store import get, put
+    from howhard.storage import locked
     from howhard.validation import HowHardError
     engine = Engine(directory=tmp_path, llm=FixtureLLM())
     choice = engine.pick("task", native_candidates=INVENTORY, seed=1)
@@ -105,10 +107,9 @@ def test_legacy_receipts_do_not_block_evidence_memory_or_reports(tmp_path, versi
     else:
         legacy.pop("semantic")
     legacy_id = digest(legacy)
-    legacy_path = engine.config.state_root / "decisions" / f"{legacy_id}.json"
-    legacy_path.parent.mkdir(exist_ok=True)
-    legacy_bytes = canonical(legacy)
-    legacy_path.write_bytes(legacy_bytes)
+    legacy_bytes = canonical(legacy) + b"\n"
+    with locked(engine.config):
+        put(engine.config, "decisions", legacy_id, legacy_bytes)
     if version == "howhard-decision-v6":
         assert load(engine.config, legacy_id, for_scoring=True) is None
     row = engine.observe_decision(choice["decision_id"], "clean", id="historical")
@@ -124,7 +125,6 @@ def test_legacy_receipts_do_not_block_evidence_memory_or_reports(tmp_path, versi
     with pytest.raises(HowHardError):
         engine.observe_decision(legacy_id, "clean", id="unrun")
     assert (journal.read_bytes(), get(engine.config, "decisions", legacy_id)) == before
-    assert not legacy_path.exists()
 
 
 def test_memory_forecast_can_raise_risk_and_require_review(tmp_path):
@@ -161,8 +161,9 @@ def test_unsurfaced_external_observation_keeps_prepared_request_valid(tmp_path):
 
 @pytest.mark.parametrize("mode", ["off", "auto", "claude", "command"])
 def test_removed_environment_modes_cannot_restore_routing(tmp_path, monkeypatch, mode):
+    from howhard.payload_store import decision_ids
     monkeypatch.setenv("HOWHARD_LLM", mode)
     engine = Engine(directory=tmp_path)
     with pytest.raises(LLMError, match="removed"):
         engine.pick("task", native_candidates=INVENTORY)
-    assert not (engine.config.state_root / "decisions").exists()
+    assert decision_ids(engine.config) == []

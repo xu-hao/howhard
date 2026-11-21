@@ -3,8 +3,12 @@
 ## Unreleased
 
 - Store complete request and decision JSON losslessly as zstd-compressed SQLite
-  payloads, migrate and remove verified loose JSON under write admission, and expose
-  indexed decision summaries without decompressing semantic evidence (#109).
+  payloads in `payloads.sqlite3` and expose indexed decision summaries without
+  decompressing semantic evidence. Runtime commands and APIs have no legacy loose-JSON
+  fallbacks and never perform automatic migration; standalone
+  `scripts/migrate-payloads.py` migrates and removes verified pre-4.0 loose
+  `requests/*.json` and `decisions/*.json` offline under store write admission
+  (#109, #116).
 
 - Concentrate the capability prior near the lower cut and keep separate clearing and
   timely-clearing intervals when their combined span exceeds `max_forecast_cells`.

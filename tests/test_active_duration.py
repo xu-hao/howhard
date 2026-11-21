@@ -10,9 +10,10 @@ from howhard import Engine
 from howhard.accounting import collect, validate
 from howhard.cli import main
 from howhard.context import canonical, digest
-from howhard.decisions import load, receipt_path
-from howhard.files import atomic_write
+from howhard.decisions import load
+from howhard.payload_store import put
 from howhard.report import report
+from howhard.storage import locked
 from howhard.validation import HowHardError
 from test_capability_filter import SimilarityDouble, filtering, forecasts, inventory as cap_inventory
 from test_execution_accounting import artifact, codex_events
@@ -355,7 +356,8 @@ def test_frozen_v7_receipts_and_historical_journals_load_validate_observe_replay
     assert current["capability"]["format"] == "howhard-capability-v4"
     v8_receipt = to_v8(current)
     v8_id = digest(v8_receipt)
-    atomic_write(receipt_path(engine.config, v8_id), canonical(v8_receipt) + b"\n")
+    with locked(engine.config):
+        put(engine.config, "decisions", v8_id, canonical(v8_receipt) + b"\n")
     v8_loaded = load(engine.config, v8_id)
     assert v8_loaded["format"] == "howhard-decision-v8"
     assert v8_loaded["capability"]["format"] == "howhard-capability-v3"
@@ -363,7 +365,8 @@ def test_frozen_v7_receipts_and_historical_journals_load_validate_observe_replay
 
     v7_receipt = to_v7(current)
     v7_id = digest(v7_receipt)
-    atomic_write(receipt_path(engine.config, v7_id), canonical(v7_receipt) + b"\n")
+    with locked(engine.config):
+        put(engine.config, "decisions", v7_id, canonical(v7_receipt) + b"\n")
 
     # Frozen v7 receipt loads, validates, accepts observe_decision, replays in beliefs(), and scores in report().
     loaded_v7 = load(engine.config, v7_id)

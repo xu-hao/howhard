@@ -385,12 +385,17 @@ time, task/risk, chosen cell, and review status. The helper
 risk_class=..., cap_met=..., needs_review=..., limit=...)` reads them without decompressing receipts.
 Load a full receipt by ID when the complete context or selection is needed.
 
-On opening a claimed store, howhard migrates existing `requests/*.json` and
-`decisions/*.json` in bounded batches under normal write admission. It checks each
-file's content ID, commits its exact bytes, verifies decompression after commit, and
-only then removes the corresponding loose file. A failed migration leaves unverified
-files in place for a later retry. Empty legacy directories are removed. External
-receipt files and `--save-decision PATH` continue to use ordinary JSON files.
+Runtime commands and Python APIs read and write requests and decision receipts
+exclusively in `payloads.sqlite3`; no automatic migration or loose-JSON fallback occurs
+at runtime. To migrate pre-4.0 loose `requests/*.json` and `decisions/*.json` files in a
+claimed store offline, run `python scripts/migrate-payloads.py` (with optional
+`--config PATH`, `--directory PATH`, `--state-dir PATH`, `--write-timeout SEC`,
+`--batch-size N`, and `--json`). The standalone script verifies store ownership, checks
+each file's content-addressed SHA-256 ID, commits zstd-compressed exact bytes in bounded
+batches under normal write admission, verifies pre- and post-commit round-trip
+decompression before unlinking each loose file, leaves unverified files untouched on
+error, and removes drained legacy directories. External receipt files and
+`--save-decision PATH` continue to use ordinary JSON files.
 
 ## Inference cache and current interfaces
 

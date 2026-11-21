@@ -95,7 +95,7 @@ def _insert(db, kind, identifier, blob, *, created_at=None):
         old = zstd.ZstdDecompressor().decompress(existing[0])
         if old != blob:
             # An ID hashes the JSON value, so whitespace variants share the ID.
-            # Keep both exact byte streams when a legacy file and a SQLite row differ.
+            # Keep both exact byte streams when two commits for one ID differ bytewise.
             db.execute("INSERT OR IGNORE INTO payload_variants VALUES (?, ?, ?, ?)",
                        (kind, identifier, sha256(old).hexdigest(), existing[0]))
             db.execute(f"UPDATE {kind} SET payload=? WHERE {kind[:-1]}_id=?",
@@ -187,67 +187,3 @@ def decision_ids(config):
         return [row[0] for row in db.execute("SELECT decision_id FROM decisions ORDER BY decision_id")]
     finally:
         db.close()
-
-
-def migrate(config, *, batch_size=4):
-    """Move legacy loose JSON in bounded committed batches under write admission."""
-    from .storage import locked
-    from .state import check
-    check(config)
-    if not (config.state_root / "store.json").is_file():
-        return
-    for kind in TABLES:
-        if (config.state_root / kind).is_symlink():
-            raise HowHardError(f"{kind}: refusing legacy directory symlink")
-    if not any((config.state_root / kind).is_dir() and
-               (not any((config.state_root / kind).iterdir()) or any((config.state_root / kind).glob("*.json")))
-               for kind in TABLES):
-        return
-    created = {}
-    events = config.state_root / "decision-events.jsonl"
-    if events.is_file():
-        for line in events.read_text().splitlines():
-            try:
-                event = json.loads(line)
-            except ValueError:
-                continue
-            if isinstance(event, dict) and ID.fullmatch(str(event.get("decision_id", ""))) and isinstance(event.get("at_utc"), str):
-                created.setdefault(event["decision_id"], event["at_utc"])
-    for kind in ("requests", "decisions"):
-        directory = config.state_root / kind
-        while directory.is_dir():
-            with locked(config, operation="payload migration"):
-                check(config)
-                if not directory.is_dir():
-                    break
-                files = sorted(directory.glob("*.json"))[:batch_size]
-                if not files:
-                    if not any(directory.iterdir()):
-                        directory.rmdir()
-                    break
-                batch = []
-                for path in files:
-                    if path.is_symlink() or not path.is_file():
-                        raise HowHardError(f"{kind}: refusing non-regular payload {path}")
-                    blob = path.read_bytes()
-                    _validate_payload(kind, path.stem, blob)
-                    batch.append((path, blob))
-                db = _connect(config, write=True)
-                try:
-                    with db:
-                        for path, blob in batch:
-                            timestamp = created.get(path.stem) or datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()
-                            _insert(db, kind, path.stem, blob, created_at=timestamp)
-                        for path, blob in batch:
-                            row = db.execute(f"SELECT payload FROM {kind} WHERE {kind[:-1]}_id=?", (path.stem,)).fetchone()
-                            if row is None or zstd.ZstdDecompressor().decompress(row[0]) != blob:
-                                raise HowHardError(f"{kind}: round-trip mismatch for {path}")
-                except sqlite3.Error as exc:
-                    from .writes import WriteDependencyError
-                    raise WriteDependencyError(config.state_root, "payload migration", str(exc)) from exc
-                finally:
-                    db.close()
-                for path, blob in batch:
-                    if get(config, kind, path.stem) != blob or path.read_bytes() != blob:
-                        raise HowHardError(f"{kind}: post-commit mismatch for {path}")
-                    path.unlink()

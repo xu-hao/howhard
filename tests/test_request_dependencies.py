@@ -273,7 +273,8 @@ def test_dependency_is_checked_again_after_selection_before_receipt_commit(tmp_p
         engine.decide(band['request_id'], forecasts(band['baseline_request']), seed=42)
     assert caught.value.as_dict()['request_id'] == band['request_id']
     assert caught.value.as_dict()['refreshed_request']['stage'] == 'filter'
-    assert not (engine.config.state_root / 'decisions').exists()
+    from howhard.payload_store import decision_ids
+    assert decision_ids(engine.config) == []
 
 
 def test_cli_returns_structured_changes_and_refreshed_request(tmp_path, monkeypatch, capsys):
@@ -335,16 +336,16 @@ def test_capability_recency_weights_do_not_move_with_unsurfaced_appends(tmp_path
 
 def test_legacy_v5_requests_keep_conservative_validation(tmp_path):
     from howhard.context import canonical, digest
-    from howhard.payload_store import get
+    from howhard.payload_store import get, put
+    from howhard.storage import locked
     engine = engine_at(tmp_path)
     pending = prepare(engine)
-    directory = engine.config.state_root / 'requests'
     bundle = json.loads(get(engine.config, 'requests', pending['request_id']))
     for name in ('read_state', 'dependencies', 'learned_state', 'inventory_source'):
         bundle.pop(name)
     request_id = digest(bundle)
-    directory.mkdir(exist_ok=True)
-    (directory / (request_id + '.json')).write_bytes(canonical(bundle))
+    with locked(engine.config):
+        put(engine.config, 'requests', request_id, canonical(bundle) + b'\n')
     write(tmp_path, 'unrelated', id='synthetic-legacy-change')
     with pytest.raises(HowHardError, match='stale evidence or memory') as caught:
         engine.decide(request_id, filtering(pending['baseline_request'], 0, 1))

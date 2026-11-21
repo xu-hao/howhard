@@ -43,11 +43,12 @@ project snapshot, seed and risk class. New receipts also retain `request_snapsho
 the snapshot weight policy and exact surfaced dependencies used by the staged request.
 Unrelated concurrent writes leave those prospective inputs unchanged; a changed
 dependency returns a [structured conflict and refresh](concurrency.md).
-A later observation resolves the receipt and
-copies that original context into the append-only row. It does not rescan the newer
-project. `--save-decision PATH` copies the receipt for another process; the short observe
-form also accepts that file path. Explicit four-argument observe supports `--decision ID`
-or `--decision PATH` and refuses conflicting task/cell/context arguments.
+A later observation resolves the receipt by its 64-character SHA-256 ID from
+`payloads.sqlite3` and copies that original context into the append-only row. It does
+not rescan the newer project or read loose JSON directories in the state root.
+`--save-decision PATH` exports the receipt to an explicit file for another process; the
+short observe form also accepts that file path. Explicit four-argument observe supports
+`--decision ID` or `--decision PATH` and refuses conflicting task/cell/context arguments.
 
 ```python
 import json

@@ -270,7 +270,8 @@ def test_queued_decision_revalidates_evidence_before_receipt_commit(tmp_path):
                            amends="surfaced-evidence", id="corrected-evidence")
         result = receive(connection)
         assert result["error"] == "StaleRequest" and "stale" in result["message"]
-    assert not (engine.config.state_root / "decisions").exists()
+    from howhard.payload_store import decision_ids
+    assert decision_ids(engine.config) == []
 
 
 def test_model_forecasting_does_not_hold_a_write_turn_or_refuse_unrelated_writes(tmp_path):

@@ -108,7 +108,8 @@ def test_invalid_filter_refused_before_forecasting(tmp_path, defect):
         response["filter"].update(lower=order[-1], upper=order[0])
     with pytest.raises(HowHardError, match="filter"):
         engine.decide(pending["request_id"], response)
-    assert not (engine.config.state_root / "decisions").exists()
+    from howhard.payload_store import decision_ids
+    assert decision_ids(engine.config) == []
 
 
 def test_oversized_band_gets_one_refilter_then_fails_without_truncation(tmp_path):

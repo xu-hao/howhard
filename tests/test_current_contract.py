@@ -16,10 +16,11 @@ INVENTORY = [{"model": "claude-opus-5-5", "effort": "high"}]
 
 @pytest.mark.parametrize("method", ["pick", "summary", "prepare"])
 def test_routing_requires_an_explicit_host_inventory(tmp_path, method):
+    from howhard.payload_store import decision_ids
     engine = Engine(directory=tmp_path)
     with pytest.raises(HowHardError, match="candidates"):
         getattr(engine, method)("task")
-    assert not (engine.config.state_root / "decisions").exists()
+    assert decision_ids(engine.config) == []
 
 
 @pytest.mark.parametrize("command", ["pick", "summary", "context"])
@@ -92,17 +93,16 @@ def test_unclaimed_memory_is_refused_even_with_recognizable_schema(tmp_path):
 
 def test_prepared_requests_require_current_format_and_worktree_binding(tmp_path):
     from howhard.context import canonical, digest
+    from howhard.payload_store import get, put
+    from howhard.storage import locked
     engine = Engine(directory=tmp_path)
     prepared = engine.prepare("task", native_candidates=INVENTORY)
-    from howhard.payload_store import get
     value = json.loads(get(engine.config, "requests", prepared["request_id"]))
     assert value["format"] == "howhard-agent-request-v5"
-    path = engine.config.state_root / "requests"
-    path.mkdir()
     for changed, match in (({**value, "format": "howhard-agent-request-v1"}, "format"),
                            ({k: v for k, v in value.items() if k != "project_root"}, "project_root")):
         request_id = digest(changed)
-        path.mkdir(exist_ok=True)
-        (path / f"{request_id}.json").write_bytes(canonical(changed))
+        with locked(engine.config):
+            put(engine.config, "requests", request_id, canonical(changed) + b"\n")
         with pytest.raises(HowHardError, match=match):
             engine.retrieve(request_id, [{"tool": "memory.search", "query": "rollback"}])
