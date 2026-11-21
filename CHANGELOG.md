@@ -2,19 +2,24 @@
 
 ## Unreleased
 
-- Store complete request and decision JSON losslessly as zstd-compressed SQLite
-  payloads in `payloads.sqlite3` and expose indexed decision summaries without
-  decompressing semantic evidence. Runtime commands and APIs have no legacy loose-JSON
-  fallbacks and never perform automatic migration; standalone
-  `scripts/migrate-payloads.py` migrates and removes verified pre-4.0 loose
-  `requests/*.json` and `decisions/*.json` offline under store write admission
+## 4.0.0 — 2026-11-21
+
+- Breaking storage change: `payloads.sqlite3` replaces `<state_root>/requests/*.json`
+  and `<state_root>/decisions/*.json`, storing complete request and decision JSON
+  losslessly as zstd-compressed SQLite payloads and exposing indexed decision summaries
+  without decompressing semantic evidence. Runtime commands and APIs have no legacy
+  loose-JSON fallbacks and never perform automatic migration; pre-4.0 stores migrate
+  offline via standalone `scripts/migrate-payloads.py` (included in the source
+  repository and `.tar.gz` source distribution), which migrates and removes verified
+  loose `requests/*.json` and `decisions/*.json` under store write admission
   (#109, #116).
 
 - Concentrate the capability prior near the lower cut and keep separate clearing and
   timely-clearing intervals when their combined span exceeds `max_forecast_cells`.
-  The complete inventory and both posteriors stay in the receipt. New capability v4
-  blocks record the exact forecast set. Frozen decision v9, v8, and v7 receipts
-  continue to load, accept observations, replay, and report (#110).
+  The complete inventory and both posteriors stay in the receipt. New receipts emit
+  `howhard-capability-v4` blocks recording the exact forecast set, while frozen
+  decision v9, v8, and v7 receipts in `payloads.sqlite3` continue to load, accept
+  observations, replay, and report (#110).
 
 ## 3.4.0 — 2026-11-20
 
