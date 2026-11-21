@@ -7,9 +7,10 @@ import pytest
 
 from howhard import Engine
 from howhard.context import canonical, digest
-from howhard.decisions import load, receipt_path
-from howhard.files import atomic_write
+from howhard.decisions import load
+from howhard.payload_store import put
 from howhard.report import report
+from howhard.storage import locked
 from howhard.validation import HowHardError
 from legacy_receipts import to_v7, to_v8
 from test_capability_filter import SimilarityDouble, filtering
@@ -245,7 +246,8 @@ def test_frozen_v7_and_v8_receipts_load_observe_replay_and_report(tmp_path):
     ids = {}
     for name, legacy in (("v8", to_v8(current)), ("v7", to_v7(current))):
         ids[name] = digest(legacy)
-        atomic_write(receipt_path(engine.config, ids[name]), canonical(legacy) + b"\n")
+        with locked(engine.config):
+            put(engine.config, "decisions", ids[name], canonical(legacy) + b"\n")
         assert load(engine.config, ids[name])["format"] == f"howhard-decision-{name}"
     engine.observe_decision(ids["v7"], "clean", id="from-v7", seconds=12.)
     engine.observe_decision(ids["v8"], "loud", id="from-v8", cause="capability", active_seconds=10.)

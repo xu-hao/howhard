@@ -49,9 +49,6 @@ class Engine:
     def refresh(self):
         config = self.config
         claimed = (config.state_root / "store.json").exists()
-        if claimed:
-            from .payload_store import migrate
-            migrate(config)
         boundary = storage.reading(config) if claimed else storage.locked(config, operation="store initialize")
         with boundary:
             from . import native, state
@@ -236,13 +233,13 @@ class Engine:
         import re
         if not isinstance(request_id, str) or not re.fullmatch(r"[0-9a-f]{64}", request_id):
             raise HowHardError("request_id: expected SHA-256 request ID")
+        from .payload_store import get
+        blob = get(self.config, "requests", request_id)
+        if blob is None:
+            raise HowHardError("request_id: unavailable or invalid agent request")
         try:
-            from .payload_store import get
-            blob = get(self.config, "requests", request_id)
-            if blob is None:
-                blob = (self.config.state_root / "requests" / f"{request_id}.json").read_bytes()
             bundle = json.loads(blob)
-        except (OSError, ValueError) as exc:
+        except (ValueError, UnicodeError) as exc:
             raise HowHardError("request_id: unavailable or invalid agent request") from exc
         from .validation import keys
         keys(bundle, ["format", "evidence_key", "payload", "snapshot", "native_candidates", "project_root", "stage", "capability", "refilter_round", "forecast_template", "forecast_state", "coarse_usage"],

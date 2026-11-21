@@ -100,9 +100,7 @@ def filter_quality(engine):
     from datetime import datetime
     decisions = {}
     from .payload_store import decision_ids
-    path = engine.config.state_root / "decisions"
-    ids = set(decision_ids(engine.config)) | {file.stem for file in path.glob("*.json")}
-    for decision_id in sorted(ids):
+    for decision_id in decision_ids(engine.config):
         decision = load(engine.config, decision_id, for_scoring=True)
         if decision is not None:
             decisions[decision_id] = decision

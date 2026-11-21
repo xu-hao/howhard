@@ -8,10 +8,6 @@ from .context import DECISION_FORMAT, FORMAT, LEGACY_DECISION_V7, LEGACY_DECISIO
 from .validation import HowHardError, keys, text
 
 
-def receipt_path(config, decision_id):
-    return config.state_root / "decisions" / f"{decision_id}.json"
-
-
 def save(config, result):
     value = {"format": DECISION_FORMAT, "project": config.data["project"],
              "project_identity": config.project_identity,
@@ -33,7 +29,7 @@ def save(config, result):
 
 def exists(config, decision_id):
     from .payload_store import exists as stored
-    return stored(config, "decisions", decision_id) or receipt_path(config, decision_id).is_file()
+    return stored(config, "decisions", decision_id)
 
 
 def summaries(config, **filters):
@@ -57,19 +53,18 @@ def load(config, source, *, for_scoring=False):
             raise HowHardError("decision: expected a receipt ID, path or object")
         source = str(source)
         is_id = bool(re.fullmatch(r"[0-9a-f]{64}", source))
-        path = receipt_path(config, source) if is_id else Path(source)
         try:
             if is_id:
                 from .payload_store import get
                 blob = get(config, "decisions", source)
                 if blob is None:
-                    blob = path.read_bytes()
+                    raise HowHardError(f"decision: cannot read valid receipt {source}")
             else:
-                blob = path.read_bytes()
+                blob = Path(source).read_bytes()
             value = json.loads(blob)
         except (OSError, ValueError, UnicodeError) as exc:
-            raise HowHardError(f"decision: cannot read valid receipt {path}") from exc
-        if re.fullmatch(r"[0-9a-f]{64}", source) and digest(value) != source:
+            raise HowHardError(f"decision: cannot read valid receipt {source}") from exc
+        if is_id and digest(value) != source:
             raise HowHardError("decision: receipt content does not match its ID")
     if for_scoring and isinstance(value, dict) and value.get("format") in {
         "howhard-decision-v1", "howhard-decision-v2", "howhard-decision-v3", "howhard-decision-v4", "howhard-decision-v5", "howhard-decision-v6"
