@@ -143,8 +143,11 @@ position beyond the strongest supplied candidate, allowing the inventory to be
 insufficient.
 
 Each expert's cut points define a smoothed prior cumulative distribution over
-this threshold. Predictive weights mix the independent and memory-conditioned
-priors. Consensus ordering preserves each model's effort chain; a monotone
+this threshold. Below the lower cut {math}`\ell`, the prior CDF at rank {math}`r`
+is {math}`0.8\,p_{\min}\,2^{-(\ell-1-r)}`. Above the upper cut, the prior allocates
+half of the remaining overpowered-tail mass per step, normalized to the finite tail.
+Predictive weights mix the independent and memory-conditioned priors.
+Consensus ordering preserves each model's effort chain. A monotone
 projection makes the mixed cumulative distribution consistent with that order.
 Call the resulting threshold prior {math}`\pi_0(h)`.
 
@@ -185,14 +188,20 @@ about the current threshold under the proposed order.
 ### From posterior to fit band
 
 The posterior cumulative probability {math}`P(H\leq r\mid D,x)` estimates how
-likely a candidate is to clear the task's capability threshold. The lower fit
-boundary reaches the minimum clearing probability. The upper boundary retains a
-reliable candidate when one exists, then excludes stronger candidates whose
-remaining clearing-probability gain is below the margin, while also checking a
-timely-clearing posterior so clean precedents with severe active-duration overruns
-do not prematurely prune faster stronger candidates as overpowered before {math}`J`
-compares time. If the reliability target is unattainable, the gain rule is anchored
-at the lower boundary instead.
+likely a candidate is to clear the task's capability threshold. The clearing and
+timely-clearing posteriors each define an interval. An interval starts at the first
+position meeting the minimum probability and retains a reliable candidate when one
+exists. It ends at the first position at or above that anchor where the remaining
+probability gain is below the margin. When reliability is unattainable, the lower
+boundary is the gain rule's anchor. When the timely minimum is also unattainable,
+only the timely gain cut is kept. The clearing minimum still applies to all
+forecasted cells.
+
+When the span of the two intervals exceeds the forecast budget, the fine reader
+forecasts their union. The gap lies beyond the clearing gain cut and before the
+timely interval. This retains both clearing and timely alternatives for {math}`J` to
+compare, while the receipt keeps probabilities for every rank. If the union itself
+exceeds the budget, request a sharper independent prior over the same inventory.
 
 Cross-model placements can change through constrained local search using marginal
 threshold evidence and an order-distance penalty. This is approximate posterior/MAP

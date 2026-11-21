@@ -6,6 +6,12 @@
   payloads, migrate and remove verified loose JSON under write admission, and expose
   indexed decision summaries without decompressing semantic evidence (#109).
 
+- Concentrate the capability prior near the lower cut and keep separate clearing and
+  timely-clearing intervals when their combined span exceeds `max_forecast_cells`.
+  The complete inventory and both posteriors stay in the receipt. New capability v4
+  blocks record the exact forecast set. Frozen decision v9, v8, and v7 receipts
+  continue to load, accept observations, replay, and report (#110).
+
 ## 3.4.0 — 2026-11-20
 
 - Replace point outcome forecasts with per-cell Dirichlet–multinomial posteriors: each

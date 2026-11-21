@@ -353,10 +353,14 @@ policy. The resolved state subtree is excluded from capture and
 `project.read`, including symlink aliases; a state root equal to or containing the capture
 root is refused. Prepared calling-agent requests bind the worktree and reject sibling
 retrieve/decide. Requests use `howhard-agent-request-v5` and new receipts use
-`howhard-decision-v9` (`howhard-semantic-v6` / `semantic-reader-v7`,
-`howhard-capability-v3`), with required capability and accepted-result selection state.
-Persisted `howhard-decision-v8` receipts (`howhard-semantic-v5` / `semantic-reader-v6`,
-`howhard-capability-v3`, weighted forecast envelopes) and `howhard-decision-v7` receipts (`howhard-semantic-v4` / `semantic-reader-v5`,
+`howhard-decision-v9` (`howhard-semantic-v6` / `semantic-reader-v7`) with required
+capability and accepted-result selection state. Newly aggregated capability state uses
+`howhard-capability-v4`. Its `band` is an ordered list of forecast cells that can omit
+`intermediate` cells between its `lower` and `upper` endpoints. See
+[capability filtering](capability.md) for the band and widening rules. Persisted
+`howhard-decision-v9` with `howhard-capability-v3`, `howhard-decision-v8`
+(`howhard-semantic-v5` / `semantic-reader-v6`, `howhard-capability-v3`), and
+`howhard-decision-v7` (`howhard-semantic-v4` / `semantic-reader-v5`,
 `howhard-capability-v1` or `howhard-capability-v2`) continue to load, validate, accept
 feedback, and participate in belief replay and reporting under their frozen version rules.
 Receipts v1–v6 remain recognizable as historical store entries but are not replayed as
@@ -399,12 +403,8 @@ returns a typed conflict and refreshed request; see [concurrent clients](concurr
 Calling-agent submissions are audited with unknown external
 inference costs and latency rather than being counted as free provider calls.
 
-New receipts use `howhard-decision-v9`, requests `howhard-agent-request-v5`, semantic state
-`howhard-semantic-v6`, and capability state `howhard-capability-v3`. Persisted
-`howhard-decision-v8` (`howhard-semantic-v5`, `howhard-capability-v3`) and
-`howhard-decision-v7` (`howhard-semantic-v4`, `howhard-capability-v1`/`v2`) receipts
-remain valid under their frozen rules; v1–v6 receipts and older requests are refused for
-new execution feedback and excluded from replay/report scoring. Existing raw observations
+Decision v1–v6 receipts and older requests are refused for new execution feedback
+and excluded from replay and report scoring. Existing raw observations
 and semantic memories remain stored. Old posterior/prior artifacts are unused and left
 untouched. Removed interfaces include `--llm`, `HOWHARD_LLM`, `--cache`, `Engine(cache_path=...)`,
 `fit`, posterior/prior attributes, `export-prior`, `import-prior`, and prior/cache/transfer
