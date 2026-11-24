@@ -112,12 +112,17 @@ Replay predictive scores and update written lessons
 Supported later defect attribution amends the original outcome
 ```
 
-Separate stateless calls produce the initial capability prior and the fine
-no-memory forecast. Each receives the current task/project and the relevant
-candidate identities and constants. Neither receives memories, historical
-executions, learned tables or prior conversation. A memory reader separately
+Separate stateless calls produce cold-start capability priors and fine
+no-memory forecasts once per unseen `(prototype, model, effort)` pair against a
+synthesized `(representative_task, representative_context)` cluster in
+`payloads.sqlite3` (matched on canonicalized task-only text with positive cross-encoder
+relevance). Neither receives memories, historical
+executions, learned tables or prior conversation. Warm routes whose candidates are
+already covered reuse the prototype's materialized priors and empirical sufficient
+statistics directly, calling a model only when active semantic memories require
+conditional overrides or new unseen candidates enter the inventory. A memory reader separately
 supplies conditional adjustments grounded in retrieved evidence and cannot
-rewrite those independent judgments.
+rewrite those baseline judgments.
 
 This separation preserves a reference forecast for evaluating whether experience
 helped. It does not imply that the baseline LLM is unbiased or calibrated.
@@ -292,9 +297,15 @@ Dirichlet prior with concentration {math}`\kappa_0\le\kappa_{\max}` (the configu
 {math}`p_s` lowers {math}`\kappa_0` by moment matching,
 {math}`\kappa=p(1-p)/\sigma^2-1` with {math}`\sigma` equal to the interval width
 divided by 3.92, but never raises it: a forecaster cannot claim the authority of many
-real runs. Up to 24 task-similar historical runs are retrieved independently for each forecasted
+real runs. Up to 24 task-similar (`score > 0`) historical runs are retrieved independently for each forecasted
 cell—preventing frequently executed cells from crowding out rarer ones—and update the
-prior conjugately, {math}`\alpha=\kappa_0 p_0+(n_c,n_l,n_s)`. Counts are weighted by
+prior conjugately while decaying cold-start prior concentration linearly over empirical
+weight {math}`W_{\mathrm{emp}}=n_c+n_l+n_s` (`\tau_{\mathrm{emp}}=2.0`) toward a unit
+empirical base prior {math}`b_0=(0.88,0.08,0.04)`,
+{math}`\alpha=\kappa_0\max(0,1-W_{\mathrm{emp}}/2)p_0+\min(1,W_{\mathrm{emp}}/2)b_0+(n_c,n_l,n_s)`.
+Once {math}`W_{\mathrm{emp}}\ge 2`, cold-start zero-shot guesses have exact zero weight so
+pessimistic priors on unfamiliar model IDs cannot permanently suppress empirical winners.
+Counts are weighted by
 relevance, model evidence weight and an exponential recency decay (0.95 per newer
 observation of the same cell in chronological journal order), so a regression or a
 recovery moves the posterior promptly. A cell with no
@@ -419,11 +430,11 @@ The components have distinct statistical meanings:
 
 | Component | Interpretation | Main assumption or limit |
 | --- | --- | --- |
-| Independent LLM judgments | Initial task-specific orders and forecasts | LLM judgment needs empirical validation |
+| Independent LLM judgments | Cold-start task-specific prototype orders and forecasts | LLM judgment needs empirical validation |
 | Capability threshold | Generalized Bayesian update with weighted noisy likelihoods | Scalar order and heuristic transfer from related tasks |
 | Cross-model ordering | Constrained local posterior/MAP search | Approximate search over rankings |
 | Memory support | Tempered, recency-weighted predictive evidence | Forecast support does not establish truth or causality |
-| Outcome posterior | Per-cell Dirichlet–multinomial update of a bounded forecast prior | Prior strength and recency decay are fixed modelling choices |
+| Outcome posterior | Per-cell Dirichlet–multinomial update with continuous prior decay (`tau_emp = 2`) | Prior decay scale, base floor and recency decay are fixed modelling choices |
 | Risk admission | 80% quantile of the mixture accepted-defect posterior | No calibrated coverage guarantee |
 | Selection sampling | Thompson sampling within posterior cost overlap | Delta-method overlap is approximate |
 | Outcome amendments | Correction and replay of an earlier execution | Requires supported attribution and preserved provenance |

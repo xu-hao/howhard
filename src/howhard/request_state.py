@@ -149,8 +149,9 @@ def extend(engine, bundle):
         memory(item)
     for item in payload['evidence']:
         evidence(item['id'])
-    for item in bundle.get('learned_state', {}).get('outcome_observations', []):
-        evidence(item['id'])
+    for key in ('capability_observations', 'duration_observations', 'outcome_observations'):
+        for item in bundle.get('learned_state', {}).get(key, []):
+            evidence(item['id'])
     for retrieval in payload['retrieval']:
         name, data = retrieval['request']['tool'], retrieval['result']
         if name.startswith(('memory.', 'evidence.')):

@@ -26,12 +26,17 @@ identity/effort metadata in its own store; active cells and prices belong to the
 
 ```sh
 howhard paths --json
-howhard context task --text-file /tmp/task.txt --candidates /tmp/host-candidates.json --json
+howhard context task --text-file /tmp/task.txt --candidates /tmp/host-candidates.json --auto-decide --seed 42 --json
 ```
 
-Replace temporary paths with this task's actual artifacts. `context` returns a
-`request_id`, `stage=filter`, the memory reader `request`, and a separate clean
-`baseline_request` for a task-specific capability order and fit cuts.
+Replace temporary paths with this task's actual artifacts. When matched `(task, context)`
+prototypes already cover every candidate cell and no active editable semantic memories
+exist, `context --auto-decide` completes both stages immediately and returns the
+committed `decision_id` and `chosen` cell in one call (warm `howhard pick` also succeeds
+without any configured LLM provider in that state). Otherwise `context` returns a
+`request_id`, `stage`, the memory reader `request`, and `baseline_request` (`null` when
+matched prototypes already cover that stage's cells, or a clean stateless baseline
+request conditioned on the prototype's synthesized representative task and context).
 All panels contain only the supplied native cells. No follow-up command needs to
 repeat the inventory. The prepared request is bound to this worktree and rejects
 retrieve/decide from a sibling checkout. Feedback can use the frozen receipt from
@@ -51,16 +56,20 @@ request = engine.prepare("task", Path("task.txt").read_text(),
 print(json.dumps(request))
 ```
 
-The host evaluates `baseline_request` in a fresh independent model context, then submits
-its capability prior and `memory_filters` through `decide`. The returned NEW
-`stage=forecast` request ID requests calibrated rows only for the fit band. Evaluate
-that baseline independently too, then submit `forecasts` and `memory_forecasts`. If independence is unavailable,
-report routing unavailable; do not fabricate a baseline or select statistically.
+When `baseline_request` is non-null, evaluate it in a fresh independent model context,
+then submit its capability prior and `memory_filters` through `decide` (when
+`baseline_request` is `null`, omit `filter` and submit `{memory_filters, reason}`). The
+returned NEW `stage=forecast` request ID requests calibrated rows for any unseen fit-band
+cells (or sets `baseline_request: null` when all fit-band cells are covered on matched
+prototypes). Evaluate any non-null Stage 2 `baseline_request` independently too, then
+submit `forecasts` (omitted when `baseline_request` is `null`) and `memory_forecasts`. If
+independence is unavailable when a non-null `baseline_request` is returned, report
+routing unavailable; do not fabricate a baseline or select statistically.
 
-`Engine.prepare(..., native_candidates=inventory)` starts the calling-agent route;
-`engine.retrieve(request_id, queries)` and `engine.decide(request_id, response)` use
-that saved inventory automatically. Every new routing request requires an explicit
-native inventory.
+`Engine.prepare(..., native_candidates=inventory, auto_decide=False)` starts the
+calling-agent route; `engine.retrieve(request_id, queries)` and
+`engine.decide(request_id, response)` use that saved inventory automatically. Every new
+routing request requires an explicit native inventory.
 
 ## Independent reasoning and validated decision
 

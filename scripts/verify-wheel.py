@@ -107,4 +107,9 @@ with tempfile.TemporaryDirectory(prefix="howhard-wheel-") as directory:
     assert json.loads(subprocess.check_output(attach, cwd=root, env=environment, text=True))["observed"] == first_usage
     effective = json.loads(subprocess.check_output([str(command), "evidence", "wheel-execution", "--json"], cwd=root, env=environment, text=True))
     assert effective["tokens"] == 120 and effective["outcome"] == "clean"
+    # Warm prototype routing completes both context --auto-decide and pick without any configured LLM provider.
+    warm_auto = json.loads(subprocess.check_output([str(command), "context", "bookkeeping", "--candidates", str(inventory), "--text", "repair spelling typo", "--auto-decide", "--seed", "42", "--json"], cwd=root, env=environment, text=True))
+    assert warm_auto["chosen"]["model"] == "wheel-native-model" and "decision_id" in warm_auto
+    warm_pick = json.loads(subprocess.check_output([str(command), "pick", "bookkeeping", "--candidates", str(inventory), "--text", "repair spelling typo", "--seed", "42", "--json"], cwd=root, env=environment, text=True))
+    assert warm_pick["chosen"]["model"] == "wheel-native-model" and warm_pick["semantic"]["backend"] == "prototype-materialized"
 print(f"Verified howhard {expected} source distribution and clean installed wheel")

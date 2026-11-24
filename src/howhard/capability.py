@@ -6,12 +6,13 @@ import re
 
 import numpy as np
 
-from .context import DECISION_FORMAT, LEGACY_DECISION_V7, LEGACY_DECISION_V8, digest
+from .context import DECISION_FORMAT, LEGACY_DECISION_V7, LEGACY_DECISION_V8, LEGACY_DECISION_V9, digest
 from .llm import LLMError, SETTINGS
 from .storage import effective_active_seconds
 from .validation import HowHardError, keys, number, text
 
-FORMAT = "howhard-capability-v4"
+FORMAT = "howhard-capability-v5"
+LEGACY_FORMAT_V4 = "howhard-capability-v4"
 LEGACY_FORMAT_V3 = "howhard-capability-v3"
 LEGACY_FORMAT_V2 = "howhard-capability-v2"
 LEGACY_FORMAT_V1 = "howhard-capability-v1"
@@ -59,7 +60,10 @@ def request(payload, policy):
 
 
 def baseline_request(payload):
-    result = {k: deepcopy(payload[k]) for k in ("kind", "prompt_version", "task_type", "context", "risk_class")}
+    if "no_memory_filter" in payload:
+        return None
+    result = {k: deepcopy(payload[k]) for k in ("kind", "prompt_version", "task_type", "risk_class")}
+    result["context"] = deepcopy(payload.get("prototype_context", payload["context"]))
     result.update(phase="baseline", cells=[{k: c[k] for k in ("key", "family", "effort", "model")} for c in payload["cells"]],
                   filter_policy=deepcopy(payload["filter_policy"]),
                   contract="Return ONLY {filter: {order: [key, ...], lower: key, upper: key}, reason: string}. " + payload["contract"]["filter"] + " No memory, evidence, beliefs or retrieval is available in this independent call.")
@@ -90,7 +94,13 @@ def validate_filter(value, cells):
 
 def validate_response(response, payload, snapshot):
     from .semantic import visible_memories
-    keys(response, ["filter", "memory_filters", "reason"], where="capability filter response")
+    if "no_memory_filter" in payload:
+        keys(response, ["memory_filters", "reason"], ["filter"], where="capability filter response")
+        if "filter" in response and response["filter"] != payload["no_memory_filter"]:
+            raise LLMError("Memory reader must not rewrite the isolated baseline filter")
+        response = {**deepcopy(response), "filter": deepcopy(payload["no_memory_filter"])}
+    else:
+        keys(response, ["filter", "memory_filters", "reason"], where="capability filter response")
     text(response["reason"], "capability filter reason")
     validate_filter(response["filter"], payload["cells"])
     items = response["memory_filters"]
@@ -172,24 +182,91 @@ def _decision_forecast_seconds(engine, row):
     return float(sum(e["weight"] * panels[e["key"]][pair]["seconds"] for e in receipt["semantic"]["beliefs"]["experts"]))
 
 
-def observations(engine, payload, *, scores=None):
+def observations(engine, payload, *, scores=None, proto_state=None):
     """Retrieve bounded actual observations with absolute, non-normalized relevance."""
-    evidence = payload["evidence"][:SETTINGS["evidence_limit"]]
-    eligible = [row for row in evidence if row["outcome"] != "interrupted"]
-    if not eligible:
-        return []
-    scores = evidence_scores(engine, payload) if scores is None else scores
-    known = {cell_key(c) for c in payload["cells"]}
-    policy = payload["filter_policy"]
-    result = []
+    from . import prototypes
+    from .retrieval import records, task_text
+
     scored_rows = [r for r in engine.rows if r["outcome"] != "interrupted"]
+    if not scored_rows:
+        return []
+    known = {cell_key(c) for c in payload["cells"]}
+    eligible_all = [r for r in scored_rows if cell_key(r) in known]
+    if not eligible_all:
+        return []
+
     recency_order = {r["id"]: age for age, r in enumerate(reversed(scored_rows))}
-    for row in eligible:
+    policy = payload["filter_policy"]
+    limit = SETTINGS["evidence_limit"]
+
+    # Fast prototype member lookup on standard pipelines avoids re-scanning large journals.
+    proto_scores = (
+        prototypes.matched_member_scores(engine, proto_state)
+        if proto_state and prototypes._is_standard_pipeline(engine.retrieval)
+        else None
+    )
+    top_evidence = payload["evidence"][:limit]
+    top_ids = {r["id"] for r in top_evidence}
+
+    selected_rows = []
+    row_scores = {}
+    if proto_scores is not None:
+        base_scores = evidence_scores(engine, payload) if scores is None and top_evidence else (scores or {})
+        by_cell = {}
+        for r in reversed(eligible_all):
+            eid = r["id"]
+            sc = base_scores.get("evidence:" + eid, proto_scores.get(eid))
+            if sc is None or float(sc) <= 0.0:
+                continue
+            bucket = by_cell.setdefault(cell_key(r), [])
+            if len(bucket) < limit:
+                bucket.append(r)
+                row_scores[eid] = float(sc)
+        keep_ids = {r["id"] for bucket in by_cell.values() for r in bucket}
+        selected_rows = [r for r in eligible_all if r["id"] in keep_ids]
+    elif {r["id"] for r in eligible_all} <= top_ids:
+        base_scores = evidence_scores(engine, payload) if scores is None else scores
+        for r in top_evidence:
+            if r["outcome"] == "interrupted" or cell_key(r) not in known:
+                continue
+            sc = float(base_scores["evidence:" + r["id"]])
+            selected_rows.append(r)
+            row_scores[r["id"]] = sc
+    else:
+        base_scores = dict(evidence_scores(engine, payload) if scores is None else scores)
+        query = task_text(payload["task_type"], payload["context"])
+        by_cell = {}
+        for r in eligible_all:
+            by_cell.setdefault(cell_key(r), []).append(r)
+        keep_ids = set()
+        for k in sorted(by_cell):
+            history = by_cell[k]
+            retrieved = engine.retrieval.search(records(rows=history), query, limit=limit)
+            chosen = retrieved["records"]
+            trace_sc = {item["key"]: item["score"] for item in retrieved["trace"]["selected"]}
+            missing = [
+                d for d in chosen
+                if trace_sc.get(d["key"]) is None and base_scores.get(d["key"]) is None
+            ]
+            if missing:
+                vals = list(engine.retrieval.reranker.score(query, [d["text"] for d in missing]))
+                if len(vals) != len(missing) or any(not math.isfinite(float(v)) for v in vals):
+                    raise HowHardError("capability similarity: invalid reranker scores")
+                trace_sc.update({d["key"]: float(v) for d, v in zip(missing, vals)})
+            for d in chosen:
+                r = d["value"]
+                sc = trace_sc.get(d["key"])
+                if sc is None:
+                    sc = base_scores.get(d["key"])
+                keep_ids.add(r["id"])
+                row_scores[r["id"]] = float(sc)
+        selected_rows = [r for r in eligible_all if r["id"] in keep_ids]
+
+    result = []
+    for row in selected_rows:
         age = recency_order.get(row["id"], 0)
         key = cell_key(row)
-        if key not in known:
-            continue  # Unknown executed controls are never mapped to guessed cells.
-        score = float(scores["evidence:"+row["id"]])
+        score = float(row_scores[row["id"]])
         similarity = 1 / (1 + math.exp(-max(-60, min(60, score))))
         strength = 1.
         if row["outcome"] != "clean":
@@ -356,11 +433,30 @@ def _learn_order(order, cdf, obs, cells, policy):
         order, score = best, best_score
 
 
-def aggregate(engine, payload, response, *, observed=None):
+def _pav_along(order, raw_cdf):
+    blocks = []
+    for k in order:
+        blocks.append(([k], float(raw_cdf[k])))
+        while len(blocks) > 1 and blocks[-2][1] > blocks[-1][1]:
+            b, a = blocks.pop(), blocks.pop()
+            blocks.append((a[0] + b[0], (len(a[0]) * a[1] + len(b[0]) * b[1]) / (len(a[0]) + len(b[0]))))
+    return {k: p for group, p in blocks for k in group}
+
+
+def aggregate(engine, payload, response, *, observed=None, covered_priors=None):
     from .semantic import normalize_support
     policy = payload["filter_policy"]
     baseline = response["filter"]
-    worlds = {"filter:llm": prior_cdf(baseline, policy)}
+    base_cdf = prior_cdf(baseline, policy)
+    prior_sources = None
+    if covered_priors:
+        overrides = {k: float(v) for k, v in covered_priors.items() if k in base_cdf}
+        if overrides and len(overrides) < len(base_cdf):
+            merged_llm = _pav_along(baseline["order"], {**base_cdf, **overrides})
+            if merged_llm != base_cdf:
+                base_cdf = merged_llm
+                prior_sources = overrides
+    worlds = {"filter:llm": base_cdf}
     filters = {"filter:llm": deepcopy(baseline)}
     for item in response["memory_filters"]:
         key = f"filter:memory:{item['id']}:{item['version']}"
@@ -401,9 +497,12 @@ def aggregate(engine, payload, response, *, observed=None):
     for item, strength in zip(obs, timely_targets):
         item["timely_strength"] = strength
     timely_probabilities, _ = _posterior(learned_order, cdf, obs, policy, targets=timely_targets)
-    independent_prior = baseline if not obs and len(worlds) == 1 else None
+    independent_prior = baseline if not obs and len(worlds) == 1 and prior_sources is None else None
     band = _forecast_band(learned_order, probabilities, timely_probabilities, policy,
                           independent_prior=independent_prior)
+    if prior_sources is not None and len(band) > policy["max_forecast_cells"]:
+        # Do not let smaller-inventory prototype priors inflate a valid larger-inventory filter past budget.
+        return aggregate(engine, payload, response, observed=obs, covered_priors=None)
     lo, hi = learned_order.index(band[0]), learned_order.index(band[-1])
     band_keys = set(band)
     observed = {r["key"] for r in obs if r["weight"] > .01}
@@ -414,11 +513,14 @@ def aggregate(engine, payload, response, *, observed=None):
              "placement": "learned" if k in observed else "prior-only",
              "threshold": "learned" if any(r["weight"] > .01 for r in obs) else "prior-only"}
             for i, k in enumerate(learned_order)]
-    return {"format": FORMAT, "baseline": deepcopy(baseline), "memory_filters": deepcopy(response["memory_filters"]),
-            "order": learned_order, "lower": band[0], "upper": band[-1],
-            "band": band, "cells": rows, "worlds": worlds, "beliefs": belief,
-            "evidence": obs, "policy": deepcopy(policy), "reason": response["reason"],
-            "widening": [], "disagreements": [], "refilter_rounds": 0}
+    out = {"format": FORMAT, "baseline": deepcopy(baseline), "memory_filters": deepcopy(response["memory_filters"]),
+           "order": learned_order, "lower": band[0], "upper": band[-1],
+           "band": band, "cells": rows, "worlds": worlds, "beliefs": belief,
+           "evidence": obs, "policy": deepcopy(policy), "reason": response["reason"],
+           "widening": [], "disagreements": [], "refilter_rounds": 0}
+    if prior_sources is not None:
+        out["prior_sources"] = prior_sources
+    return out
 
 
 def disagreements(capability, prepared):
@@ -437,16 +539,20 @@ def disagreements(capability, prepared):
 
 def validate_receipt(state, inventory, semantic, chosen, *, decision_format=DECISION_FORMAT, constants=None):
     """Check complete filter coverage and the exact set of prospectively forecast cells."""
+    optional_keys = ["prior_sources"] if isinstance(state, dict) and state.get("format") == FORMAT else []
     keys(state, ["format", "baseline", "memory_filters", "order", "lower", "upper", "band", "cells", "worlds", "beliefs",
-                 "evidence", "policy", "reason", "widening", "disagreements", "refilter_rounds", "reader_usage", "widening_stop", "executed"], where="decision.capability")
+                 "evidence", "policy", "reason", "widening", "disagreements", "refilter_rounds", "reader_usage", "widening_stop", "executed"],
+         optional_keys, where="decision.capability")
     allowed_formats = {
-        DECISION_FORMAT: (FORMAT, LEGACY_FORMAT_V3),
+        DECISION_FORMAT: (FORMAT, LEGACY_FORMAT_V4),
+        LEGACY_DECISION_V9: (LEGACY_FORMAT_V4, LEGACY_FORMAT_V3),
         LEGACY_DECISION_V8: (LEGACY_FORMAT_V3,),
         LEGACY_DECISION_V7: (LEGACY_FORMAT_V2, LEGACY_FORMAT_V1),
     }
     if state["format"] not in allowed_formats.get(decision_format, ()):
         raise HowHardError("decision.capability.format: unsupported version")
-    has_timely = state["format"] in (FORMAT, LEGACY_FORMAT_V3)
+    has_timely = state["format"] in (FORMAT, LEGACY_FORMAT_V4, LEGACY_FORMAT_V3)
+    has_split_band = state["format"] in (FORMAT, LEGACY_FORMAT_V4)
     validate_policy(state["policy"])
     cells = [{**c, "key": cell_key(c)} for c in inventory]
     known = {c["key"]: c for c in cells}
@@ -459,7 +565,7 @@ def validate_receipt(state, inventory, semantic, chosen, *, decision_format=DECI
         raise HowHardError("decision.capability: inconsistent cell coverage")
     if (not isinstance(band, list) or not band or band[0] != state["lower"] or band[-1] != state["upper"]
             or any(not isinstance(key, str) for key in band)
-            or (state["format"] != FORMAT and band != state["order"][lo:hi+1])):
+            or (not has_split_band and band != state["order"][lo:hi+1])):
         raise HowHardError("decision.capability: inconsistent band")
     forecasted = set(band)
     cell_fields = ["key", "model", "family", "effort", "position", "classification", "P_clear", "placement", "threshold"]
@@ -500,10 +606,22 @@ def validate_receipt(state, inventory, semantic, chosen, *, decision_format=DECI
         raise HowHardError("decision.capability: inconsistent expert worlds")
 
     def matches_priors(**options):
-        return all(state["worlds"][key] == prior_cdf(value, state["policy"], **options)
-                   for key, value in filters.items())
+        for key, value in filters.items():
+            expected_cdf = prior_cdf(value, state["policy"], **options)
+            if key == "filter:llm" and "prior_sources" in state and state["format"] == FORMAT:
+                ps = state["prior_sources"]
+                if not isinstance(ps, dict) or not ps or any(k not in known for k in ps):
+                    return False
+                for pv in ps.values():
+                    number(pv, "capability.prior_sources", nonnegative=True)
+                    if pv > 1:
+                        return False
+                expected_cdf = _pav_along(value["order"], {**expected_cdf, **ps})
+            if state["worlds"][key] != expected_cdf:
+                return False
+        return True
 
-    if not (matches_priors(linear_prefix=state["format"] != FORMAT)
+    if not (matches_priors(linear_prefix=not has_split_band)
             or (state["format"] == LEGACY_FORMAT_V1 and matches_priors(linear_prefix=True, linear_tail=True))):
         raise HowHardError("decision.capability: prior probabilities do not match the filter")
     weights, seen = 0., set()
@@ -516,7 +634,12 @@ def validate_receipt(state, inventory, semantic, chosen, *, decision_format=DECI
         number(e["log_score"], "capability expert log score")
     if seen != set(filters) or abs(weights-1) > 1e-6:
         raise HowHardError("decision.capability: expert weights must cover priors and sum to one")
-    if not isinstance(state["evidence"], list) or len(state["evidence"]) > SETTINGS["evidence_limit"]:
+    max_evidence = (
+        max(SETTINGS["evidence_limit"], len(cells) * SETTINGS["evidence_limit"])
+        if state["format"] == FORMAT
+        else SETTINGS["evidence_limit"]
+    )
+    if not isinstance(state["evidence"], list) or len(state["evidence"]) > max_evidence:
         raise HowHardError("decision.capability: invalid precedent count")
     evidence_fields = ["id", "key", "outcome", "cause", "score", "similarity", "weight"]
     if has_timely:
@@ -540,8 +663,12 @@ def validate_receipt(state, inventory, semantic, chosen, *, decision_format=DECI
         expected_strengths = _timely_strengths(state["order"], state["evidence"], fallback_seconds=fallback_sec)
         if any(abs(item["timely_strength"] - exp) > 1e-12 for item, exp in zip(state["evidence"], expected_strengths)):
             raise HowHardError("decision.capability: inconsistent timely_strength")
-    if state["format"] == FORMAT:
-        independent_prior = state["baseline"] if not state["evidence"] and len(filters) == 1 else None
+    if has_split_band:
+        independent_prior = (
+            state["baseline"]
+            if not state["evidence"] and len(filters) == 1 and "prior_sources" not in state
+            else None
+        )
         clear = {c["key"]: c["P_clear"] for c in state["cells"]}
         timely = {c["key"]: c["P_timely"] for c in state["cells"]}
         if band != _forecast_band(state["order"], clear, timely, state["policy"], independent_prior=independent_prior):

@@ -37,28 +37,45 @@ Configured identities retain their declared labels and evidence weights. Histori
 identity metadata does not activate candidates in a later request.
 
 A [task-specific capability filter](capability.md) first reads the full inventory.
-An independent stateless LLM then forecasts only the fit band using the task and project alone.
+Cold-start stateless LLM calls evaluate capability and fine forecasts at most once per
+unseen `(prototype, model, effort)` cell against the prototype's synthesized
+`(representative_task, representative_context)`, materializing priors and empirical cell
+statistics in `payloads.sqlite3`. When matched prototypes already cover all cells and no
+active editable memories exist, `pick`, `summary`, and `context --auto-decide` complete
+locally without invoking a provider; when new unseen candidates appear on a warm
+prototype, Stage 2 requests forecasts only for the unseen cells.
 The reader supplies conditional overrides for memories it has seen; omitted cells and
-unretrieved memories use the independent LLM forecast. No learned probability table
-or synthetic forecast is supplied to either call. Provider absence, invalid forecasts
+unretrieved memories use the baseline forecast. No learned probability table
+or synthetic forecast is supplied to isolated baseline calls. Cold-start provider absence, invalid forecasts
 and provider failures are explicit errors; none produces a routing recommendation.
 
 (outcome-posterior)=
 ### Per-cell outcome posterior
 
 Each expert forecast row is a bounded Dirichlet prior for that `(family, effort)` cell,
-updated only by that cell's own observed outcomes:
+updated only by that cell's own observed outcomes (`W_emp = n_clean + n_loud + n_silent`),
+with continuous cold-start prior decay over `tau_emp = 2.0`:
 
 ```text
-p_0     = floored, normalized (clean, loud, silent) forecast
-kappa_0 = prior_strength, lowered by optional credible intervals, within
-          [min_concentration, prior_strength]
-alpha   = kappa_0 * p_0 + (n_clean, n_loud, n_silent)
+p_0         = floored, normalized (clean, loud, silent) forecast
+kappa_0     = prior_strength, lowered by optional credible intervals, within
+              [min_concentration, prior_strength]
+decay       = max(0, 1 - W_emp / 2.0)
+kappa_prior = kappa_0 * decay
+kappa_base  = 1.0 * (1 - decay)
+b_0         = (0.88, 0.08, 0.04)
+alpha       = kappa_prior * p_0 + kappa_base * b_0 + (n_clean, n_loud, n_silent)
 ```
+
+At `W_emp = 0`, `prior_concentration = kappa_0` and `alpha = kappa_0 * p_0`. As real
+executions accumulate on the cell, the cold-start LLM prior decays linearly to exact
+zero weight at `W_emp >= 2.0`, leaving only the unit empirical base smoothing `b_0` plus
+the cell's own weighted counts so pessimistic guesses on unfamiliar or post-cutoff model
+identifiers never depress observed winners permanently.
 
 `n_*` are recency-weighted counts from per-cell `outcome_observations`: for each
 forecasted `(family, effort)` cell (and any widened cell), up to
-`outcome_evidence_limit` (packaged default `24`) task-similar `clean`/`loud`/`silent`
+`outcome_evidence_limit` (packaged default `24`) task-similar (`score > 0`) `clean`/`loud`/`silent`
 executions (`interrupted` runs are excluded) are retrieved
 independently from that cell's own historical runs and scored with the configured
 reranker (`similarity = sigmoid(score)`), each weighted by
@@ -124,10 +141,11 @@ can further tighten the posterior-overlap band; it cannot permit exploration out
 it. Cheaper alternatives include signed cost component explanations or the policy that
 excluded them.
 
-New receipts use `howhard-decision-v9` (`howhard-semantic-v6`, reader prompt
+New receipts use `howhard-decision-v10` (`howhard-semantic-v7`, reader prompt
 `semantic-reader-v7`, interval kind `dirichlet-posterior-mixture`). Frozen
-`howhard-decision-v8` and `howhard-decision-v7` receipts keep their original weighted
-forecast envelopes, upper-envelope admission and sampling policy shape; they still load,
+`howhard-decision-v9` receipts keep undecayed `kappa_0 * p_0 + counts` posteriors, while
+frozen `howhard-decision-v8` and `howhard-decision-v7` receipts keep their original weighted
+forecast envelopes, upper-envelope admission and sampling policy shape; all load,
 validate, accept outcomes and replay into predictive weights.
 
 ## Prices and measurements
@@ -352,13 +370,14 @@ or memory writes. All receipts require that identity and their native inventory/
 policy. The resolved state subtree is excluded from capture and
 `project.read`, including symlink aliases; a state root equal to or containing the capture
 root is refused. Prepared calling-agent requests bind the worktree and reject sibling
-retrieve/decide. Requests use `howhard-agent-request-v5` and new receipts use
-`howhard-decision-v9` (`howhard-semantic-v6` / `semantic-reader-v7`) with required
+retrieve/decide. Requests use `howhard-agent-request-v6` and new receipts use
+`howhard-decision-v10` (`howhard-semantic-v7` / `semantic-reader-v7`) with required
 capability and accepted-result selection state. Newly aggregated capability state uses
-`howhard-capability-v4`. Its `band` is an ordered list of forecast cells that can omit
+`howhard-capability-v5`. Its `band` is an ordered list of forecast cells that can omit
 `intermediate` cells between its `lower` and `upper` endpoints. See
 [capability filtering](capability.md) for the band and widening rules. Persisted
-`howhard-decision-v9` with `howhard-capability-v3`, `howhard-decision-v8`
+`howhard-decision-v9` (`howhard-semantic-v6` / `semantic-reader-v7`,
+`howhard-capability-v4` or `howhard-capability-v3`), `howhard-decision-v8`
 (`howhard-semantic-v5` / `semantic-reader-v6`, `howhard-capability-v3`), and
 `howhard-decision-v7` (`howhard-semantic-v4` / `semantic-reader-v5`,
 `howhard-capability-v1` or `howhard-capability-v2`) continue to load, validate, accept
@@ -367,10 +386,16 @@ Receipts v1–v6 remain recognizable as historical store entries but are not rep
 new decisions; prepare a fresh request and decision to attach new feedback.
 Frozen-receipt observations and learning share the store across that project's worktrees.
 
-### Request and decision payload storage
+### Request, decision and prototype storage
 
-`payloads.sqlite3` in the state root holds content-addressed `requests` and `decisions` rows.
-Each row retains the complete original JSON byte sequence in a zstd-compressed `payload`
+`payloads.sqlite3` in the state root holds content-addressed `requests` and `decisions` rows
+alongside dynamic synthesized `(task, context)` prototype tables (`prototypes`,
+`prototype_members`, `prototype_cells`, `prototype_meta`, `prototype_row_state`).
+Prototype tables maintain reusable representative `(task, context)` clusters, per-cell
+cold-start priors (`prior_json`), and incrementally updated / amendment-replayable
+empirical sufficient statistics (`stats_json`), splitting heterogeneous clusters once at
+least 12 non-`interrupted` member runs diverge semantically or empirically.
+Each request or decision row retains the complete original JSON byte sequence in a zstd-compressed `payload`
 BLOB; the SHA-256 `request_id` or `decision_id` remains the digest of the parsed JSON
 value. No semantic forecast, legacy receipt field, or reproducibility input is omitted.
 If two bytewise JSON variants have the same content ID, the prior exact bytes remain
@@ -421,17 +446,21 @@ performed automatically.
 ```python
 from howhard import Engine
 
-engine = Engine()  # State, context, retrieval and feedback need no provider.
+engine = Engine()  # State, context, retrieval, warm prototypes and feedback need no provider.
 request = engine.prepare("specified-implementation", "Make rollback safe",
                          native_candidates=[{"model": "actual-host-model", "effort": "high"}])
-# Evaluate baseline_request in an independent model context, then build the response.
+# When baseline_request is non-null, evaluate it in an independent model context;
+# pass auto_decide=True to complete warm memory-free routes in a single call.
 # choice = engine.decide(request["request_id"], response, seed=42)
 # engine.observe_decision(choice["decision_id"], "clean", id="actual-execution")
 ```
 
 `Engine(llm=adapter)` accepts an object with `complete(request) -> dict`. Standalone
-`pick` and `summary` lazily resolve `HOWHARD_LLM_COMMAND` or an authenticated Claude CLI.
-Calling-agent `prepare`/`retrieve`/`decide` never invoke a provider. A fresh engine's
+`pick` and `summary` complete locally with zero LLM calls when matched prototypes cover
+all cells and no active editable memories exist, and lazily resolve `HOWHARD_LLM_COMMAND`
+or an authenticated Claude CLI only when cold-start baselines or active-memory reader
+calls are required. Calling-agent `prepare(..., auto_decide=False|True)` / `retrieve` /
+`decide` never invoke a provider. A fresh engine's
 observations return pending learning; apply an external writer response or call
 `memory_learn` explicitly. An engine already holding a provider adapter runs its writer
 after durable observation. `refresh()` reloads external evidence; no fitting occurs.

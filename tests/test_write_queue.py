@@ -21,7 +21,11 @@ from howhard.validation import HowHardError
 INVENTORY = [{"model": "claude-opus-5-5", "effort": "high"}]
 
 
-def _response(request):
+def _response(request, stage="filter"):
+    if request is None:
+        return ({"memory_filters": [], "reason": "protocol double"}
+                if stage == "filter"
+                else {"memory_forecasts": [], "reason": "protocol double"})
     if request["kind"] == "filter":
         from conftest import fixture_filter
         return fixture_filter(request)
@@ -258,7 +262,7 @@ def test_queued_decision_revalidates_evidence_before_receipt_commit(tmp_path):
     engine = Engine(directory=tmp_path)
     engine.observe("task", INVENTORY[0]["model"], "high", "clean", id="surfaced-evidence")
     request = engine.prepare("task", native_candidates=INVENTORY)
-    options = {"request_id": request["request_id"], "response": _response(request["baseline_request"])}
+    options = {"request_id": request["request_id"], "response": _response(request["baseline_request"], request["stage"])}
     with client(_operation_client, tmp_path, "decide", options) as (_, connection):
         assert receive(connection) == "ready"
         # Hold admission without a JSONL mutation, so the client may read and

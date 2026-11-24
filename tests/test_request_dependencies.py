@@ -136,11 +136,11 @@ def test_expert_weights_are_frozen_when_a_concurrent_run_is_scored(tmp_path):
     original = deepcopy(pending['request']['beliefs'])
     write(tmp_path, 'score', decision_id=previous['decision_id'])
     f = filtering(pending['baseline_request'], 0, 1)
-    f['memory_filters'] = [{'id': memory['id'], 'version': 1, 'filter': deepcopy(f['filter'])}]
+    f['memory_filters'] = [{'id': memory['id'], 'version': 1, 'filter': filtering(pending['request'], 0, 1)['filter']}]
     band = engine.decide(pending['request_id'], f)
     response = forecasts(band['baseline_request'])
     response['memory_forecasts'] = [{'id': memory['id'], 'version': 1,
-                                    'forecasts': deepcopy(response['forecasts'])}]
+                                    'forecasts': deepcopy(forecasts(band['request'])['forecasts'])}]
     result = engine.decide(band['request_id'], response, seed=42)
     old = {e['key'].removeprefix('filter:'): e['log_score'] for e in original['experts']}
     frozen = result['semantic']['beliefs']['experts']

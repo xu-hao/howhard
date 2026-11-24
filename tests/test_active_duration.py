@@ -346,14 +346,22 @@ def test_frozen_v7_receipts_and_historical_journals_load_validate_observe_replay
     engine = Engine(directory=tmp_path, retrieval=SimilarityDouble())
     cells = [{"model": f"fixture/model-{i:03d}", "effort": "high", "usd_per_mtok": 1.0} for i in range(4)]
 
-    # Mint a current receipt and derive authentic frozen v8 and v7 receipts from its base structure.
-    from legacy_receipts import to_v7, to_v8
+    # Mint a current receipt and derive authentic frozen v9, v8 and v7 receipts from its base structure.
+    from legacy_receipts import to_v7, to_v8, to_v9
     p = engine.prepare("task", "Repair rollback", native_candidates=cells)
     b = engine.decide(p["request_id"], filtering(p["baseline_request"], 0, 1))
     current = load(engine.config, engine.decide(b["request_id"], forecasts(b["baseline_request"]), seed=11)["decision_id"])
-    assert current["format"] == "howhard-decision-v9"
-    assert current["semantic"]["format"] == "howhard-semantic-v6"
-    assert current["capability"]["format"] == "howhard-capability-v4"
+    assert current["format"] == "howhard-decision-v10"
+    assert current["semantic"]["format"] == "howhard-semantic-v7"
+    assert current["capability"]["format"] == "howhard-capability-v5"
+    v9_receipt = to_v9(current)
+    v9_id = digest(v9_receipt)
+    with locked(engine.config):
+        put(engine.config, "decisions", v9_id, canonical(v9_receipt) + b"\n")
+    v9_loaded = load(engine.config, v9_id)
+    assert v9_loaded["format"] == "howhard-decision-v9"
+    assert v9_loaded["capability"]["format"] == "howhard-capability-v4"
+    assert v9_loaded["semantic"]["format"] == "howhard-semantic-v6"
     v8_receipt = to_v8(current)
     v8_id = digest(v8_receipt)
     with locked(engine.config):

@@ -12,7 +12,7 @@ from howhard.payload_store import put
 from howhard.report import report
 from howhard.storage import locked
 from howhard.validation import HowHardError
-from legacy_receipts import to_v7, to_v8
+from legacy_receipts import to_v7, to_v8, to_v9
 from test_capability_filter import SimilarityDouble, filtering
 
 FIELDS = ("P_clean", "P_loud", "P_silent", "P_silent_accepted")
@@ -32,16 +32,23 @@ def spec(clean, loud, silent, **extra):
     return {"clean": clean, "loud": loud, "silent": silent, "tokens": 1000, "seconds": 60, **extra}
 
 
-def decide(engine, candidates, specs, *, seed=1, memory_forecasts=()):
-    pending = engine.prepare("task", "Repair rollback", native_candidates=candidates)
-    keys_by_pair = {(c["model"], c["effort"]): c["key"] for c in pending["baseline_request"]["cells"]}
-    order = [keys_by_pair[c["model"], c["effort"]] for c in candidates]
-    band = engine.decide(pending["request_id"], filtering(pending["baseline_request"], 0, len(candidates) - 1, order))
+def decide(engine, candidates, specs, *, seed=1, memory_forecasts=(), task_text="Repair rollback"):
+    pending = engine.prepare("task", task_text, native_candidates=candidates)
+    if pending["baseline_request"] is None:
+        band = engine.decide(pending["request_id"], {"memory_filters": [], "reason": "Materialized prior"})
+    else:
+        keys_by_pair = {(c["model"], c["effort"]): c["key"] for c in pending["baseline_request"]["cells"]}
+        order = [keys_by_pair[c["model"], c["effort"]] for c in candidates]
+        band = engine.decide(pending["request_id"], filtering(pending["baseline_request"], 0, len(candidates) - 1, order))
+    all_by_cell = {(c["family"], c["effort"]): c["model"] for c in band["request"]["cells"]}
+    memory = [{"id": m["id"], "version": m["version"],
+               "forecasts": [{"family": f, "effort": e, **s} for (f, e), model in all_by_cell.items()
+                             for name, s in m["specs"].items() if name == model]} for m in memory_forecasts]
+    if band["baseline_request"] is None:
+        return engine.decide(band["request_id"], {"memory_forecasts": memory,
+                                                  "reason": "Synthetic posterior fixture"}, seed=seed)
     by_cell = {(c["family"], c["effort"]): c["model"] for c in band["baseline_request"]["cells"]}
     rows = [{"family": f, "effort": e, **specs[m]} for (f, e), m in by_cell.items()]
-    memory = [{"id": m["id"], "version": m["version"],
-               "forecasts": [{"family": f, "effort": e, **s} for (f, e), model in by_cell.items()
-                             for name, s in m["specs"].items() if name == model]} for m in memory_forecasts]
     return engine.decide(band["request_id"], {"forecasts": rows, "memory_forecasts": memory,
                                               "reason": "Synthetic posterior fixture"}, seed=seed)
 
@@ -84,7 +91,7 @@ def test_llm_only_forecasts_report_real_nondegenerate_beta_credible_intervals(tm
     posterior = calibration(result, "fixture/worker")["outcome_posterior"]
     assert posterior["prior_concentration"] == 8. and posterior["evidence_weight"] == 0.
     receipt = load(engine.config, result["decision_id"])
-    assert receipt["format"] == "howhard-decision-v9"
+    assert receipt["format"] == "howhard-decision-v10"
     assert receipt["semantic"]["outcome_observations"] == []
 
 
@@ -117,7 +124,8 @@ def test_unseen_cell_keeps_prior_variance_despite_global_evidence_while_observed
     seen = calibration(result, "fixture/seen")
     weights = sorted(o["weight"] for o in result["semantic"]["outcome_observations"] if o["id"].startswith("seen-"))
     assert seen["outcome_posterior"]["counts"][0] == pytest.approx(sum(weights)) and sum(weights) > 4
-    assert seen["concentration"] == pytest.approx(8 + sum(weights))
+    assert seen["outcome_posterior"]["prior_concentration"] == pytest.approx(1.0)
+    assert seen["concentration"] == pytest.approx(1.0 + sum(weights))
     seen_row, unseen_row = by_model(result)["fixture/seen"], by_model(result)["fixture/unseen"]
     assert seen_row["P_clean"]["mean"] > .88 > unseen_row["P_clean"]["mean"]
     width = lambda row, field: row[field]["upper"] - row[field]["lower"]
@@ -127,10 +135,12 @@ def test_unseen_cell_keeps_prior_variance_despite_global_evidence_while_observed
 
 
 def test_optional_credible_intervals_validate_and_only_widen_a_bounded_prior(tmp_path):
-    engine = Engine(directory=tmp_path)
-    bare = decide(engine, WORKER, {"fixture/worker": spec(.9, .07, .03)})
-    wide = decide(engine, WORKER, {"fixture/worker": spec(.9, .07, .03, silent_ci=[0., .3])})
-    narrow = decide(engine, WORKER, {"fixture/worker": spec(.9, .07, .03, silent_ci=[.0299, .0301], loud_ci=[.0699, .0701])})
+    bare_eng = Engine(directory=tmp_path / "bare")
+    wide_eng = Engine(directory=tmp_path / "wide")
+    narrow_eng = Engine(directory=tmp_path / "narrow")
+    bare = decide(bare_eng, WORKER, {"fixture/worker": spec(.9, .07, .03)})
+    wide = decide(wide_eng, WORKER, {"fixture/worker": spec(.9, .07, .03, silent_ci=[0., .3])})
+    narrow = decide(narrow_eng, WORKER, {"fixture/worker": spec(.9, .07, .03, silent_ci=[.0299, .0301], loud_ci=[.0699, .0701])})
 
     kappa = .03 * .97 / (.3 / 3.92) ** 2 - 1
     assert calibration(wide, "fixture/worker")["outcome_posterior"]["prior_concentration"] == pytest.approx(kappa)
@@ -141,26 +151,27 @@ def test_optional_credible_intervals_validate_and_only_widen_a_bounded_prior(tmp
     assert calibration(narrow, "fixture/worker")["outcome_posterior"]["prior_concentration"] == 8.
     for field in FIELDS:
         assert narrow["cells"][0][field] == bare["cells"][0][field]
-    assert load(engine.config, wide["decision_id"])["semantic"]["worlds"]["llm"][0]["silent_ci"] == [0., .3]
+    assert load(wide_eng.config, wide["decision_id"])["semantic"]["worlds"]["llm"][0]["silent_ci"] == [0., .3]
 
     # A very wide interval stops at min_concentration.
-    widest = decide(engine, WORKER, {"fixture/worker": spec(.9, .07, .03, silent_ci=[0., 1.])})
+    widest = decide(Engine(directory=tmp_path / "widest"), WORKER, {"fixture/worker": spec(.9, .07, .03, silent_ci=[0., 1.])})
     assert calibration(widest, "fixture/worker")["outcome_posterior"]["prior_concentration"] == 2.
 
-    for bad in ([.05, .2], [0., 1.2], [.1], "0-0.2", [.2, .01], [0., None]):
+    for idx, bad in enumerate(([.05, .2], [0., 1.2], [.1], "0-0.2", [.2, .01], [0., None])):
         with pytest.raises(HowHardError, match="silent_ci"):
-            decide(engine, WORKER, {"fixture/worker": spec(.9, .07, .03, silent_ci=bad)})
+            decide(Engine(directory=tmp_path / f"bad-{idx}"), WORKER, {"fixture/worker": spec(.9, .07, .03, silent_ci=bad)})
     with pytest.raises(HowHardError, match="loud_ci"):
-        decide(engine, WORKER, {"fixture/worker": spec(.9, .07, .03, loud_ci=[.08, .1])})
+        decide(Engine(directory=tmp_path / "bad-loud"), WORKER, {"fixture/worker": spec(.9, .07, .03, loud_ci=[.08, .1])})
 
     # Memory experts may supply intervals too; mixtures still report one valid interval.
-    memory = engine.memory.add("Uncertain", "Silent defects are poorly understood for this task")
-    mixed = decide(engine, WORKER, {"fixture/worker": spec(.9, .07, .03)}, memory_forecasts=[
+    mixed_eng = Engine(directory=tmp_path / "mixed")
+    memory = mixed_eng.memory.add("Uncertain", "Silent defects are poorly understood for this task")
+    mixed = decide(mixed_eng, WORKER, {"fixture/worker": spec(.9, .07, .03)}, memory_forecasts=[
         {**memory, "specs": {"fixture/worker": spec(.85, .07, .08, silent_ci=[.0, .4])}}])
     assert set(mixed["semantic"]["worlds"]) == {"llm", f"memory:{memory['id']}:{memory['version']}"}
     row = mixed["cells"][0]
     assert row["P_silent"]["lower"] < row["P_silent"]["mean"] < row["P_silent"]["upper"]
-    load(engine.config, mixed["decision_id"])
+    load(mixed_eng.config, mixed["decision_id"])
 
 
 def test_q80_admission_and_posterior_overlap_break_lock_in_but_reject_high_silent_traps(tmp_path):
@@ -225,7 +236,7 @@ def test_recency_decay_detects_regression_and_recovers_before_undecayed_counts(t
     assert ages["run-7"][0] == 0 and ages["run-0"][0] == 7
     assert ages["run-0"][1] == pytest.approx(ages["run-7"][1] * .95 ** 7)
 
-    recovering = ["clean"] * 5 + ["silent"] * 3 + ["clean"] * 16
+    recovering = ["clean"] * 3 + ["silent"] * 2 + ["clean"] * 19
     recovered, recovered_result = admission(tmp_path / "recovered", recovering)
     undecayed, _ = admission(tmp_path / "undecayed", recovering, "[sampling]\noutcome_recency = 1.0\n")
     assert len(recovered_result["semantic"]["outcome_observations"]) == 24
@@ -236,27 +247,28 @@ def test_recency_decay_detects_regression_and_recovers_before_undecayed_counts(t
     assert recovered["admission_risk"] < undecayed["admission_risk"]
 
 
-def test_frozen_v7_and_v8_receipts_load_observe_replay_and_report(tmp_path):
+def test_frozen_v7_v8_and_v9_receipts_load_observe_replay_and_report(tmp_path):
     engine = Engine(directory=tmp_path, retrieval=SimilarityDouble())
     candidates = [{"model": f"fixture/model-{i}", "effort": "high", "usd_per_mtok": 1.0} for i in range(2)]
     specs = {c["model"]: spec(.95, .04, .01) for c in candidates}
     current_id = decide(engine, candidates, specs, seed=11)["decision_id"]
     current = load(engine.config, current_id)
-    assert current["format"] == "howhard-decision-v9"
+    assert current["format"] == "howhard-decision-v10"
     ids = {}
-    for name, legacy in (("v8", to_v8(current)), ("v7", to_v7(current))):
+    for name, legacy in (("v9", to_v9(current)), ("v8", to_v8(current)), ("v7", to_v7(current))):
         ids[name] = digest(legacy)
         with locked(engine.config):
             put(engine.config, "decisions", ids[name], canonical(legacy) + b"\n")
         assert load(engine.config, ids[name])["format"] == f"howhard-decision-{name}"
     engine.observe_decision(ids["v7"], "clean", id="from-v7", seconds=12.)
     engine.observe_decision(ids["v8"], "loud", id="from-v8", cause="capability", active_seconds=10.)
-    engine.observe_decision(current_id, "clean", id="from-v9", active_seconds=10.)
+    engine.observe_decision(ids["v9"], "clean", id="from-v9", active_seconds=10.)
+    engine.observe_decision(current_id, "clean", id="from-v10", active_seconds=10.)
     beliefs = engine.memory_beliefs()
     assert beliefs["unscored_runs"] == 0
-    assert next(e for e in beliefs["experts"] if e["key"] == "llm")["evidence_count"] == 3
+    assert next(e for e in beliefs["experts"] if e["key"] == "llm")["evidence_count"] == 4
     stats = report(engine)
-    assert stats["unsupported_receipts"] == [] and stats["forecast_metrics"]["llm"]["runs"] == 3
+    assert stats["unsupported_receipts"] == [] and stats["forecast_metrics"]["llm"]["runs"] == 4
     # The new decision sees those outcomes as per-cell evidence.
     later = decide(engine, candidates, specs, seed=12)
     assert {o["outcome"] for o in later["semantic"]["outcome_observations"]} == {"clean", "loud"}

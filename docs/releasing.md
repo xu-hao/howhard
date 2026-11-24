@@ -22,10 +22,10 @@ Before release:
    defaults, runs the complete behavioral suite and builds the canonical docs.
 3. Build a wheel from the source distribution and install that exact wheel into a clean
    environment outside the checkout. Check `howhard --version`, package data through
-   `importlib.resources`, and the `context --candidates FILE` / `decide --seed 42`
-   protocol using explicitly labeled synthetic forecasts. These mechanical probes
-   require no provider calls or real execution observations. Standalone `pick` needs
-   a configured inference provider and is not a provider-free release check.
+   `importlib.resources`, the cold-start `context --candidates FILE` /
+   `decide --seed 42` protocol using explicitly labeled synthetic forecasts, and the
+   subsequent warm prototype `context --auto-decide` and provider-free warm `pick`
+   checks. Cold-start `pick` still needs a configured inference provider.
 4. Tag the verified commit `vX.Y.Z` and create a GitHub release only when requested.
    Attach the verified distributions and their SHA-256 checksums.
 5. Upload to PyPI only if the user explicitly authorizes that upload. Implementation,

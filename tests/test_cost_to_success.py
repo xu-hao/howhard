@@ -21,6 +21,8 @@ TABLE = [
 def prepare(engine, table):
     candidates = [{"model": r[0], "effort": r[1]} for r in table]
     pending = forecast_request(engine, engine.prepare("task", "Repair rollback", native_candidates=candidates))
+    if pending["baseline_request"] is None:
+        return pending, {"memory_forecasts": [], "reason": "Synthetic selection regression"}
     indexed = {(r[0], r[1]): r for r in table}
     response = {"forecasts": [], "memory_forecasts": [], "reason": "Synthetic selection regression"}
     for c in pending["baseline_request"]["cells"]:
@@ -69,11 +71,19 @@ def test_retry_formula_and_denominator_floor_are_finite(tmp_path, loud, silent, 
     assert math.isfinite(row["J"]) and math.isfinite(row["sampled_J"])
     if loud == 1.:
         # Push posterior P_loud past 1 - 1e-4 to exercise the denominator floor directly.
+        heavy_dir = tmp_path / "heavy"
+        heavy_dir.mkdir()
+        (heavy_dir / "howhard.toml").write_text(
+            'on_cap_unmet = "flag-review"\n'
+            '[task_types]\ntask = "standard"\n'
+            '[models."fixture/worker"]\nfamily = "worker"\nefforts = ["high"]\nweight = 1500.0\n'
+        )
+        heavy_engine = Engine(heavy_dir / "howhard.toml", retrieval=SimilarityDouble())
         for i in range(12):
-            engine.observe("task", "fixture/worker", "high", "loud", native=True,
-                           task_text="Repair rollback", note="capability_caused=false", id=f"loud-{i}")
-        floored_req, floored_resp = prepare(engine, [("fixture/worker", "high", clean, loud, silent, 2.)])
-        floored = engine.decide(floored_req["request_id"], floored_resp, seed=1)["cells"][0]
+            heavy_engine.observe("task", "fixture/worker", "high", "loud",
+                                 task_text="Repair rollback", note="capability_caused=false", id=f"loud-{i}")
+        floored_req, floored_resp = prepare(heavy_engine, [("fixture/worker", "high", clean, loud, silent, 2.)])
+        floored = heavy_engine.decide(floored_req["request_id"], floored_resp, seed=1)["cells"][0]
         assert 1 - floored["P_loud"]["mean"] < .0001
         assert floored["expected_attempts"] == pytest.approx(1/.0001)
         assert floored["J"] == pytest.approx(
@@ -95,7 +105,7 @@ def test_cap_targets_the_accepted_result_even_when_raw_silent_risk_is_small(tmp_
 
 def test_evidence_tightens_only_the_observed_cell_while_a_weak_prior_can_explore(tmp_path):
     engine = Engine(directory=tmp_path, retrieval=SimilarityDouble())
-    table = [("fixture/a", "high", .99, .01, 0., 4.2), ("fixture/b", "high", .99, .01, 0., 4.)]
+    table = [("fixture/a", "high", .92, .06, .02, 4.2), ("fixture/b", "high", .92, .06, .02, 4.)]
     weak, weak_response = prepare(engine, table)
     initial = engine.decide(weak["request_id"], weak_response, seed=0)
     assert "sampling" in initial["semantic"]
@@ -111,7 +121,7 @@ def test_evidence_tightens_only_the_observed_cell_while_a_weak_prior_can_explore
     families = {c["model"]: c["family"] for c in first["cells"]}
     added_weight = sum(o["weight"] for o in first["semantic"]["outcome_observations"])
     assert added_weight > 6.5
-    assert concentration(first)[families["fixture/b"]] == pytest.approx(concentration(initial)[families["fixture/b"]] + added_weight)
+    assert concentration(first)[families["fixture/b"]] == pytest.approx(1.0 + added_weight)
     assert concentration(first)[families["fixture/a"]] == concentration(initial)[families["fixture/a"]]
     strong_choices = [engine.decide(strong["request_id"], strong_response, seed=seed)["chosen"]["model"] for seed in range(1000)]
     assert strong_choices.count("fixture/b") > weak_choices.count("fixture/b")

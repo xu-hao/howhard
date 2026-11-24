@@ -17,6 +17,8 @@ def inventory(count):
 
 
 def filtering(request, lower=0, upper=None, order=None):
+    if request is None:
+        return {"memory_filters": [], "reason": "Materialized task-specific fit band"}
     order = order or [c["key"] for c in request["cells"]]
     upper = min(len(order) - 1, lower + 3) if upper is None else upper
     return {"filter": {"order": order, "lower": order[lower], "upper": order[upper]},
@@ -24,6 +26,8 @@ def filtering(request, lower=0, upper=None, order=None):
 
 
 def forecasts(request, silent=.01, clean=None):
+    if request is None:
+        return {"memory_forecasts": [], "reason": "Materialized calibrated forecasts"}
     clean = 1 - silent - .05 if clean is None else clean
     return {"forecasts": [{"family": c["family"], "effort": c["effort"],
             "clean": clean, "loud": 1-clean-silent, "silent": silent,
@@ -89,7 +93,7 @@ def test_unbounded_inventory_runs_both_stages_and_validates_receipt(tmp_path, co
     assert len(receipt["native_candidates"]) == count
     assert len(receipt["capability"]["cells"]) == count
     assert len(receipt["semantic"]["worlds"]["llm"]) == 4
-    assert receipt["format"] == "howhard-decision-v9"
+    assert receipt["format"] == "howhard-decision-v10"
 
 
 @pytest.mark.parametrize("defect", ["missing", "duplicate", "unknown", "empty"])
@@ -500,8 +504,9 @@ def test_frozen_capability_receipts_validate_replay_and_observe(tmp_path, monkey
 
     def mint_with_memory():
         pending = start(engine, cells)
+        source_req = pending["baseline_request"] or pending["request"]
         resp = filtering(pending["baseline_request"], 1, 3)
-        mem_flt = filtering(pending["baseline_request"], 0, 3)["filter"]
+        mem_flt = filtering(source_req, 0, 3)["filter"]
         resp["memory_filters"] = [{"id": memory["id"], "version": memory["version"], "filter": mem_flt}]
         band = engine.decide(pending["request_id"], resp)
         return finish(engine, band)["decision_id"]
@@ -557,7 +562,8 @@ def test_frozen_capability_receipts_validate_replay_and_observe(tmp_path, monkey
     assert loaded_v2["capability"]["format"] == "howhard-capability-v2"
     assert loaded_v3["format"] == "howhard-decision-v9"
     assert loaded_v3["capability"]["format"] == "howhard-capability-v3"
-    assert current["capability"]["format"] == "howhard-capability-v4"
+    assert current["format"] == "howhard-decision-v10"
+    assert current["capability"]["format"] == "howhard-capability-v5"
     assert loaded_v3["capability"]["worlds"]["filter:llm"] != current["capability"]["worlds"]["filter:llm"]
 
     # CLI observe --decision and positional observe succeed across all four receipts.

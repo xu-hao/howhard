@@ -12,18 +12,21 @@ remain their original text.
 
 ## Provider and calling-agent use
 
-Standalone `pick`/`summary` lazily use an authenticated Claude CLI or the command in
-`HOWHARD_LLM_COMMAND`. Python can supply `Engine(llm=adapter)`. Provider failure or
-absence stops routing explicitly; there is no fallback recommendation and no `--llm`
-mode switch. Commands for state, memory, evidence and the calling-agent protocol need
-no configured provider and do not start nested inference.
+Standalone `pick`/`summary` complete locally when matched `(task, context)` prototypes
+already cover every candidate cell and no active editable semantic memories exist, and
+otherwise lazily use an authenticated Claude CLI or the command in
+`HOWHARD_LLM_COMMAND` (skipping `phase="baseline"` whenever prototypes already cover all
+cells and running only `phase="memory"`). Python can supply `Engine(llm=adapter)`.
+Cold-start provider failure or absence stops routing explicitly; there is no fallback
+recommendation and no `--llm` mode switch. Commands for state, memory, evidence and the
+calling-agent protocol (including `howhard context --auto-decide`) need no configured
+provider and do not start nested inference.
 
 ```sh
-howhard context specified-implementation --candidates /tmp/host-candidates.json --text "Make transaction rollback safe" --json
-# Evaluate the filter baseline independently, then add memory_filters:
+howhard context specified-implementation --candidates /tmp/host-candidates.json --text "Make transaction rollback safe" --auto-decide --seed 42 --json
+# If cold-start or active memories require input, context returns request_id and stage:
 howhard decide FILTER_REQUEST_ID --file /tmp/filter.json --json
-# Evaluate the returned forecast baseline independently, then add memory_forecasts:
-howhard decide FORECAST_REQUEST_ID --file /tmp/forecasts.json --json
+howhard decide FORECAST_REQUEST_ID --file /tmp/forecasts.json --seed 42 --json
 howhard observe DECISION_ID clean --id EXECUTION_ID --json
 howhard memory learn-context EXECUTION_ID --json
 ```
@@ -198,11 +201,12 @@ failure leaves the outcome durable and does not create a second execution.
 Routing seeds reproduce selection given recorded forecasts. They do not make fresh
 LLM calls deterministic. Cached forecasts and content-addressed receipts support replay;
 operational timing/cache metadata may differ between invocations.
-New receipts use `howhard-decision-v9` with capability (`howhard-capability-v4`) and
-accepted-result selection state. Requests use `howhard-agent-request-v5` and semantic state
-uses `howhard-semantic-v6` (`semantic-reader-v7`). Persisted `howhard-decision-v9` with
-capability v3, `howhard-decision-v8` (`howhard-semantic-v5`, `howhard-capability-v3`),
-and `howhard-decision-v7`
+New receipts use `howhard-decision-v10` with capability (`howhard-capability-v5`),
+continuous prior decay, and accepted-result selection state. Requests use
+`howhard-agent-request-v6` and semantic state uses `howhard-semantic-v7`
+(`semantic-reader-v7`). Persisted `howhard-decision-v9` (`howhard-semantic-v6`,
+`howhard-capability-v4`/`v3`), `howhard-decision-v8` (`howhard-semantic-v5`,
+`howhard-capability-v3`), and `howhard-decision-v7`
 (`howhard-semantic-v4`, `howhard-capability-v1`/`v2`) receipts continue to load, validate,
 accept feedback, and participate in belief replay and reporting under their frozen rules.
 Older decision receipts v1–v6 remain in the store but are excluded from predictive scoring; raw
@@ -233,11 +237,17 @@ howhard memory learn RUN_ID --file writer-response.json \
   --expected-revision N --event-key EVENT_KEY --json
 ```
 
-`context` returns `stage=filter` with a clean `baseline_request` and a separate memory
-request. Evaluate the baseline in a separate model context, then submit
-`{filter, memory_filters, reason}`. `decide` returns a new `stage=forecast` request ID
-for calibrated rows over the fit band. Evaluate that clean baseline independently and
-submit `{forecasts, memory_forecasts, reason}`. Handle explicit re-filter or stronger-only
+`context` returns `stage=filter` with a separate memory request and either a clean
+`baseline_request` (conditioned on the prototype's synthesized representative task and
+context) or `baseline_request: null` when matched prototypes cover all cells (`--auto-decide`
+completes warm memory-free routes immediately). When `baseline_request` is non-null,
+evaluate the baseline in a separate model context, then submit
+`{filter, memory_filters, reason}`; when `null`, omit `filter` and submit
+`{memory_filters, reason}`. `decide` returns a new `stage=forecast` request ID
+for calibrated rows over the fit band, setting `baseline_request: null` when all band
+cells are covered or requesting only newly added unseen band cells when partially
+covered. Evaluate any non-null baseline independently and submit
+`{forecasts, memory_forecasts, reason}` (or `{memory_forecasts, reason}` when `null`). Handle explicit re-filter or stronger-only
 widening requests until a decision ID is returned. The full inventory remains bound
 throughout; follow-up commands never replace it. Retrieval returns a new request ID including frozen results.
 Unrelated writes do not invalidate an in-flight request: belief/expert weights and

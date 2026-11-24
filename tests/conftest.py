@@ -95,6 +95,8 @@ def forecast_request(engine, pending):
     """Advance an explicit synthetic filter before testing calibrated forecasting."""
     if pending["stage"] == "forecast":
         return pending
+    if pending["baseline_request"] is None:
+        return engine.decide(pending["request_id"], {"memory_filters": [], "reason": "Materialized prior"})
     return engine.decide(pending["request_id"], fixture_filter(pending["baseline_request"]))
 
 

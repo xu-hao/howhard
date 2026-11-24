@@ -4,8 +4,17 @@ from copy import deepcopy
 
 import numpy as np
 
+from howhard.capability import prior_cdf
 from howhard.semantic import OUTCOMES, panel_lookup
-from howhard.success import accepted_risk, cost, denominator, envelope
+from howhard.success import (
+    POSTERIOR_FIELDS,
+    accepted_risk,
+    calibration,
+    cost,
+    denominator,
+    envelope,
+    posterior_intervals,
+)
 
 LEGACY_SAMPLING = {"min_concentration": 8., "max_concentration": 1000000., "prior_strength": 8.,
                    "explore_within": .1, "uncertainty_multiplier": 1.}
@@ -29,9 +38,96 @@ def legacy_capability_prior(flt, policy, *, linear_tail=False):
     return dict(zip(order, before + fit + after))
 
 
+def to_v9(receipt):
+    """A v9 receipt: undecayed kappa_0 Dirichlet outcome posteriors and capability v4."""
+    receipt = deepcopy(receipt)
+    receipt["format"] = "howhard-decision-v9"
+    cap = receipt["capability"]
+    cap.pop("prior_sources", None)
+    if cap["format"] == "howhard-capability-v5":
+        cap["format"] = "howhard-capability-v4"
+        cap["worlds"]["filter:llm"] = prior_cdf(cap["baseline"], cap["policy"])
+    cap["evidence"] = cap["evidence"][:8]
+
+    sem = receipt["semantic"]
+    sem["format"] = "howhard-semantic-v6"
+    sem["prompt_version"] = "semantic-reader-v7"
+    sem["duration_observations"] = sem["duration_observations"][:8]
+
+    panels = {k: panel_lookup(p) for k, p in sem["worlds"].items()}
+    experts = sem["beliefs"]["experts"]
+    weights = {e["key"]: e["weight"] for e in experts}
+    selection = receipt["selection"]
+    policy = selection["sampling_policy"]
+    constants = selection["constants"]
+    money_included = receipt["cost_policy"]["worker_money_included"]
+
+    for row in selection["cells"]:
+        pair = row["family"], row["effort"]
+        intervals, _ = posterior_intervals(
+            panels, weights, pair, sem["outcome_observations"], policy, legacy_v9=True
+        )
+        for field in ("P_clean", "P_loud", "P_silent", "P_silent_accepted"):
+            row[field] = intervals[field]
+        row["admission_risk"] = intervals["admission_risk"]
+        row["admissible"] = row["admission_risk"] <= constants["epsilon"]
+        loud, silent = row["P_loud"]["mean"], row["P_silent"]["mean"]
+        run = row["session_cost_usd"] if money_included else 0.0
+        row["expected_attempts"] = 1.0 / denominator(loud)
+        row["J"] = cost(run, row["T"], loud, silent, constants)
+
+    if sem["sampling"]["enabled"]:
+        cand_by_pair = {(c["model"], c["effort"]): c for c in receipt["native_candidates"]}
+        sel_by_pair = {(c["family"], c["effort"]): c for c in selection["cells"]}
+        synth_result = {
+            "constants": constants,
+            "sampling_policy": policy,
+        }
+        new_cal = []
+        for cal_row in sem["sampling"]["cells"]:
+            pair = cal_row["family"], cal_row["effort"]
+            sel_cell = sel_by_pair[pair]
+            cand = cand_by_pair[sel_cell["model"], sel_cell["effort"]]
+            expert_obj = next(e for e in experts if e["key"] == cal_row["expert"])
+            cell_meta = {
+                "family": pair[0],
+                "effort": pair[1],
+                "rate_card": cand.get("rate_card"),
+                "credit_rate": cand.get("usd_per_mtok"),
+                "cost_per_credit": cand["cost_per_credit"],
+                "money_included": money_included,
+            }
+            new_cal.append(
+                calibration(
+                    synth_result,
+                    sem,
+                    expert_obj,
+                    cell_meta,
+                    panels[cal_row["expert"]][pair],
+                    legacy_v9=True,
+                )
+            )
+        sem["sampling"]["cells"] = new_cal
+
+    cap_met = any(c["admissible"] and c.get("credit_ok", True) for c in selection["cells"])
+    selection["cap_met"] = cap_met
+    selection["needs_review"] = not cap_met
+    if not cap_met:
+        sem["sampling"] = {
+            "enabled": False,
+            "reason": "cap-unmet",
+            "policy": deepcopy(policy),
+            "cells": [],
+        }
+        sem.pop("sampled_expert", None)
+        selection["exploration"]["enabled"] = False
+        selection["exploration"]["reason"] = "disabled-cap-unmet"
+    return receipt
+
+
 def with_capability_v3(receipt):
     """Freeze the prior from before v4 for a fixture with a contiguous band."""
-    receipt = deepcopy(receipt)
+    receipt = to_v9(receipt) if receipt.get("format") == "howhard-decision-v10" else deepcopy(receipt)
     state = receipt["capability"]
     lo, hi = state["order"].index(state["lower"]), state["order"].index(state["upper"])
     assert state["band"] == state["order"][lo:hi+1]

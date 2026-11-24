@@ -71,13 +71,24 @@ class FastEmbedder:
 
     def __init__(self, cache_directory):
         self.cache_directory, self.model = cache_directory, None
+        self._query_cache = {}
 
     def encode(self, texts, *, query=False):
+        if query and len(texts) == 1:
+            key = (self.identity, texts[0])
+            cached = self._query_cache.get(key)
+            if cached is not None:
+                return cached.copy()
         if self.model is None:
             from fastembed import TextEmbedding
             self.model = TextEmbedding(EMBED_MODEL, cache_dir=str(self.cache_directory), threads=1)
         method = self.model.query_embed if query else self.model.passage_embed
-        return np.asarray(list(method(texts, batch_size=32)), dtype=np.float32)
+        result = np.asarray(list(method(texts, batch_size=32)), dtype=np.float32)
+        if query and len(texts) == 1:
+            if len(self._query_cache) >= 256:
+                self._query_cache.pop(next(iter(self._query_cache)))
+            self._query_cache[(self.identity, texts[0])] = result.copy()
+        return result
 
 
 class FastEmbedReranker:
@@ -170,23 +181,34 @@ class BM25Index:
         self.admission = admission or (lambda: admit(path.parent, operation="lexical cache"))
 
     def search(self, documents, query, *, limit):
+        terms = list(dict.fromkeys(re.findall(r"\w+", query.casefold())))[:128]
+        if not terms or not documents:
+            return []
+        fingerprint = digest([(d["key"], d["text"]) for d in documents])
+        table = "fts_" + fingerprint[:16]
         with cache_db(self.path, self.admission) as db:
-            db.execute("CREATE TABLE IF NOT EXISTS lexical_meta (fingerprint TEXT)")
-            db.execute("CREATE VIRTUAL TABLE IF NOT EXISTS search USING fts5(key UNINDEXED, text)")
-            fingerprint = digest([(d["key"], d["text"]) for d in documents])
-            previous = db.execute("SELECT fingerprint FROM lexical_meta").fetchone()
-            if previous is None or previous[0] != fingerprint:
-                db.execute("DELETE FROM search")
-                db.executemany("INSERT INTO search(key,text) VALUES (?,?)", [(d["key"], d["text"]) for d in documents])
-                db.execute("DELETE FROM lexical_meta")
-                db.execute("INSERT INTO lexical_meta VALUES (?)", (fingerprint,))
+            db.execute("CREATE TABLE IF NOT EXISTS lexical_caches (fingerprint TEXT PRIMARY KEY, table_name TEXT NOT NULL)")
+            cached = db.execute("SELECT table_name FROM lexical_caches WHERE fingerprint=?", (fingerprint,)).fetchone()
+            if cached is None:
+                db.execute(f"CREATE VIRTUAL TABLE IF NOT EXISTS {table} USING fts5(key UNINDEXED, text)")
+                db.execute(f"DELETE FROM {table}")
+                db.executemany(f"INSERT INTO {table}(key,text) VALUES (?,?)", [(d["key"], d["text"]) for d in documents])
+                db.execute("INSERT OR REPLACE INTO lexical_caches VALUES (?, ?)", (fingerprint, table))
+                total = db.execute("SELECT COUNT(*) FROM lexical_caches").fetchone()[0]
+                if total > 16:
+                    evicted = db.execute(
+                        "SELECT fingerprint, table_name FROM lexical_caches WHERE rowid IN "
+                        "(SELECT rowid FROM lexical_caches ORDER BY rowid ASC LIMIT ?)",
+                        (total - 16,),
+                    ).fetchall()
+                    for old_fp, old_tbl in evicted:
+                        if re.fullmatch(r"fts_[0-9a-f]{16}", old_tbl) and old_tbl != table:
+                            db.execute(f"DROP TABLE IF EXISTS {old_tbl}")
+                        db.execute("DELETE FROM lexical_caches WHERE fingerprint=?", (old_fp,))
             # Quote tokens; user input cannot inject FTS syntax. Bound long queries.
-            terms = list(dict.fromkeys(re.findall(r"\w+", query.casefold())))[:128]
-            if not terms:
-                return []
             match = " OR ".join('"' + t + '"' for t in terms)
             return [r[0] for r in db.execute(
-                "SELECT key FROM search WHERE search MATCH ? ORDER BY bm25(search),key LIMIT ?", (match, limit))]
+                f"SELECT key FROM {table} WHERE {table} MATCH ? ORDER BY bm25({table}),key LIMIT ?", (match, limit))]
 
 
 class HNSWIndex:
@@ -236,9 +258,14 @@ class HNSWIndex:
             graph = index.save()
             with cache_db(self.path, self.admission) as db:
                 db.executemany("INSERT OR REPLACE INTO vectors VALUES (?,?)", [(key, vectors[key].tobytes()) for key in missing])
-                # Only one current graph is necessary; corpus vectors survive edits.
-                db.execute("DELETE FROM indexes")
-                db.execute("INSERT INTO indexes VALUES (?,?,?)", (identity, graph, hashlib.sha256(graph).hexdigest()))
+                # Retain up to 64 active corpus graphs so experience, memory and prototype searches do not thrash.
+                db.execute("INSERT OR REPLACE INTO indexes VALUES (?,?,?)", (identity, graph, hashlib.sha256(graph).hexdigest()))
+                count = db.execute("SELECT COUNT(*) FROM indexes").fetchone()[0]
+                if count > 64:
+                    db.execute(
+                        "DELETE FROM indexes WHERE rowid IN (SELECT rowid FROM indexes ORDER BY rowid ASC LIMIT ?)",
+                        (count - 64,),
+                    )
         vector = _vectors(embedder.encode([query], query=True), 1, embedder.dimensions)[0]
         matches = index.search(vector, count=min(limit, len(documents)), threads=1)
         return [documents[int(i)]["key"] for i in matches.keys]

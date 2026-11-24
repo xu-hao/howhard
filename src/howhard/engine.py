@@ -156,17 +156,36 @@ class Engine:
 
     def _drive(self, task_type, task_text, *, project_context=None, risk=None, seed=None,
                native_candidates=None, select=True):
+        from copy import deepcopy
         pending = self.prepare(task_type, task_text, project_context=project_context, risk=risk,
                                native_candidates=native_candidates)
-        self._inference()
         while "request_id" in pending:
             from .request_state import view, StaleRequest
             try:
                 bundle = self._load_request(pending["request_id"])
-                reader = view(self, bundle["read_state"]) if "read_state" in bundle else self
-                response, payload, usage = semantic.complete(reader, bundle["payload"], bundle["snapshot"])
-                bundle["payload"] = payload
-                pending = self._advance(bundle, response, seed=seed, usage=usage, select=select)
+                initial_payload = deepcopy(bundle["payload"])
+                has_baseline = semantic.baseline_request(bundle["payload"]) is not None
+                has_memories = any(
+                    m["active"] and not m["id"].startswith("execution:")
+                    for m in bundle["snapshot"]["memories"]
+                )
+                if not has_baseline and not has_memories:
+                    replay = semantic.cached_exact_replay(self, bundle["payload"], bundle["snapshot"])
+                    if replay is not None:
+                        response, payload, usage = replay
+                        bundle["payload"] = payload
+                    else:
+                        mem_field = "memory_filters" if bundle["stage"] == "filter" else "memory_forecasts"
+                        response = {mem_field: [], "reason": "Materialized prototype baseline; no active semantic memories."}
+                        usage = {"backend": "prototype-materialized", "seconds": 0.0, "cost_usd": 0.0,
+                                 "calls": [], "cached": True, "call_seconds": 0.0, "call_cost_usd": 0.0}
+                else:
+                    self._inference()
+                    reader = view(self, bundle["read_state"]) if "read_state" in bundle else self
+                    response, payload, usage = semantic.complete(reader, bundle["payload"], bundle["snapshot"])
+                    bundle["payload"] = payload
+                pending = self._advance(bundle, response, seed=seed, usage=usage, select=select,
+                                        initial_payload=initial_payload)
             except StaleRequest as exc:
                 exc.request_id = pending["request_id"]
                 raise
@@ -186,33 +205,55 @@ class Engine:
         self.last_memory_update = semantic.learn(self, evidence_id)
         return self.last_memory_update
 
-    def prepare(self, task_type, task_text="", *, project_context=None, risk=None, native_candidates=None, inventory=None):
+    def prepare(self, task_type, task_text="", *, project_context=None, risk=None, native_candidates=None,
+                inventory=None, auto_decide=False, seed=None):
+        if seed is not None and (type(seed) is not int or seed < 0):
+            raise HowHardError("seed: expected a non-negative integer")
+        from . import prototypes
         from .native import resolve
         from .request_state import capture, configuration
+        started = time.monotonic()
         candidates = self._register(resolve(self.config, native_candidates, inventory))
+        prototypes.sync_observations(self)
         reader, read_state = capture(self)
         prepared = reader._prepared(task_type, risk, task_text, project_context, candidates)
         payload, snapshot = semantic.request(reader, prepared)
         payload["weights_policy"] = "snapshot"
         self.last_retrieval_usage = reader.last_retrieval_usage
         from .capability import evidence_scores, observations, request
-        bundle = {"format": "howhard-agent-request-v5", "evidence_key": reader.evidence_key,
+        bundle = {"format": "howhard-agent-request-v6", "evidence_key": reader.evidence_key,
                   "payload": request(payload, self.config.data["capability"]), "snapshot": snapshot,
                   "stage": "filter", "capability": None, "refilter_round": 0,
                   "forecast_template": payload, "forecast_state": None, "coarse_usage": None}
         bundle["read_state"] = read_state
         bundle["dependencies"] = {"configuration": configuration(reader.config), "memories": {}, "evidence": {}}
+        prototypes.prepare_stage1(reader, bundle)
+        proto_state = bundle.get("prototype_state")
         scores = evidence_scores(reader, bundle["payload"])
         bundle["learned_state"] = {
             "weights_policy": "snapshot",
-            "capability_observations": observations(reader, bundle["payload"], scores=scores),
-            "duration_observations": semantic.duration_observations(reader, payload, scores=scores),
+            "capability_observations": observations(reader, bundle["payload"], scores=scores, proto_state=proto_state),
+            "duration_observations": semantic.duration_observations(reader, payload, scores=scores, proto_state=proto_state),
             "outcome_observations": [],
         }
         bundle["inventory_source"] = inventory
         bundle["native_candidates"] = candidates
         bundle["project_root"] = str(self.config.project_root)
-        return self._save_request(bundle, validate=False)
+        pending = self._save_request(bundle, validate=False)
+        if not auto_decide:
+            return pending
+        while "request_id" in pending and pending["baseline_request"] is None:
+            current_bundle = self._load_request(pending["request_id"])
+            if any(m["active"] and not m["id"].startswith("execution:") for m in current_bundle["snapshot"]["memories"]):
+                break
+            mem_field = "memory_filters" if current_bundle["stage"] == "filter" else "memory_forecasts"
+            local_response = {mem_field: [], "reason": "Materialized prototype baseline; no active semantic memories."}
+            local_usage = {"backend": "prototype-materialized", "seconds": 0.0, "cost_usd": 0.0,
+                           "calls": [], "cached": True, "call_seconds": 0.0, "call_cost_usd": 0.0}
+            pending = self._advance(current_bundle, local_response, seed=seed, usage=local_usage)
+        if "decision_id" in pending:
+            self._decision_event(pending, task_type, started)
+        return pending
 
     def _save_request(self, bundle, *, validate=True):
         from .request_state import extend
@@ -243,8 +284,8 @@ class Engine:
             raise HowHardError("request_id: unavailable or invalid agent request") from exc
         from .validation import keys
         keys(bundle, ["format", "evidence_key", "payload", "snapshot", "native_candidates", "project_root", "stage", "capability", "refilter_round", "forecast_template", "forecast_state", "coarse_usage"],
-             ["read_state", "dependencies", "learned_state", "inventory_source"], where="request")
-        if digest(bundle) != request_id or bundle["format"] != "howhard-agent-request-v5":
+             ["read_state", "dependencies", "learned_state", "inventory_source", "prototype_state"], where="request")
+        if digest(bundle) != request_id or bundle["format"] != "howhard-agent-request-v6":
             raise HowHardError("request_id: request integrity or format mismatch")
         if bundle["project_root"] != str(self.config.project_root):
             raise HowHardError("request_id: belongs to another worktree; prepare in the current project")
@@ -316,16 +357,19 @@ class Engine:
 
     def _forecast_request(self, bundle, requested):
         from copy import deepcopy
+        from . import prototypes
         from .capability import cell_key
         from .request_state import view
         bundle["stage"] = "forecast"
         bundle["payload"] = deepcopy(bundle["forecast_template"])
         bundle["payload"]["cells"] = [c for c in bundle["payload"]["cells"] if cell_key(c) in requested]
+        reader = view(self, bundle["read_state"]) if "read_state" in bundle else self
         if "learned_state" in bundle:
-            reader = view(self, bundle["read_state"]) if "read_state" in bundle else self
             seen_ids = {obs["id"] for obs in bundle["learned_state"]["outcome_observations"]}
             bundle["learned_state"]["outcome_observations"].extend(
-                obs for obs in semantic.outcome_observations(reader, bundle["payload"])
+                obs for obs in semantic.outcome_observations(
+                    reader, bundle["payload"], proto_state=bundle.get("prototype_state")
+                )
                 if obs["id"] not in seen_ids
             )
         all_keys = requested | (set(cell_key(c) for c in bundle["forecast_state"]["cells"]) if bundle["forecast_state"] else set())
@@ -333,12 +377,14 @@ class Engine:
         p = bundle["payload"]
         band = self._prepared(p["task_type"], p["risk_class"], p["context"]["task_text"], p["context"]["project_context"], inventory)
         bundle["payload"]["cost_policy"] = band[0]["cost_policy"]
+        prototypes.prepare_stage2(reader, bundle)
         return self._save_request(bundle)
 
-    def _advance(self, bundle, response, *, seed=None, usage=None, select=True):
+    def _advance(self, bundle, response, *, seed=None, usage=None, select=True, initial_payload=None):
         from copy import deepcopy
-        from . import capability
+        from . import capability, prototypes
         payload, snapshot = bundle["payload"], bundle["snapshot"]
+        source_payload = initial_payload if initial_payload is not None else payload
         from .request_state import extend
         extend(self, bundle)
         response = semantic.validate_response(response, payload, snapshot)
@@ -349,8 +395,14 @@ class Engine:
         with storage.reading(self.config):
             self._check_request(bundle)
         if bundle["stage"] == "filter":
+            covered_priors = (
+                bundle.get("prototype_state", {}).get("stage1_covered_priors")
+                if "no_memory_filter" not in source_payload and not bundle["refilter_round"]
+                else None
+            )
             state = capability.aggregate(self, payload, response,
-                observed=bundle.get("learned_state", {}).get("capability_observations"))
+                observed=bundle.get("learned_state", {}).get("capability_observations"),
+                covered_priors=covered_priors)
             bundle["coarse_usage"] = semantic.combine_usage(bundle["coarse_usage"], usage)
             state["reader_usage"] = {k: deepcopy(bundle["coarse_usage"][k]) for k in ("backend", "seconds", "cost_usd", "calls")}
             state["refilter_rounds"] = bundle["refilter_round"]
@@ -358,11 +410,18 @@ class Engine:
                 if bundle["refilter_round"]:
                     raise HowHardError("capability.max_forecast_cells exceeded after re-filter; provide a tighter capability filter")
                 bundle["refilter_round"] = 1
+                bundle["payload"].pop("no_memory_filter", None)
                 bundle["payload"]["refilter"] = {"reason": "max_forecast_cells exceeded; provide a tighter filter", "previous": response["filter"],
                                                    "band_cells": len(state["band"]), "max_forecast_cells": state["policy"]["max_forecast_cells"]}
                 return self._save_request(bundle)
+            if "no_memory_filter" not in source_payload:
+                prototypes.record_stage1_baseline(self, bundle, response["filter"])
             bundle["capability"] = state
             return self._forecast_request(bundle, set(state["band"]))
+        if "no_memory_forecasts" not in source_payload:
+            unseen_pairs = {(c["family"], c["effort"]) for c in source_payload.get("unseen_cells", source_payload["cells"])}
+            new_rows = [r for r in response["forecasts"] if (r["family"], r["effort"]) in unseen_pairs]
+            prototypes.record_stage2_baseline(self, bundle, new_rows)
         # Validate the new panel before combining it with earlier widening rounds.
         previous = bundle["forecast_state"]
         combined = deepcopy(response)

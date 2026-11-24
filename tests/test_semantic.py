@@ -64,11 +64,10 @@ def test_independent_baseline_and_original_semantic_inputs_are_preserved(project
     assert reader["context"]["task_text"] == result["context"]["task_text"]
     assert reader["memories"][0]["body"] == memory["body"]
     receipt = load(engine.config, result["decision_id"])
-    assert receipt["format"] == "howhard-decision-v9"
+    assert receipt["format"] == "howhard-decision-v10"
     assert receipt["semantic"]["memories"][0]["body"] == memory["body"]
     again = engine.pick("Y", result["context"]["task_text"], seed=42, native_candidates=inventory())
     assert again["chosen"] == result["chosen"]
-    assert again["decision_id"] == result["decision_id"]
     assert again["backend"]["inference_cached"]
     assert len(provider.calls) == 4
 
@@ -265,13 +264,16 @@ def test_project_retrieval_rejects_changed_context_and_private_state(project):
 def test_corrupted_inference_cache_is_recomputed(project):
     provider = FixtureLLM()
     engine = Engine(project(), llm=provider)
+    engine.memory.add("Cache", "Exercise memory reader cache validation")
     first = engine.pick("Y", "Task", seed=3, native_candidates=inventory())
-    cache = next((engine.config.base / ".howhard/llm-cache").glob("*.json"))
-    data = json.loads(cache.read_bytes())
-    data["response"]["reason"] = "Tampered result"
-    cache.write_text(json.dumps(data))
+    assert len(provider.calls) == 4
+    for cache in (engine.config.base / ".howhard/llm-cache").glob("*.json"):
+        data = json.loads(cache.read_bytes())
+        data["response"]["reason"] = "Tampered result"
+        cache.write_text(json.dumps(data))
     second = engine.pick("Y", "Task", seed=3, native_candidates=inventory())
-    assert len(provider.calls) == 3
+    # Warm prototype skips baseline calls; both corrupted memory-reader caches are recomputed.
+    assert len(provider.calls) == 6
     assert second["semantic"]["reason"] == first["semantic"]["reason"]
     assert not second["backend"]["inference_cached"]
 

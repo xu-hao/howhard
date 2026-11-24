@@ -152,9 +152,13 @@ evidence. A small four-pair sanity check placed both transaction-related precede
 above unrelated prose/CSS work, as Qwen did; this does not establish equivalent
 relevance quality. Longer inputs and other hardware need separate validation.
 
-`retrieval.sqlite3` holds disposable FTS, content-addressed embeddings, and a checked
-HNSW graph. Changes in the indexed content or embedding identity rebuild the current
-graph while reusing unchanged vectors. Graph and mapping publication is transactional;
+`retrieval.sqlite3` holds up to 16 disposable FTS5 snapshots, content-addressed
+embeddings, and up to 64 checked HNSW graphs so experience, memory, and prototype
+searches do not thrash one another across stages; `FastEmbedder` also memoizes repeated
+query vectors in memory. Dynamic `(task, context)` prototype matching indexes and queries
+canonicalized task-only text (`score > 0` cross-encoder match criterion) so shared
+project boilerplate never inflates similarity across unrelated tasks. Changes in the indexed content or embedding identity build a new
+graph entry while reusing unchanged vectors. Graph and mapping publication is transactional;
 corrupt graph bytes are rebuilt. These caches never replace `memory.sqlite3` or outcome
 logs. Removed lessons are excluded unless the caller explicitly requests archives.
 Cache transactions use the store's [write queue](concurrency.md). Embedding, graph

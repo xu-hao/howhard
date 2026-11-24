@@ -75,7 +75,9 @@ likelihood is raised to a fractional evidence weight:
 row weight × sigmoid(relevance score) × severity/cause strength × recency discount
 ```
 
-Use the existing task/project retrieval to select at most eight precedents. The
+Use task-only prototype matching (`score > 0`) and per-cell precedent retrieval so
+unrelated tasks receive zero weight and heavily executed cells never crowd out rarer
+cells behind a global top-eight slice. The
 configured cross-encoder supplies the absolute relevance score. Small retrieval
 corpora normally skip reranking for display; the threshold reader scores those
 selected precedents too. Sigmoid scores are heuristic relevance strengths, not
@@ -107,24 +109,41 @@ for the new cell.
 
 ## Protocol and forecast budget
 
-`context` returns `stage=filter`, the full validated inventory, a clean
-`baseline_request`, and a separate memory reader request. The independent response is:
+`context` matches the incoming task against active synthesized `(task, context)`
+prototypes in `payloads.sqlite3` and returns `stage=filter` with the full validated
+inventory, the memory reader `request`, and either a clean `baseline_request` (when at
+least one inventory cell lacks prototype Stage-1 coverage, conditioned on the
+prototype's synthesized representative task and context) or `baseline_request: null`
+(when every inventory cell already has a materialized `P_clear` prior or
+`capability_weight >= 0.5` on matched prototypes, pre-populating `no_memory_filter`).
+When `baseline_request` is non-null, the independent response is:
 
 ```json
 {"filter": {"order": ["cell:key-a", "cell:key-b"], "lower": "cell:key-a", "upper": "cell:key-b"}, "reason": "Task-specific prior"}
 ```
 
-The actual keys come from the request. Before submitting to `decide`, add
+The actual keys come from the request. On a partial prototype hit where new unseen
+models join already-covered models, previously covered cells preserve their materialized
+prior `P_clear` while unseen cells take `prior_cdf(filter)`, projected monotone along
+the merged order. When `baseline_request` is `null`, omit `filter` (or pass the unchanged
+`no_memory_filter`) and submit `{memory_filters, reason}`; passing `--auto-decide` to
+`context` advances warm stages automatically when no active editable semantic memories
+exist. Before submitting to `decide`, add
 `memory_filters: []` or up to eight `{id, version, filter}` adjustments grounded in
 retrieved active memories. Each adjustment supplies a complete order and cut points;
 it can move a boundary or move a particular cell. Missing, duplicate or unknown keys,
 nonordinal known efforts, reversed cuts and empty bands are refused.
 
 `decide` applies the learned filter and returns a new `stage=forecast` request ID.
-Evaluate its clean `baseline_request` in another independent context and supply the
-normal `{forecasts, memory_forecasts, reason}` response. Only fit cells receive rows.
+When all fit-band cells are already Stage-2 covered on matched prototypes, Stage 2 sets
+`baseline_request: null` and pre-populates `no_memory_forecasts`; when only a subset of
+fit-band cells is unseen, `baseline_request` contains only those unseen cells and merges
+their new forecasts with the materialized band rows. Otherwise evaluate its clean
+`baseline_request` in another independent context and supply the normal
+`{forecasts, memory_forecasts, reason}` response. Only fit cells receive rows.
 Neither independent call receives memory, execution evidence or learned tables.
-`pick` and `summary` drive these same stages through a stateless provider adapter.
+`pick` and `summary` drive these same stages, completing locally with zero LLM calls on
+fully covered warm prototypes when no active editable memories exist.
 
 The inventory has no count limit. `max_forecast_cells` is a budget for fine forecasts,
 not an inventory cap. If the learned band exceeds it, `decide` returns one re-filter
@@ -164,13 +183,15 @@ retain the selected cell's original classification and position. Excluded cells 
 never ran contribute no outcome. Reported rates are descriptive diagnostics.
 
 Configuration defaults and validation are in [configuration](configuration.md).
-Decision v9 receipts freeze the full filter, expert priors, task-specific order,
+Decision v10 receipts freeze the full filter, expert priors, task-specific order,
 clearing and timely-clearing probabilities, band, widening, disagreements, fine
 forecasts, and accepted-result selection. Newly aggregated capability blocks use
-`howhard-capability-v4`, with geometric prior mass outside both cuts and a band
-checked against the frozen probabilities. Persisted decision v9 and v8 receipts
-with capability v3 retain the linear prior prefix, geometric tail, and contiguous
-band. Persisted decision v7 receipts support capability v2 and v1. Capability v1
+`howhard-capability-v5`, supporting materialized prototype priors, mixed seen/unseen
+`prior_sources` PAV projection, geometric prior mass outside both cuts, per-cell
+precedent lists, and a band checked against the frozen probabilities. Persisted decision
+v10 and v9 receipts also accept `howhard-capability-v4`, while persisted decision v9 and
+v8 receipts with capability v3 retain the linear prior prefix, geometric tail, and
+contiguous band. Persisted decision v7 receipts support capability v2 and v1. Capability v1
 priors must uniformly match the linear tail or the geometric tail across all experts.
 These versions retain support for loading, feedback, belief replay, and reporting.
 Older decision formats v1–v6 remain inspectable as raw
