@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+## 5.0.0 — 2026-11-24
+
+- Dynamic synthesized `(task, context)` prototypes with materialized per-cell priors and
+  sufficient statistics in `payloads.sqlite3` (`prototypes`, `prototype_members`,
+  `prototype_cells`, `prototype_meta`): strip one-off worker wrappers, issue IDs, commit
+  hashes, and temporary scratch paths when synthesizing representative tasks, match
+  incoming tasks on task-only text (`score > 0`) without shared project boilerplate
+  inflating similarity, maintain cell statistics incrementally on `observe`, replay
+  affected prototypes reversibly across `amends` and `measurement_corrections` while
+  excluding `interrupted` runs, backfill pre-existing `outcomes.jsonl` histories online,
+  and split heterogeneous prototypes (`member_count >= 12`) into sharper child prototypes
+  (#123).
+
+- Cold-start-only `baseline_request` and provider-free warm routing: evaluate stateless
+  Stage 1 (`filter`) and Stage 2 (`forecast`) priors once per unseen `(prototype, model,
+  effort)` cell on the prototype's representative `(task, context)`, emit
+  `baseline_request = null` when matched prototypes already cover all cells (or request
+  Stage 2 forecasts only for newly added unseen cells), complete warm `pick`/`summary`
+  and `howhard context --auto-decide` locally without an LLM provider when no active
+  editable semantic memories exist, and retain bounded multi-corpus `BM25Index` (16 FTS5
+  snapshots) and `HNSWIndex` (64 graphs) caches with query-vector memoization (#123).
+
+- Continuous cold-start prior decay and `howhard-decision-v10`: decay cold-start forecast
+  prior concentration linearly over empirical cell weight (`tau_emp = 2.0`) into an
+  empirical base floor (`kappa_floor = 1.0`, `b_0 = (0.88, 0.08, 0.04)`) so zero-shot
+  guesses carry exact zero weight once `W_emp >= 2.0`, retrieve per-cell capability,
+  duration, and outcome precedents (`score > 0`) without global top-8 truncation, and
+  emit `howhard-decision-v10` (`howhard-semantic-v7`, `howhard-capability-v5`,
+  `howhard-agent-request-v6`) while preserving full `v9`, `v8`, and `v7` frozen receipt
+  loading, observation, belief replay, and reporting (#123).
+
 ## 4.0.0 — 2026-11-21
 
 - Breaking storage change: `payloads.sqlite3` replaces `<state_root>/requests/*.json`

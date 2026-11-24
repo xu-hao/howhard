@@ -1,4 +1,4 @@
-format = "howhard-semantic-v6"
+format = "howhard-semantic-v7"
 prompt_version = "semantic-reader-v7"
 writer_version = "semantic-writer-v1"
 memory_limit = 8

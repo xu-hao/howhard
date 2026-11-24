@@ -43,7 +43,7 @@ def test_new_payloads_are_compressed_and_summaries_are_queryable(tmp_path, monke
     root = engine.config.state_root
     assert not (root / "requests").exists()
     assert not (root / "decisions").exists()
-    assert json.loads(get(engine.config, "requests", request["request_id"]))["format"] == "howhard-agent-request-v5"
+    assert json.loads(get(engine.config, "requests", request["request_id"]))["format"] == "howhard-agent-request-v6"
     assert json.loads(get(engine.config, "decisions", decision["decision_id"]))["semantic"] == load(engine.config, decision["decision_id"])["semantic"]
     rows = summaries(engine.config, task_type="task", needs_review=decision["needs_review"])
     assert len(rows) == 1
@@ -183,9 +183,9 @@ def test_standalone_migrate_payloads_script_migrates_losslessly_and_makes_payloa
     assert get(reopened.config, "decisions", v7_id) == v7_raw
     assert get(reopened.config, "decisions", v1_id) == v1_raw
 
-    assert reopened._load_request(req_id)["format"] == "howhard-agent-request-v5"
+    assert reopened._load_request(req_id)["format"] == "howhard-agent-request-v6"
     assert exists(reopened.config, dec_id)
-    assert load(reopened.config, dec_id)["format"] == "howhard-decision-v9"
+    assert load(reopened.config, dec_id)["format"] == "howhard-decision-v10"
     assert load(reopened.config, v8_id)["format"] == "howhard-decision-v8"
     assert load(reopened.config, v7_id)["format"] == "howhard-decision-v7"
 

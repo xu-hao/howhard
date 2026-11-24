@@ -45,6 +45,11 @@ def parser():
         if name == "pick":
             command.add_argument("--seed", type=int)
             command.add_argument("--save-decision", metavar="PATH", help="copy the decision receipt to a file")
+        if name == "context":
+            command.add_argument("--auto-decide", action="store_true",
+                                 help="complete selection automatically when prototypes cover all cells and no active memories exist")
+            command.add_argument("--seed", type=int)
+            command.add_argument("--save-decision", metavar="PATH", help="copy the decision receipt to a file when --auto-decide completes")
         if name == "observe":
             command.add_argument("--native", action="store_true", help="admit a known actual native model/control for raw feedback without a decision")
             command.add_argument("model", nargs="?", help="model ID, or outcome when the first argument is a decision ID")
@@ -232,7 +237,10 @@ def main(argv=None):
         elif args.command == "summary":
             result = engine.summary(args.task_type, risk=args.risk, native_candidates=native_candidates, **context_options)
         elif args.command == "context":
-            result = engine.prepare(args.task_type, risk=args.risk, native_candidates=native_candidates, **context_options)
+            result = engine.prepare(args.task_type, risk=args.risk, native_candidates=native_candidates,
+                                    auto_decide=args.auto_decide, seed=args.seed, **context_options)
+            if args.save_decision is not None and "decision_id" in result:
+                engine.save_decision(result["decision_id"], args.save_decision)
         elif args.command == "evidence":
             result = engine.evidence(args.id, raw=args.raw)
         elif args.command == "paths":

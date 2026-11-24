@@ -5,7 +5,7 @@ import math
 
 import numpy as np
 
-from .context import DECISION_FORMAT, LEGACY_DECISION_V7, LEGACY_DECISION_V8
+from .context import DECISION_FORMAT, LEGACY_DECISION_V7, LEGACY_DECISION_V8, LEGACY_DECISION_V9
 from .llm import SETTINGS
 from .validation import HowHardError, keys, number
 
@@ -18,6 +18,9 @@ CI_Z_WIDTH = 3.92  # A central 95% interval spans about 3.92 standard deviations
 POSTERIOR_FIELDS = ("prior", "prior_concentration", "counts", "evidence_weight", "alpha")
 DURATION_PRIOR_STRENGTH = 1.0
 MAX_DURATION_LOG_SD = 2.0
+EMPIRICAL_TAU = 2.0
+EMPIRICAL_FLOOR = 1.0
+EMPIRICAL_BASE = (0.88, 0.08, 0.04)
 
 
 def calibrate_duration(forecast_seconds, pair, duration_observations):
@@ -182,25 +185,37 @@ def outcome_counts(pair, outcome_observations):
     return [math.fsum(c) for c in counts]
 
 
-def outcome_posterior(row, pair, outcome_observations, policy):
-    """Dirichlet posterior alpha = kappa_0 * p_0 + this cell's own weighted outcome counts."""
+def outcome_posterior(row, pair, outcome_observations, policy, *, legacy_v9=False):
+    """Dirichlet posterior with continuous cold-start prior decay over empirical weight."""
     p0 = forecast_probabilities(row)
-    kappa = prior_concentration(row, policy, p0)
+    kappa0 = prior_concentration(row, policy, p0)
     counts = outcome_counts(pair, outcome_observations)
-    alpha = kappa * p0 + np.asarray(counts)
+    w_emp = math.fsum(counts)
+    if legacy_v9:
+        kappa = kappa0
+        alpha = kappa * p0 + np.asarray(counts)
+    else:
+        decay = max(0.0, 1.0 - w_emp / EMPIRICAL_TAU)
+        kappa_prior = kappa0 * decay
+        kappa_base = EMPIRICAL_FLOOR * (1.0 - decay)
+        kappa = float(kappa_prior + kappa_base)
+        alpha = kappa_prior * p0 + kappa_base * np.asarray(EMPIRICAL_BASE) + np.asarray(counts)
     total = float(alpha.sum())
     if total > policy["max_concentration"]:
         alpha *= policy["max_concentration"] / total
         total = float(alpha.sum())
     return {"prior": p0.tolist(), "prior_concentration": kappa, "counts": counts,
-            "evidence_weight": math.fsum(counts), "alpha": alpha.tolist(),
+            "evidence_weight": w_emp, "alpha": alpha.tolist(),
             "concentration": total, "mean": (alpha / total).tolist()}
 
 
-def posterior_intervals(panels, weights, pair, outcome_observations, policy):
+def posterior_intervals(panels, weights, pair, outcome_observations, policy, *, legacy_v9=False):
     """Expert-mixture Dirichlet marginals plus the Beta(alpha_silent, alpha_clean) accepted risk."""
     from .semantic import OUTCOMES
-    posteriors = {k: outcome_posterior(panels[k][pair], pair, outcome_observations, policy) for k in weights}
+    posteriors = {
+        k: outcome_posterior(panels[k][pair], pair, outcome_observations, policy, legacy_v9=legacy_v9)
+        for k in weights
+    }
     intervals = {}
     for i, name in enumerate(OUTCOMES):
         components = [(weights[k], posteriors[k]["alpha"][i],
@@ -237,13 +252,13 @@ def envelope(values, mean):
     return {"mean": mean, "lower": min(mean, quantile(.025)), "upper": max(mean, quantile(.975))}
 
 
-def calibration(result, state, expert, cell, row):
+def calibration(result, state, expert, cell, row, *, legacy_v9=False):
     """Per-cell Dirichlet posterior: a bounded forecast prior plus only this cell's own outcomes."""
     from .semantic import panel_lookup, forecast_session_cost
     pair = cell["family"], cell["effort"]
     policy = result["sampling_policy"]
     outcome_obs = state.get("outcome_observations", [])
-    posterior = outcome_posterior(row, pair, outcome_obs, policy)
+    posterior = outcome_posterior(row, pair, outcome_obs, policy, legacy_v9=legacy_v9)
     probabilities = np.asarray(posterior["mean"])
     concentration = posterior["concentration"]
     duration_obs = state.get("duration_observations", [])
@@ -274,7 +289,7 @@ def calibration(result, state, expert, cell, row):
         prediction = panel_lookup(state["worlds"][e["key"]])[pair]
         money = forecast_session_cost(prediction, cell) if cell["money_included"] else 0.
         e_hours = expert_durations[e["key"]]["expected_seconds"] / 3600
-        mean = outcome_posterior(prediction, pair, outcome_obs, policy)["mean"]
+        mean = outcome_posterior(prediction, pair, outcome_obs, policy, legacy_v9=legacy_v9)["mean"]
         expert_costs.append((e["weight"], cost(money, e_hours, mean[1], mean[2], constants)))
     mean_cost = sum(w*j for w, j in expert_costs)
     variance = max(variance, sum(w*(j-mean_cost)**2 for w, j in expert_costs))
@@ -360,7 +375,14 @@ def validate_selection(selection, semantic, capability, cost_policy, *, decision
                 raise HowHardError("decision.selection: accepted-result risk/cap mismatch")
         else:
             weights = {e["key"]: e["weight"] for e in experts}
-            intervals, _ = posterior_intervals(panels, weights, pair, semantic["outcome_observations"], policy)
+            intervals, _ = posterior_intervals(
+                panels,
+                weights,
+                pair,
+                semantic["outcome_observations"],
+                policy,
+                legacy_v9=(decision_format == LEGACY_DECISION_V9),
+            )
             for field in ("P_clean", "P_loud", "P_silent", "P_silent_accepted"):
                 if any(abs(row[field][k] - intervals[field][k]) > 1e-9 for k in ("mean", "lower", "upper")):
                     raise HowHardError("decision.selection: posterior credible interval mismatch")

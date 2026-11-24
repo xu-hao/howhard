@@ -44,24 +44,32 @@ the host's actual tools execute the task.
    Honor the user/application's fixed retrieval configuration. Do not edit it or try
    to upgrade its reranker when results are weak; retrieval tools accept no tier,
    model or configuration override.
-4. For calling-agent reasoning, evaluate each returned `baseline_request` in a
-   separate fresh model context without memory/history or learned tables. `context`
-   starts at `stage=filter`: supply a complete task-specific capability order over
-   emitted opaque cell keys and nonempty lower/upper fit cuts. Reason separately over
-   retrieved experience for up to eight cited `memory_filters`. Submit the combined
-   filter to `decide`, then use its NEW `stage=forecast` request ID to obtain calibrated
-   rows only for the band. Supply `forecasts` and up to eight `memory_forecasts` under
-   the same independent-baseline rule; forecasted `seconds` is expected **active**
+4. For calling-agent reasoning, pass `--auto-decide --seed SEED` to `context` when you
+   want warm memory-free routes to finish in one step; if `context` returns a
+   `decision_id`, selection is already complete. Otherwise evaluate each non-null
+   `baseline_request` in a separate fresh model context without memory/history or learned
+   tables. When `baseline_request` is `null` (matched prototypes already cover every
+   cell), skip the isolated baseline call, omit `filter` or `forecasts`, and reason only
+   over active memories (`{memory_filters, reason}` or `{memory_forecasts, reason}`).
+   When `baseline_request` is non-null at `stage=filter`, supply a complete task-specific
+   capability order over emitted opaque cell keys and nonempty lower/upper fit cuts plus
+   up to eight cited `memory_filters`. Submit to `decide`, then use its NEW
+   `stage=forecast` request ID: if Stage 2 `baseline_request` is non-null, forecast
+   every cell in `baseline_request.cells` (which contains only newly unseen band cells on
+   a partial prototype hit, merged automatically with materialized band cells) and up to
+   eight `memory_forecasts`; forecasted `seconds` is expected **active**
    execution duration excluding external scheduler/queue wait. When genuinely unsure of a
    cell's loud or silent probability, add `loud_ci`/`silent_ci` as a `[lo, hi]` 95%
    credible interval containing the value; wide intervals let observed outcomes dominate
    sooner, narrow ones cannot strengthen the bounded prior, and rows without intervals
-   remain valid. Handle one explicit re-filter and stronger-only
+   remain valid. Cold-start priors decay continuously to zero weight once a cell reaches
+   `W_emp >= 2.0` on a prototype. Handle one explicit re-filter and stronger-only
    widening requests; never truncate an inventory/band or forecast excluded cells.
    The backend learns the order and threshold from actual similar executions, with
    prior-only placement labels for unseen cells. Placement is task-specific; there is
-   no universal model ranking. If genuine independence is unavailable, disclose it
-   and report routing unavailable until the independent LLM calls are possible.
+   no universal model ranking. If genuine independence is unavailable when a non-null
+   `baseline_request` is returned, disclose it and report routing unavailable until the
+   independent LLM calls are possible.
    Prepared requests bind candidates, prices and worktree; follow-up retrieve/decide
    commands do not repeat or replace that inventory. Never invent unrun outcomes or
    edit read-only execution experts.

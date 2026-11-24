@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 
 import numpy as np
 
-from .context import DECISION_FORMAT, IGNORED, LEGACY_DECISION_V7, LEGACY_DECISION_V8, MANIFESTS, SOURCE_SUFFIXES, canonical, digest
+from .context import DECISION_FORMAT, IGNORED, LEGACY_DECISION_V7, LEGACY_DECISION_V8, LEGACY_DECISION_V9, MANIFESTS, SOURCE_SUFFIXES, canonical, digest
 from .llm import LLMError, SETTINGS
 from .files import atomic_write
 from .storage import effective_active_seconds
@@ -22,6 +22,7 @@ LEGACY_PROMPT_V5 = "semantic-reader-v5"
 # Frozen receipt versions pin the semantic format and reader prompt they were produced with.
 RECEIPT_SEMANTICS = {LEGACY_DECISION_V7: (LEGACY_FORMAT_V4, LEGACY_PROMPT_V5),
                      LEGACY_DECISION_V8: ("howhard-semantic-v5", "semantic-reader-v6"),
+                     LEGACY_DECISION_V9: ("howhard-semantic-v6", "semantic-reader-v7"),
                      DECISION_FORMAT: (FORMAT, SETTINGS["prompt_version"])}
 OUTCOMES = ("clean", "loud", "silent")
 FIELDS = ("family", "effort", "clean", "loud", "silent", "tokens", "seconds")
@@ -224,6 +225,8 @@ def request(engine, prepared):
 def visible_request(payload):
     """Keep unselected expert bookkeeping out of the model's context."""
     result = deepcopy(payload)
+    for internal in ("prototype_context", "preset_forecasts", "unseen_cells"):
+        result.pop(internal, None)
     prefix = "filter:" if payload["kind"] == "filter" else ""
     visible = {prefix+"llm", *(f"{prefix}memory:{id}:{version}" for id, version in visible_memories(payload))}
     result["beliefs"]["experts"] = [e for e in result["beliefs"]["experts"] if e["key"] in visible]
@@ -260,10 +263,14 @@ def baseline_request(payload):
     if payload["kind"] == "filter":
         from .capability import baseline_request as filter_baseline
         return filter_baseline(payload)
-    clean = {k: deepcopy(payload[k]) for k in ("kind", "prompt_version", "task_type", "context", "risk_class", "constants")}
+    if "no_memory_forecasts" in payload:
+        return None
+    clean = {k: deepcopy(payload[k]) for k in ("kind", "prompt_version", "task_type", "risk_class", "constants")}
+    clean["context"] = deepcopy(payload.get("prototype_context", payload["context"]))
     if "cost_policy" in payload:
         clean["cost_policy"] = deepcopy(payload["cost_policy"])
-    clean.update(phase="baseline", cells=[{k: c[k] for k in ("family", "effort", "model", "forecast_format") if k in c} for c in payload["cells"]],
+    source_cells = payload.get("unseen_cells", payload["cells"])
+    clean.update(phase="baseline", cells=[{k: c[k] for k in ("family", "effort", "model", "forecast_format") if k in c} for c in source_cells],
                  contract="Return {forecasts: [{family,effort,clean,loud,silent,tokens,seconds,loud_ci?,silent_ci?}], reason: string}. Forecast EVERY supplied cell; probabilities sum to 1; seconds is expected active execution duration excluding external queue wait. category-v1 cells require token_usage with disjoint input/output/cache_read/cache_write/cache_write_5m/cache_write_1h summing to tokens; total-v1 accepts scalar tokens. " + INTERVAL_CONTRACT + " No memory, evidence or retrieval is available in this independent call.")
     return clean
 
@@ -309,11 +316,34 @@ def validate_response(response, payload, snapshot):
     if payload["kind"] == "filter":
         from .capability import validate_response as validate_filter_response
         return validate_filter_response(response, payload, snapshot)
-    keys(response, ["forecasts", "memory_forecasts", "reason"], where="LLM response")
-    text(response["reason"], "LLM response.reason")
     allowed = {(c["family"], c["effort"]) for c in payload["cells"]}
-    validate_panel(response["forecasts"], allowed)
     category_cells = {(c["family"], c["effort"]) for c in payload["cells"] if c.get("forecast_format") == "category-v1"}
+    if "no_memory_forecasts" in payload:
+        keys(response, ["memory_forecasts", "reason"], ["forecasts"], where="LLM response")
+        if "forecasts" in response and response["forecasts"] != payload["no_memory_forecasts"]:
+            raise LLMError("Memory reader must not rewrite the isolated baseline forecasts")
+        response = {**deepcopy(response), "forecasts": deepcopy(payload["no_memory_forecasts"])}
+        text(response["reason"], "LLM response.reason")
+        validate_panel(response["forecasts"], allowed)
+    elif "preset_forecasts" in payload and "unseen_cells" in payload:
+        keys(response, ["forecasts", "memory_forecasts", "reason"], where="LLM response")
+        text(response["reason"], "LLM response.reason")
+        unseen_allowed = {(c["family"], c["effort"]) for c in payload["unseen_cells"]}
+        unseen_cat = {(c["family"], c["effort"]) for c in payload["unseen_cells"] if c.get("forecast_format") == "category-v1"}
+        if {(r.get("family"), r.get("effort")) for r in response["forecasts"] if isinstance(r, dict)} == allowed:
+            validate_panel(response["forecasts"], allowed)
+            merged = deepcopy(response["forecasts"])
+        else:
+            validate_panel(response["forecasts"], unseen_allowed)
+            if any((r["family"], r["effort"]) in unseen_cat and "token_usage" not in r for r in response["forecasts"]):
+                raise LLMError("forecast.token_usage: category rate card requires category forecast")
+            merged = deepcopy(payload["preset_forecasts"]) + deepcopy(response["forecasts"])
+            validate_panel(merged, allowed)
+        response = {**deepcopy(response), "forecasts": merged}
+    else:
+        keys(response, ["forecasts", "memory_forecasts", "reason"], where="LLM response")
+        text(response["reason"], "LLM response.reason")
+        validate_panel(response["forecasts"], allowed)
     if any((r["family"], r["effort"]) in category_cells and "token_usage" not in r for r in response["forecasts"]):
         raise LLMError("forecast.token_usage: category rate card requires category forecast")
     if not isinstance(response["memory_forecasts"], list) or len(response["memory_forecasts"]) > SETTINGS["memory_limit"]:
@@ -388,48 +418,137 @@ def combine_usage(earlier, current):
     return result
 
 
+def _cache_read(path, expected_request, snapshot):
+    if not path.is_file():
+        return None
+    try:
+        cached = json.loads(path.read_bytes())
+        integrity = cached.pop("integrity")
+        if digest(cached) != integrity:
+            raise ValueError("cache integrity mismatch")
+        if cached["request"] == expected_request:
+            validate_response(cached["response"], cached["final_request"], snapshot)
+            return (
+                cached["response"],
+                cached["final_request"],
+                {**cached["usage"], "cached": True, "call_seconds": 0.0, "call_cost_usd": 0.0},
+            )
+    except (ValueError, KeyError, TypeError, HowHardError):
+        pass  # Replace corrupt inference caches; never use them as evidence.
+    return None
+
+
+def _cache_write(engine, path, request_obj, final_request, response, usage):
+    from .storage import locked
+    cached = {"request": request_obj, "final_request": final_request, "response": response, "usage": usage}
+    cached["integrity"] = digest(cached)
+    with locked(engine.config, operation="inference cache"):
+        atomic_write(path, canonical(cached) + b"\n")
+
+
+def _replay_signature(payload, snapshot):
+    cells_sig = [
+        c["key"] if "key" in c else [c["family"], c["effort"], c.get("model"), c.get("forecast_format")]
+        for c in payload["cells"]
+    ]
+    return {
+        "kind": payload["kind"],
+        "prompt_version": payload.get("prompt_version"),
+        "task_type": payload["task_type"],
+        "risk_class": payload["risk_class"],
+        "context": payload["context"],
+        "cells": cells_sig,
+        "cost_policy": payload.get("cost_policy"),
+        "filter_policy": payload.get("filter_policy"),
+        "constants": payload.get("constants"),
+        "evidence": payload.get("evidence"),
+        "memory_revision": snapshot["revision"],
+        "refilter": payload.get("refilter"),
+    }
+
+
+def cached_exact_replay(engine, payload, snapshot):
+    llm = engine.llm
+    if llm is None:
+        import os
+        cmd = os.environ.get("HOWHARD_LLM_COMMAND") or engine.config.data.get("llm", {}).get("command")
+        if not cmd:
+            return None
+        try:
+            from .llm import CommandLLM
+            argv = json.loads(cmd) if isinstance(cmd, str) else cmd
+            identity = CommandLLM(argv).identity
+        except Exception:
+            return None
+    else:
+        identity = str(getattr(llm, "identity", type(llm).__name__))
+    sig = {"replay": _replay_signature(payload, snapshot)}
+    ck = digest({"format": FORMAT, "backend": identity, "settings": SETTINGS, "request": sig})
+    path = engine.config.state_root / "llm-cache" / f"{ck}.json"
+    return _cache_read(path, sig, snapshot)
+
+
 def complete(engine, payload, snapshot):
     identity = str(getattr(engine.llm, "identity", type(engine.llm).__name__))
-    cache_key = digest({"format": FORMAT, "backend": identity, "settings": SETTINGS, "request": payload})
-    path = engine.config.state_root / "llm-cache" / f"{cache_key}.json"
-    if path.is_file():
-        try:
-            cached = json.loads(path.read_bytes())
-            integrity = cached.pop("integrity")
-            if digest(cached) != integrity:
-                raise ValueError("cache integrity mismatch")
-            if cached["request"] == payload:
-                validate_response(cached["response"], cached["final_request"], snapshot)
-                return cached["response"], cached["final_request"], {**cached["usage"], "cached": True, "call_seconds": 0.0, "call_cost_usd": 0.0}
-        except (ValueError, KeyError, TypeError, HowHardError):
-            pass  # Replace corrupt inference caches; never use them as evidence.
+    cache_dir = engine.config.state_root / "llm-cache"
+
+    def cache_path(req_obj):
+        ck = digest({"format": FORMAT, "backend": identity, "settings": SETTINGS, "request": req_obj})
+        return cache_dir / f"{ck}.json"
+
+    hit = _cache_read(cache_path(payload), payload, snapshot)
+    if hit is not None:
+        return hit
+
     original, current = deepcopy(payload), deepcopy(payload)
-    seconds, cost, cost_known = 0.0, 0.0, True
     calls = []
-    # A genuine no-memory forecast must be a separate stateless call, without
-    # historical evidence or beliefs.
     filtering = payload["kind"] == "filter"
     field, memory_field = ("filter", "memory_filters") if filtering else ("forecasts", "memory_forecasts")
     fixed_field = "no_memory_" + field
-    baseline_response, usage = call(engine, baseline_request(payload))
-    keys(baseline_response, [field, "reason"], [memory_field], "LLM baseline")
-    if baseline_response.get(memory_field):
-        raise LLMError("LLM baseline cannot reference memories")
-    if filtering:
-        from .capability import validate_filter
-        validate_filter(baseline_response[field], payload["cells"])
+    base_req = baseline_request(payload)
+
+    if base_req is not None:
+        baseline_response, usage = call(engine, base_req)
+        keys(baseline_response, [field, "reason"], [memory_field], "LLM baseline")
+        if baseline_response.get(memory_field):
+            raise LLMError("LLM baseline cannot reference memories")
+        if filtering:
+            from .capability import validate_filter
+            validate_filter(baseline_response[field], payload["cells"])
+            fixed_value = deepcopy(baseline_response[field])
+        else:
+            unseen_cells = payload.get("unseen_cells", payload["cells"])
+            validate_panel(baseline_response[field], {(c["family"], c["effort"]) for c in unseen_cells})
+            unseen_cat = {(c["family"], c["effort"]) for c in unseen_cells if c.get("forecast_format") == "category-v1"}
+            if any((r["family"], r["effort"]) in unseen_cat and "token_usage" not in r for r in baseline_response[field]):
+                raise LLMError("forecast.token_usage: category rate card requires category forecast")
+            if "preset_forecasts" in payload:
+                fixed_value = deepcopy(payload["preset_forecasts"]) + deepcopy(baseline_response[field])
+                current.pop("preset_forecasts", None)
+                current.pop("unseen_cells", None)
+            else:
+                fixed_value = deepcopy(baseline_response[field])
+        text(baseline_response["reason"], "LLM baseline.reason")
+        current.update(phase="memory", **{fixed_field: fixed_value})
+        current["contract"][field] = "Omit this field. The isolated no_memory value is fixed and must not be changed."
+        baseline_reason = baseline_response["reason"]
+        calls.append(usage)
     else:
-        validate_panel(baseline_response[field], {(c["family"], c["effort"]) for c in payload["cells"]})
-    text(baseline_response["reason"], "LLM baseline.reason")
-    current.update(phase="memory", **{fixed_field: deepcopy(baseline_response[field])})
-    current["contract"][field] = "Omit this field. The isolated no_memory value is fixed and must not be changed."
-    calls.append(usage)
+        current["phase"] = "memory"
+        baseline_reason = "Materialized prototype baseline."
+        mem_hit = _cache_read(cache_path(visible_request(current)), visible_request(current), snapshot)
+        if mem_hit is not None:
+            return mem_hit
+
+    memory_initial = visible_request(current)
+    memory_calls = []
     for round_number in range(SETTINGS["retrieval_rounds"] + 1):
         if snapshot["memories"]:
-            response, usage = call(engine, visible_request(current))
-            calls.append(usage)
+            response, m_usage = call(engine, visible_request(current))
+            calls.append(m_usage)
+            memory_calls.append(m_usage)
         else:
-            response = {memory_field: [], "reason": baseline_response["reason"]}
+            response = {memory_field: [], "reason": baseline_reason}
         if isinstance(response, dict) and "request_more" in response:
             keys(response, ["request_more"], where="LLM response")
             more = response["request_more"]
@@ -455,29 +574,106 @@ def complete(engine, payload, snapshot):
         cost_known = all(c["cost_usd"] is not None for c in calls)
         cost = sum(c["cost_usd"] for c in calls) if cost_known else None
         usage = {"seconds": seconds, "cost_usd": cost, "backend": identity, "calls": calls}
-        cached = {"request": original, "final_request": current, "response": response, "usage": usage}
-        cached["integrity"] = digest(cached)
-        from .storage import locked
-        with locked(engine.config, operation="inference cache"):
-            atomic_write(path, canonical(cached) + b"\n")
+        _cache_write(engine, cache_path(original), original, current, response, usage)
+        replay_sig = {"replay": _replay_signature(original, snapshot)}
+        _cache_write(engine, cache_path(replay_sig), replay_sig, current, response, usage)
+        if snapshot["memories"] and memory_calls:
+            m_sec = sum(c["seconds"] for c in memory_calls)
+            m_cost = sum(c["cost_usd"] for c in memory_calls) if all(c["cost_usd"] is not None for c in memory_calls) else None
+            m_usage_summary = {"seconds": m_sec, "cost_usd": m_cost, "backend": identity, "calls": memory_calls}
+            _cache_write(engine, cache_path(memory_initial), memory_initial, current, response, m_usage_summary)
         return response, current, {**usage, "cached": False, "call_seconds": seconds, "call_cost_usd": usage["cost_usd"]}
     raise LLMError("LLM did not return forecasts")
 
 
-def duration_observations(engine, payload, *, scores=None):
+def duration_observations(engine, payload, *, scores=None, proto_state=None):
+    from . import prototypes
     from .capability import evidence_scores
-    evidence = payload["evidence"][:SETTINGS["evidence_limit"]]
-    eligible = [row for row in evidence if row["outcome"] != "interrupted" and effective_active_seconds(row) is not None]
-    if not eligible:
-        return []
-    scores = evidence_scores(engine, payload) if scores is None else scores
+    from .retrieval import records, task_text
+
     scored_rows = [r for r in engine.rows if r["outcome"] != "interrupted"]
+    if not scored_rows:
+        return []
+    pairs = {(c["family"], c["effort"]) for c in payload["cells"]}
+    eligible_all = [
+        r for r in scored_rows
+        if (r["family"], r["resolved_effort"]) in pairs and effective_active_seconds(r) is not None
+    ]
+    if not eligible_all:
+        return []
+
     recency_order = {r["id"]: age for age, r in enumerate(reversed(scored_rows))}
+    limit = SETTINGS["outcome_evidence_limit"]
+    proto_scores = (
+        prototypes.matched_member_scores(engine, proto_state)
+        if proto_state and prototypes._is_standard_pipeline(engine.retrieval)
+        else None
+    )
+    top_evidence = payload["evidence"][:SETTINGS["evidence_limit"]]
+    top_ids = {r["id"] for r in top_evidence}
+
+    selected_rows = []
+    row_scores = {}
+    if proto_scores is not None:
+        base_scores = evidence_scores(engine, payload) if scores is None and top_evidence else (scores or {})
+        by_pair = {}
+        for r in reversed(eligible_all):
+            eid = r["id"]
+            sc = base_scores.get("evidence:" + eid, proto_scores.get(eid))
+            if sc is None or float(sc) <= 0.0:
+                continue
+            bucket = by_pair.setdefault((r["family"], r["resolved_effort"]), [])
+            if len(bucket) < limit:
+                bucket.append(r)
+                row_scores[eid] = float(sc)
+        keep_ids = {r["id"] for bucket in by_pair.values() for r in bucket}
+        selected_rows = [r for r in eligible_all if r["id"] in keep_ids]
+    elif {r["id"] for r in eligible_all} <= top_ids:
+        base_scores = evidence_scores(engine, payload) if scores is None else scores
+        for r in top_evidence:
+            if (
+                r["outcome"] == "interrupted"
+                or (r["family"], r["resolved_effort"]) not in pairs
+                or effective_active_seconds(r) is None
+            ):
+                continue
+            sc = float(base_scores["evidence:" + r["id"]])
+            selected_rows.append(r)
+            row_scores[r["id"]] = sc
+    else:
+        base_scores = dict(evidence_scores(engine, payload) if scores is None else scores)
+        query = task_text(payload["task_type"], payload["context"])
+        by_pair = {}
+        for r in eligible_all:
+            by_pair.setdefault((r["family"], r["resolved_effort"]), []).append(r)
+        keep_ids = set()
+        for pair in sorted(by_pair):
+            retrieved = engine.retrieval.search(records(rows=by_pair[pair]), query, limit=limit)
+            chosen = retrieved["records"]
+            trace_sc = {item["key"]: item["score"] for item in retrieved["trace"]["selected"]}
+            missing = [
+                d for d in chosen
+                if trace_sc.get(d["key"]) is None and base_scores.get(d["key"]) is None
+            ]
+            if missing:
+                vals = list(engine.retrieval.reranker.score(query, [d["text"] for d in missing]))
+                if len(vals) != len(missing) or any(not math.isfinite(float(v)) for v in vals):
+                    raise HowHardError("duration similarity: invalid reranker scores")
+                trace_sc.update({d["key"]: float(v) for d, v in zip(missing, vals)})
+            for d in chosen:
+                r = d["value"]
+                sc = trace_sc.get(d["key"])
+                if sc is None:
+                    sc = base_scores.get(d["key"])
+                keep_ids.add(r["id"])
+                row_scores[r["id"]] = float(sc)
+        selected_rows = [r for r in eligible_all if r["id"] in keep_ids]
+
     result = []
-    for row in eligible:
+    for row in selected_rows:
         active = effective_active_seconds(row)
         age = recency_order.get(row["id"], 0)
-        score = float(scores["evidence:" + row["id"]])
+        score = float(row_scores[row["id"]])
         similarity = 1 / (1 + math.exp(-max(-60, min(60, score))))
         result.append({"id": row["id"], "family": row["family"], "effort": row["resolved_effort"],
                        "active_seconds": float(active), "score": score, "similarity": similarity,
@@ -485,8 +681,9 @@ def duration_observations(engine, payload, *, scores=None):
     return result
 
 
-def outcome_observations(engine, payload, *, scores=None):
+def outcome_observations(engine, payload, *, scores=None, proto_state=None):
     """Retrieve bounded task-similar outcomes independently for each forecast cell."""
+    from . import prototypes
     from .retrieval import records, task_text
     query = task_text(payload["task_type"], payload["context"])
     limit = SETTINGS["outcome_evidence_limit"]
@@ -497,10 +694,29 @@ def outcome_observations(engine, payload, *, scores=None):
         if pair in histories and row.get("outcome") in OUTCOMES:
             histories[pair].append(row)
     recency = engine.config.data["sampling"]["outcome_recency"]
+    proto_scores = (
+        prototypes.matched_member_scores(engine, proto_state)
+        if proto_state and prototypes._is_standard_pipeline(engine.retrieval)
+        else None
+    )
     result = []
     for pair in sorted(pairs):
         history = histories[pair]
         if not history:
+            continue
+        ages = {row["id"]: age for age, row in enumerate(reversed(history))}
+        if proto_scores is not None:
+            matched_rows = [
+                (r, float(proto_scores[r["id"]]))
+                for r in reversed(history)
+                if r["id"] in proto_scores and float(proto_scores[r["id"]]) > 0.0
+            ][:limit]
+            for row, score in matched_rows:
+                similarity = 1 / (1 + math.exp(-max(-60, min(60, score))))
+                age = ages[row["id"]]
+                result.append({"id": row["id"], "family": row["family"], "effort": row["resolved_effort"],
+                               "outcome": row["outcome"], "score": score, "similarity": similarity, "age": age,
+                               "weight": row["weight"] * similarity * recency ** age})
             continue
         retrieved = engine.retrieval.search(records(rows=history), query, limit=limit)
         selected = retrieved["records"]
@@ -511,7 +727,6 @@ def outcome_observations(engine, payload, *, scores=None):
             if len(values) != len(missing) or any(not math.isfinite(float(value)) for value in values):
                 raise HowHardError("outcome similarity: invalid reranker scores")
             trace_scores.update({doc["key"]: float(value) for doc, value in zip(missing, values)})
-        ages = {row["id"]: age for age, row in enumerate(reversed(history))}
         for doc in selected:
             row = doc["value"]
             score = float(trace_scores[doc["key"]])
@@ -713,10 +928,15 @@ def validate_receipt(state, *, decision_format=DECISION_FORMAT):
             raise HowHardError("decision.semantic.expert.evidence_count: expected non-negative integer")
     if not {"llm"} <= seen or abs(mass - 1) > 1e-6 or set(state["worlds"]) - seen:
         raise HowHardError("decision.semantic.beliefs: expert weights must cover forecasts and sum to one")
-    from .success import POSTERIOR_FIELDS, calibrate_duration, outcome_posterior, validate_policy as validate_sampling
+    from .success import EMPIRICAL_FLOOR, POSTERIOR_FIELDS, calibrate_duration, outcome_posterior, validate_policy as validate_sampling
     if decision_format != LEGACY_DECISION_V7:
         duration_obs = state["duration_observations"]
-        if not isinstance(duration_obs, list) or len(duration_obs) > SETTINGS["evidence_limit"]:
+        max_duration = (
+            max(SETTINGS["evidence_limit"], max(1, len(allowed)) * SETTINGS["outcome_evidence_limit"])
+            if decision_format == DECISION_FORMAT
+            else SETTINGS["evidence_limit"]
+        )
+        if not isinstance(duration_obs, list) or len(duration_obs) > max_duration:
             raise HowHardError("decision.semantic.duration_observations: invalid array")
         for obs in duration_obs:
             keys(obs, ["id", "family", "effort", "active_seconds", "score", "similarity", "weight"], where="decision.semantic.duration_observation")
@@ -756,10 +976,15 @@ def validate_receipt(state, *, decision_format=DECISION_FORMAT):
         if {(c["family"], c["effort"]) for c in sampling["cells"]} != allowed or len(sampling["cells"]) != len(allowed):
             raise HowHardError("decision.semantic.sampling: calibration must cover forecasted cells")
         panels_by_key = {k: panel_lookup(p) for k, p in state["worlds"].items()}
+        min_conc = (
+            min(EMPIRICAL_FLOOR, sampling["policy"]["min_concentration"])
+            if decision_format == DECISION_FORMAT
+            else sampling["policy"]["min_concentration"]
+        )
         for c in sampling["cells"]:
             number(c["concentration"], "sampling concentration", positive=True)
             number(c["cost_sd"], "sampling cost standard deviation", nonnegative=True)
-            if not sampling["policy"]["min_concentration"] <= c["concentration"] <= sampling["policy"]["max_concentration"]:
+            if not min_conc <= c["concentration"] <= sampling["policy"]["max_concentration"]:
                 raise HowHardError("decision.semantic.sampling: concentration outside bounds")
             if decision_format == LEGACY_DECISION_V7:
                 if "duration" in c:
@@ -790,7 +1015,13 @@ def validate_receipt(state, *, decision_format=DECISION_FORMAT):
                         raise HowHardError("decision.semantic.sampling: inconsistent duration calibration")
             if not legacy:
                 keys(c, ["family", "effort", "expert", "outcome_posterior", "probabilities", "concentration", "duration", "cost_sd"], where="decision.semantic.sampling.cell")
-                expected = outcome_posterior(panels_by_key[c["expert"]][pair], pair, state["outcome_observations"], sampling["policy"])
+                expected = outcome_posterior(
+                    panels_by_key[c["expert"]][pair],
+                    pair,
+                    state["outcome_observations"],
+                    sampling["policy"],
+                    legacy_v9=(decision_format == LEGACY_DECISION_V9),
+                )
                 posterior = c["outcome_posterior"]
                 keys(posterior, list(POSTERIOR_FIELDS), where="sampling.outcome_posterior")
                 if any(not isinstance(posterior[f], list) or len(posterior[f]) != 3 for f in ("prior", "counts", "alpha")) or (

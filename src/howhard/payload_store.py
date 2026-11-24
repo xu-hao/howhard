@@ -45,6 +45,23 @@ def _connect(config, *, write=False):
             db.execute("CREATE INDEX IF NOT EXISTS decisions_task_risk ON decisions(task_type, risk_class)")
             db.execute("CREATE INDEX IF NOT EXISTS decisions_chosen ON decisions(chosen)")
             db.execute("CREATE INDEX IF NOT EXISTS decisions_review ON decisions(needs_review, cap_met)")
+            db.execute("""CREATE TABLE IF NOT EXISTS prototypes (
+                prototype_id TEXT PRIMARY KEY, task_type TEXT NOT NULL, risk_class TEXT NOT NULL,
+                representative_task TEXT NOT NULL, representative_context TEXT NOT NULL,
+                active INTEGER NOT NULL DEFAULT 1, parent_id TEXT,
+                member_count INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL)""")
+            db.execute("CREATE INDEX IF NOT EXISTS prototypes_active_task ON prototypes(active, task_type)")
+            db.execute("""CREATE TABLE IF NOT EXISTS prototype_members (
+                evidence_id TEXT NOT NULL, prototype_id TEXT NOT NULL, weight REAL NOT NULL,
+                PRIMARY KEY(evidence_id, prototype_id))""")
+            db.execute("CREATE INDEX IF NOT EXISTS prototype_members_proto ON prototype_members(prototype_id)")
+            db.execute("""CREATE TABLE IF NOT EXISTS prototype_cells (
+                prototype_id TEXT NOT NULL, model TEXT NOT NULL, family TEXT NOT NULL, effort TEXT NOT NULL,
+                prior_json TEXT, stats_json TEXT NOT NULL, updated_at TEXT NOT NULL,
+                PRIMARY KEY(prototype_id, model, effort))""")
+            db.execute("CREATE TABLE IF NOT EXISTS prototype_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            db.execute("""CREATE TABLE IF NOT EXISTS prototype_row_state (
+                evidence_id TEXT PRIMARY KEY, row_digest TEXT NOT NULL, position INTEGER NOT NULL)""")
     except sqlite3.Error as exc:
         if db is not None:
             db.close()
