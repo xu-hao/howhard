@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- Forecast contract and `howhard-decision-v11` (#128). `pick`, `summary` and `context`
+  accept an optional `--host NAME` (Python `host=`) for the agent that asks for the
+  route, and each candidate or configured inventory entry accepts an optional `agent`
+  label for the agent product that would run the cell. Both are stored in the receipt
+  unverified and listed by `report` under `routing`; no name means one unnamed host or
+  agent. Forecast rows accept optional 95% ranges `seconds_ci: [lo, hi]` and
+  `token_usage_ci: {kind: [lo, hi]}` beside `loud_ci` and `silent_ci`; a range that
+  misses its value or is malformed is refused by field name. Stored prototype forecasts
+  keep every range and the host that made them
+  (`howhard.prototypes.stored_forecasts`). Selection is unchanged: the new inputs are
+  validated, stored and reported, not read by the selection math. New receipts use
+  `howhard-decision-v11` (`howhard-semantic-v8`, `semantic-reader-v8`,
+  `howhard-capability-v6`, `howhard-agent-request-v7`); `v10`, `v9`, `v8` and `v7`
+  receipts keep loading, observing, replaying and reporting, and read as unnamed.
+  Requests prepared under `howhard-agent-request-v6` must be prepared again. The v11
+  shape stays open until the release that freezes it.
+
 ## 5.0.0 — 2026-11-24
 
 - Dynamic synthesized `(task, context)` prototypes with materialized per-cell priors and

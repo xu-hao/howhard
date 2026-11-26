@@ -6,12 +6,13 @@ import re
 
 import numpy as np
 
-from .context import DECISION_FORMAT, LEGACY_DECISION_V7, LEGACY_DECISION_V8, LEGACY_DECISION_V9, digest
+from .context import DECISION_FORMAT, LEGACY_DECISION_V7, LEGACY_DECISION_V8, LEGACY_DECISION_V9, LEGACY_DECISION_V10, digest
 from .llm import LLMError, SETTINGS
 from .storage import effective_active_seconds
 from .validation import HowHardError, keys, number, text
 
-FORMAT = "howhard-capability-v5"
+FORMAT = "howhard-capability-v6"
+LEGACY_FORMAT_V5 = "howhard-capability-v5"
 LEGACY_FORMAT_V4 = "howhard-capability-v4"
 LEGACY_FORMAT_V3 = "howhard-capability-v3"
 LEGACY_FORMAT_V2 = "howhard-capability-v2"
@@ -443,7 +444,7 @@ def _pav_along(order, raw_cdf):
     return {k: p for group, p in blocks for k in group}
 
 
-def aggregate(engine, payload, response, *, observed=None, covered_priors=None):
+def aggregate(engine, payload, response, *, observed=None, covered_priors=None, agents=None):
     from .semantic import normalize_support
     policy = payload["filter_policy"]
     baseline = response["filter"]
@@ -502,13 +503,15 @@ def aggregate(engine, payload, response, *, observed=None, covered_priors=None):
                           independent_prior=independent_prior)
     if prior_sources is not None and len(band) > policy["max_forecast_cells"]:
         # Do not let smaller-inventory prototype priors inflate a valid larger-inventory filter past budget.
-        return aggregate(engine, payload, response, observed=obs, covered_priors=None)
+        return aggregate(engine, payload, response, observed=obs, covered_priors=None, agents=agents)
     lo, hi = learned_order.index(band[0]), learned_order.index(band[-1])
     band_keys = set(band)
     observed = {r["key"] for r in obs if r["weight"] > .01}
     by_key = {c["key"]: c for c in payload["cells"]}
+    agents = agents or {}
+    # The agent label is stored with its cell; None is the one unnamed agent. Nothing here reads it.
     rows = [{**{name: by_key[k][name] for name in ("key", "model", "family", "effort")},
-             "position": i, "classification": _classification(i, lo, hi, k in band_keys),
+             "agent": agents.get(k), "position": i, "classification": _classification(i, lo, hi, k in band_keys),
              "P_clear": probabilities[k], "P_timely": timely_probabilities[k],
              "placement": "learned" if k in observed else "prior-only",
              "threshold": "learned" if any(r["weight"] > .01 for r in obs) else "prior-only"}
@@ -539,20 +542,23 @@ def disagreements(capability, prepared):
 
 def validate_receipt(state, inventory, semantic, chosen, *, decision_format=DECISION_FORMAT, constants=None):
     """Check complete filter coverage and the exact set of prospectively forecast cells."""
-    optional_keys = ["prior_sources"] if isinstance(state, dict) and state.get("format") == FORMAT else []
+    optional_keys = ["prior_sources"] if isinstance(state, dict) and state.get("format") in (FORMAT, LEGACY_FORMAT_V5) else []
     keys(state, ["format", "baseline", "memory_filters", "order", "lower", "upper", "band", "cells", "worlds", "beliefs",
                  "evidence", "policy", "reason", "widening", "disagreements", "refilter_rounds", "reader_usage", "widening_stop", "executed"],
          optional_keys, where="decision.capability")
     allowed_formats = {
-        DECISION_FORMAT: (FORMAT, LEGACY_FORMAT_V4),
+        DECISION_FORMAT: (FORMAT,),
+        LEGACY_DECISION_V10: (LEGACY_FORMAT_V5, LEGACY_FORMAT_V4),
         LEGACY_DECISION_V9: (LEGACY_FORMAT_V4, LEGACY_FORMAT_V3),
         LEGACY_DECISION_V8: (LEGACY_FORMAT_V3,),
         LEGACY_DECISION_V7: (LEGACY_FORMAT_V2, LEGACY_FORMAT_V1),
     }
     if state["format"] not in allowed_formats.get(decision_format, ()):
         raise HowHardError("decision.capability.format: unsupported version")
-    has_timely = state["format"] in (FORMAT, LEGACY_FORMAT_V4, LEGACY_FORMAT_V3)
-    has_split_band = state["format"] in (FORMAT, LEGACY_FORMAT_V4)
+    has_timely = state["format"] in (FORMAT, LEGACY_FORMAT_V5, LEGACY_FORMAT_V4, LEGACY_FORMAT_V3)
+    has_split_band = state["format"] in (FORMAT, LEGACY_FORMAT_V5, LEGACY_FORMAT_V4)
+    has_prototype_priors = state["format"] in (FORMAT, LEGACY_FORMAT_V5)
+    has_agents = state["format"] == FORMAT
     validate_policy(state["policy"])
     cells = [{**c, "key": cell_key(c)} for c in inventory]
     known = {c["key"]: c for c in cells}
@@ -571,6 +577,8 @@ def validate_receipt(state, inventory, semantic, chosen, *, decision_format=DECI
     cell_fields = ["key", "model", "family", "effort", "position", "classification", "P_clear", "placement", "threshold"]
     if has_timely:
         cell_fields.insert(7, "P_timely")
+    if has_agents:
+        cell_fields.append("agent")
     previous = -1.
     previous_timely = -1.
     for i, c in enumerate(state["cells"]):
@@ -579,6 +587,8 @@ def validate_receipt(state, inventory, semantic, chosen, *, decision_format=DECI
             raise HowHardError("decision.capability: inconsistent identity or position")
         if (c["model"], c["effort"]) != (known[c["key"]]["model"], known[c["key"]]["effort"]):
             raise HowHardError("decision.capability: inconsistent inventory identity")
+        if has_agents and c["agent"] != known[c["key"]].get("agent"):
+            raise HowHardError("decision.capability: cell agent does not match native candidate inventory")
         expected = _classification(i, lo, hi, c["key"] in forecasted)
         if c["classification"] != expected or c["placement"] not in ("learned", "prior-only") or c["threshold"] not in ("learned", "prior-only"):
             raise HowHardError("decision.capability: inconsistent classification or evidence status")
@@ -608,7 +618,7 @@ def validate_receipt(state, inventory, semantic, chosen, *, decision_format=DECI
     def matches_priors(**options):
         for key, value in filters.items():
             expected_cdf = prior_cdf(value, state["policy"], **options)
-            if key == "filter:llm" and "prior_sources" in state and state["format"] == FORMAT:
+            if key == "filter:llm" and "prior_sources" in state and has_prototype_priors:
                 ps = state["prior_sources"]
                 if not isinstance(ps, dict) or not ps or any(k not in known for k in ps):
                     return False
@@ -636,7 +646,7 @@ def validate_receipt(state, inventory, semantic, chosen, *, decision_format=DECI
         raise HowHardError("decision.capability: expert weights must cover priors and sum to one")
     max_evidence = (
         max(SETTINGS["evidence_limit"], len(cells) * SETTINGS["evidence_limit"])
-        if state["format"] == FORMAT
+        if has_prototype_priors
         else SETTINGS["evidence_limit"]
     )
     if not isinstance(state["evidence"], list) or len(state["evidence"]) > max_evidence:

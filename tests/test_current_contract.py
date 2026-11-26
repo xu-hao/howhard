@@ -98,7 +98,7 @@ def test_prepared_requests_require_current_format_and_worktree_binding(tmp_path)
     engine = Engine(directory=tmp_path)
     prepared = engine.prepare("task", native_candidates=INVENTORY)
     value = json.loads(get(engine.config, "requests", prepared["request_id"]))
-    assert value["format"] == "howhard-agent-request-v6"
+    assert value["format"] == "howhard-agent-request-v7"
     for changed, match in (({**value, "format": "howhard-agent-request-v1"}, "format"),
                            ({k: v for k, v in value.items() if k != "project_root"}, "project_root")):
         request_id = digest(changed)

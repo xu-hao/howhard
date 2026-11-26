@@ -167,7 +167,9 @@ expert's forecast row is a bounded Dirichlet prior for its cell (at most
 retrieved independently per forecasted `(family, effort)` cell). Forecasters may attach
 `silent_ci` and/or `loud_ci` 95% credible intervals to a row; wider intervals weaken the
 prior so real outcomes dominate sooner, while a narrow interval cannot strengthen it
-beyond `prior_strength`. Rows without intervals remain valid. Intervals are credible
+beyond `prior_strength`. Rows without intervals remain valid. A row may also state
+`seconds_ci` and `token_usage_ci` ranges, which are validated and stored but not read by
+selection ({ref}`forecast contract <forecast-contract>`). Intervals are credible
 intervals of the support-weighted mixture of per-expert Beta posteriors, so a lone `llm`
 forecast still reports its posterior uncertainty. The silent cap compares the 80%
 posterior quantile of accepted-result risk with epsilon, with no fitted statistical
@@ -201,10 +203,13 @@ failure leaves the outcome durable and does not create a second execution.
 Routing seeds reproduce selection given recorded forecasts. They do not make fresh
 LLM calls deterministic. Cached forecasts and content-addressed receipts support replay;
 operational timing/cache metadata may differ between invocations.
-New receipts use `howhard-decision-v10` with capability (`howhard-capability-v5`),
+New receipts use `howhard-decision-v11` with capability (`howhard-capability-v6`),
 continuous prior decay, and accepted-result selection state. Requests use
-`howhard-agent-request-v6` and semantic state uses `howhard-semantic-v7`
-(`semantic-reader-v7`). Persisted `howhard-decision-v9` (`howhard-semantic-v6`,
+`howhard-agent-request-v7` and semantic state uses `howhard-semantic-v8`
+(`semantic-reader-v8`), whose forecast rows accept the
+{ref}`stated ranges <forecast-contract>` on active time and token kinds. Persisted
+`howhard-decision-v10` (`howhard-semantic-v7`, `howhard-capability-v5`/`v4`),
+`howhard-decision-v9` (`howhard-semantic-v6`,
 `howhard-capability-v4`/`v3`), `howhard-decision-v8` (`howhard-semantic-v5`,
 `howhard-capability-v3`), and `howhard-decision-v7`
 (`howhard-semantic-v4`, `howhard-capability-v1`/`v2`) receipts continue to load, validate,
@@ -281,6 +286,9 @@ evaluation arms; custom adapters should document the meaning of their reported c
 
 `howhard report --json` scores forecasts only for actions with observed outcomes,
 reports log loss/Brier scores and measured cost/latency, and accounts for amendments.
+Its `routing` list names, for every stored decision that can still be replayed, the
+{ref}`host <host-and-agent-names>` that asked for the route and the chosen cell with its
+agent label; `null` is the unnamed host or agent, including every receipt older than v11.
 These descriptive scores cannot recover unrun alternatives' outcomes or establish
 routing superiority. Follow the [real-project evaluation protocol](evaluation.md).
 

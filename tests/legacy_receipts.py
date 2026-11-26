@@ -1,4 +1,8 @@
-"""Derive authentic frozen legacy receipts from a current receipt's base structure."""
+"""Derive authentic frozen legacy receipts from a current receipt's base structure.
+
+``to_v10`` is the base of every older builder: it removes what v11 added (the host's name,
+agent labels, and ranges on active time and token kinds) and restores the v10 format names.
+"""
 
 from copy import deepcopy
 
@@ -38,9 +42,32 @@ def legacy_capability_prior(flt, policy, *, linear_tail=False):
     return dict(zip(order, before + fit + after))
 
 
+def to_v10(receipt):
+    """A v10 receipt: no host name, no agent labels, no ranges on active time or token kinds."""
+    receipt = deepcopy(receipt)
+    if receipt["format"] != "howhard-decision-v11":
+        return receipt
+    receipt["format"] = "howhard-decision-v10"
+    receipt.pop("host")
+    for candidate in receipt["native_candidates"]:
+        candidate.pop("agent", None)
+    cap = receipt["capability"]
+    cap["format"] = "howhard-capability-v5"
+    for cell in cap["cells"]:
+        cell.pop("agent")
+    sem = receipt["semantic"]
+    sem["format"] = "howhard-semantic-v7"
+    sem["prompt_version"] = "semantic-reader-v7"
+    for panel in sem["worlds"].values():
+        for row in panel:
+            row.pop("seconds_ci", None)
+            row.pop("token_usage_ci", None)
+    return receipt
+
+
 def to_v9(receipt):
     """A v9 receipt: undecayed kappa_0 Dirichlet outcome posteriors and capability v4."""
-    receipt = deepcopy(receipt)
+    receipt = to_v10(receipt)
     receipt["format"] = "howhard-decision-v9"
     cap = receipt["capability"]
     cap.pop("prior_sources", None)
@@ -127,7 +154,7 @@ def to_v9(receipt):
 
 def with_capability_v3(receipt):
     """Freeze the prior from before v4 for a fixture with a contiguous band."""
-    receipt = to_v9(receipt) if receipt.get("format") == "howhard-decision-v10" else deepcopy(receipt)
+    receipt = to_v9(receipt) if receipt.get("format") in ("howhard-decision-v11", "howhard-decision-v10") else deepcopy(receipt)
     state = receipt["capability"]
     lo, hi = state["order"].index(state["lower"]), state["order"].index(state["upper"])
     assert state["band"] == state["order"][lo:hi+1]

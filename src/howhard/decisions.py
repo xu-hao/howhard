@@ -4,13 +4,28 @@ import json
 from pathlib import Path
 import re
 
-from .context import DECISION_FORMAT, FORMAT, LEGACY_DECISION_V7, LEGACY_DECISION_V8, LEGACY_DECISION_V9, canonical, digest, validate_project, validate_text
+from .context import DECISION_FORMAT, FORMAT, LEGACY_DECISION_V7, LEGACY_DECISION_V8, LEGACY_DECISION_V9, LEGACY_DECISION_V10, canonical, digest, validate_project, validate_text
 from .validation import HowHardError, keys, text
+
+
+def host(receipt):
+    """The name of the host that asked for the route; ``None`` is the one unnamed host.
+
+    Receipts older than v11 carry no name and read as unnamed.
+    """
+    return receipt.get("host")
+
+
+def agent(receipt, cell=None):
+    """The agent label stored with a cell (the chosen cell by default); ``None`` is unnamed."""
+    cell = receipt["chosen"] if cell is None else cell
+    pair = cell["model"], cell["effort"]
+    return next((c.get("agent") for c in receipt["native_candidates"] if (c["model"], c["effort"]) == pair), None)
 
 
 def save(config, result):
     value = {"format": DECISION_FORMAT, "project": config.data["project"],
-             "project_identity": config.project_identity,
+             "project_identity": config.project_identity, "host": result["host"],
              **{key: result[key] for key in ("task_type", "risk_class", "chosen", "seed", "context")}}
     value["semantic"] = result["semantic"]
     value["capability"] = result["capability"]
@@ -70,9 +85,18 @@ def load(config, source, *, for_scoring=False):
         "howhard-decision-v1", "howhard-decision-v2", "howhard-decision-v3", "howhard-decision-v4", "howhard-decision-v5", "howhard-decision-v6"
     }:
         return None  # Preserve old evidence without replaying a removed predictor.
-    if not isinstance(value, dict) or value.get("format") not in (DECISION_FORMAT, LEGACY_DECISION_V9, LEGACY_DECISION_V8, LEGACY_DECISION_V7):
+    if not isinstance(value, dict) or value.get("format") not in (DECISION_FORMAT, LEGACY_DECISION_V10, LEGACY_DECISION_V9, LEGACY_DECISION_V8, LEGACY_DECISION_V7):
         raise HowHardError("decision.format: unsupported version; prepare a new capability-filtered decision")
-    keys(value, ["format", "project", "project_identity", "task_type", "risk_class", "chosen", "seed", "context", "cost_policy", "native_candidates", "semantic", "capability", "selection"], ["request_snapshot"], where="decision")
+    # The host's name and the agent labels start with v11; older receipts read as unnamed.
+    named = value["format"] == DECISION_FORMAT
+    keys(value, ["format", "project", "project_identity", "task_type", "risk_class", "chosen", "seed", "context", "cost_policy", "native_candidates", "semantic", "capability", "selection",
+                 *(["host"] if named else [])], ["request_snapshot"], where="decision")
+    if named:
+        from .native import host_name
+        try:
+            host_name(value["host"])
+        except HowHardError as exc:
+            raise HowHardError(f"decision.{exc}") from exc
     if "request_snapshot" in value:
         from .request_state import validate_provenance
         validate_provenance(value["request_snapshot"])
@@ -86,7 +110,7 @@ def load(config, source, *, for_scoring=False):
     if (included and policy["unknown_price_models"]) or policy["comparison"] != ("full-cost" if included else "risk-and-time-excluding-worker-money"):
         raise HowHardError("decision.cost_policy: inconsistent comparison")
     from .native import validate
-    inventory = validate(value["native_candidates"])
+    inventory = validate(value["native_candidates"], labels=named)
     def priced(c):
         return all(v is not None for v in c["rate_card"]["rates"].values()) if "rate_card" in c else c.get("usd_per_mtok") is not None
     from .semantic import validate_receipt as validate_semantic

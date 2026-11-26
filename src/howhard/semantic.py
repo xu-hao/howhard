@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 
 import numpy as np
 
-from .context import DECISION_FORMAT, IGNORED, LEGACY_DECISION_V7, LEGACY_DECISION_V8, LEGACY_DECISION_V9, MANIFESTS, SOURCE_SUFFIXES, canonical, digest
+from .context import DECISION_FORMAT, IGNORED, LEGACY_DECISION_V7, LEGACY_DECISION_V8, LEGACY_DECISION_V9, LEGACY_DECISION_V10, MANIFESTS, SOURCE_SUFFIXES, canonical, digest
 from .llm import LLMError, SETTINGS
 from .files import atomic_write
 from .storage import effective_active_seconds
@@ -23,16 +23,25 @@ LEGACY_PROMPT_V5 = "semantic-reader-v5"
 RECEIPT_SEMANTICS = {LEGACY_DECISION_V7: (LEGACY_FORMAT_V4, LEGACY_PROMPT_V5),
                      LEGACY_DECISION_V8: ("howhard-semantic-v5", "semantic-reader-v6"),
                      LEGACY_DECISION_V9: ("howhard-semantic-v6", "semantic-reader-v7"),
+                     LEGACY_DECISION_V10: ("howhard-semantic-v7", "semantic-reader-v7"),
                      DECISION_FORMAT: (FORMAT, SETTINGS["prompt_version"])}
 OUTCOMES = ("clean", "loud", "silent")
 FIELDS = ("family", "effort", "clean", "loud", "silent", "tokens", "seconds")
+# Stated 95% ranges on the two failure rates, and on active time and each token kind.
 INTERVAL_FIELDS = ("loud_ci", "silent_ci")
+RANGE_FIELDS = ("seconds_ci", "token_usage_ci")
 INTERVAL_KIND = "dirichlet-posterior-mixture"
 LEGACY_INTERVAL_KIND = "weighted-forecast-envelope"
-INTERVAL_CONTRACT = ("Optional loud_ci and/or silent_ci: [lo, hi] central 95% credible interval for that outcome "
-                     "probability with 0 <= lo <= value <= hi <= 1. Supply them when unsure: wider intervals weaken "
-                     "the forecast prior so observed outcomes dominate sooner; narrow intervals cannot make a forecast "
-                     "stronger than the bounded prior strength. Omit them for an ordinary-confidence point forecast.")
+INTERVAL_CONTRACT = ("Every range is optional and is a central 95% range [lo, hi] that contains its value with "
+                     "0 <= lo <= value <= hi. loud_ci and silent_ci: ranges on those outcome probabilities, also "
+                     "with hi <= 1. A range of [0, 1], or one wider than [0.025, 0.975], is read as a flat belief: no "
+                     "knowledge of that probability; there is no other limit on how wide a range may be. Supply them when "
+                     "unsure: wider ranges weaken the forecast so observed outcomes dominate sooner; a narrow "
+                     "range cannot make a forecast stronger than the bounded prior strength. seconds_ci: range "
+                     "on seconds. token_usage_ci: {kind: [lo, hi]} for any of input/output/cache_read/cache_write/"
+                     "cache_write_5m/cache_write_1h, only on a row that has token_usage; a kind forecast at 0 is "
+                     "exactly 0 unless you state a non-zero hi. There is no range on tokens or on cost. Omit a "
+                     "range to state an ordinary-confidence point forecast for that value.")
 
 
 def memory_key(entry):
@@ -212,7 +221,7 @@ def request(engine, prepared):
                "beliefs": state, "evidence": evidence,
                "retrieval": [{"request": {"tool": "experience.search", "query": task_text(result["task_type"], result["context"])}, "result": retrieved["trace"]}],
                "tools": ["memory.search", "memory.read", "evidence.search", "evidence.read", "project.read"],
-               "contract": {"forecasts": "One row for EVERY supplied cell: family, effort, clean, loud, silent, tokens, seconds, plus optional loud_ci/silent_ci (see credible_intervals). Probabilities sum to 1; usage estimates are nonnegative; seconds is expected active execution duration excluding external queue wait. category-v1 cells also REQUIRE token_usage with disjoint input/output/cache_read/cache_write/cache_write_5m/cache_write_1h summing to tokens; total-v1 accepts the scalar tokens forecast.",
+               "contract": {"forecasts": "One row for EVERY supplied cell: family, effort, clean, loud, silent, tokens, seconds, plus optional loud_ci/silent_ci/seconds_ci/token_usage_ci (see credible_intervals). Probabilities sum to 1; usage estimates are nonnegative; seconds is expected active execution duration excluding external queue wait. category-v1 cells also REQUIRE token_usage with disjoint input/output/cache_read/cache_write/cache_write_5m/cache_write_1h summing to tokens; total-v1 accepts the scalar tokens forecast.",
                             "credible_intervals": INTERVAL_CONTRACT,
                             "memory_forecasts": "Array of {id, version, forecasts}: predictions conditional on each relevant supplied/read ACTIVE memory. execution: IDs are read-only observed runs; their original outcomes are evidence for related tasks, not counterfactual results. Interrupted runs (such as usage_limit, provider_error, host_error or cancelled) are operational interruptions, not model task failures. Infer model AND reasoning effort jointly. Broader/narrower tasks can transfer imperfectly. Rows may override a subset of baseline forecasts. No invented memories or unrun outcomes.",
                             "reason": "Brief explanation grounded in task/project semantics and actual evidence.",
@@ -271,16 +280,24 @@ def baseline_request(payload):
         clean["cost_policy"] = deepcopy(payload["cost_policy"])
     source_cells = payload.get("unseen_cells", payload["cells"])
     clean.update(phase="baseline", cells=[{k: c[k] for k in ("family", "effort", "model", "forecast_format") if k in c} for c in source_cells],
-                 contract="Return {forecasts: [{family,effort,clean,loud,silent,tokens,seconds,loud_ci?,silent_ci?}], reason: string}. Forecast EVERY supplied cell; probabilities sum to 1; seconds is expected active execution duration excluding external queue wait. category-v1 cells require token_usage with disjoint input/output/cache_read/cache_write/cache_write_5m/cache_write_1h summing to tokens; total-v1 accepts scalar tokens. " + INTERVAL_CONTRACT + " No memory, evidence or retrieval is available in this independent call.")
+                 contract="Return {forecasts: [{family,effort,clean,loud,silent,tokens,seconds,loud_ci?,silent_ci?,seconds_ci?,token_usage_ci?}], reason: string}. Forecast EVERY supplied cell; probabilities sum to 1; seconds is expected active execution duration excluding external queue wait. category-v1 cells require token_usage with disjoint input/output/cache_read/cache_write/cache_write_5m/cache_write_1h summing to tokens; total-v1 accepts scalar tokens. " + INTERVAL_CONTRACT + " No memory, evidence or retrieval is available in this independent call.")
     return clean
 
 
-def validate_panel(panel, allowed, *, complete=True, intervals=True):
+def stated_range(value, where):
+    if not isinstance(value, list) or len(value) != 2:
+        raise LLMError(f"{where}: expected [lo, hi]")
+    lo, hi = (number(v, where, nonnegative=True) for v in value)
+    return lo, hi
+
+
+def validate_panel(panel, allowed, *, complete=True, intervals=True, ranges=True):
     if not isinstance(panel, list) or not panel:
         raise LLMError("LLM forecasts: expected a nonempty array")
     seen = set()
     for row in panel:
-        keys(row, FIELDS, ["token_usage", *(INTERVAL_FIELDS if intervals else ())], where="LLM forecast")
+        keys(row, FIELDS, ["token_usage", *(INTERVAL_FIELDS if intervals else ()), *(RANGE_FIELDS if ranges else ())],
+             where="LLM forecast")
         text(row["family"], "forecast.family")
         text(row["effort"], "forecast.effort")
         pair = row["family"], row["effort"]
@@ -295,18 +312,29 @@ def validate_panel(panel, allowed, *, complete=True, intervals=True):
         for field in INTERVAL_FIELDS:
             if field not in row:
                 continue
-            interval = row[field]
-            if not isinstance(interval, list) or len(interval) != 2:
-                raise LLMError(f"forecast.{field}: expected [lo, hi]")
-            lo, hi = (number(v, f"forecast.{field}", nonnegative=True) for v in interval)
+            lo, hi = stated_range(row[field], f"forecast.{field}")
             value = row[field[:-3]]
             if not lo <= value <= hi <= 1:
                 raise LLMError(f"forecast.{field}: require 0 <= lo <= {field[:-3]} <= hi <= 1")
+        if "seconds_ci" in row:
+            lo, hi = stated_range(row["seconds_ci"], "forecast.seconds_ci")
+            if not lo <= row["seconds"] <= hi:
+                raise LLMError("forecast.seconds_ci: require 0 <= lo <= seconds <= hi")
         if "token_usage" in row:
             from .accounting import tokens, total
             tokens(row["token_usage"], forecast=True)
             if abs(total(row["token_usage"]) - row["tokens"]) > 1e-6:
                 raise LLMError("forecast.token_usage: categories must sum to tokens")
+        if "token_usage_ci" in row:
+            from .accounting import CATEGORIES
+            # Ranges exist per token kind only: total tokens and cost follow from the kinds.
+            if "token_usage" not in row:
+                raise LLMError("forecast.token_usage_ci: requires token_usage; there is no range on total tokens")
+            keys(row["token_usage_ci"], [], CATEGORIES, where="forecast.token_usage_ci")
+            for kind, interval in row["token_usage_ci"].items():
+                lo, hi = stated_range(interval, f"forecast.token_usage_ci.{kind}")
+                if not lo <= row["token_usage"][kind] <= hi:
+                    raise LLMError(f"forecast.token_usage_ci.{kind}: require 0 <= lo <= token_usage.{kind} <= hi")
     if complete and seen != set(allowed):
         raise LLMError("LLM forecasts: missing candidate cells")
     return panel
@@ -861,6 +889,9 @@ def sample(prepared, seed):
 def validate_receipt(state, *, decision_format=DECISION_FORMAT):
     """Validate portable frozen semantic inputs before they affect feedback weights."""
     legacy = decision_format in (LEGACY_DECISION_V7, LEGACY_DECISION_V8)
+    # v10 opened per-cell evidence bounds; v11 adds ranges on active time and token kinds.
+    per_cell_evidence = decision_format in (DECISION_FORMAT, LEGACY_DECISION_V10)
+    ranges = decision_format == DECISION_FORMAT
     required = ["format", "prompt_version", "backend", "memory_revision", "memories", "worlds", "exposures", "beliefs", "reason", "retrieval", "evidence", "reader_usage", "interval_kind", "sampling"]
     if decision_format != LEGACY_DECISION_V7:
         required.append("duration_observations")
@@ -882,7 +913,8 @@ def validate_receipt(state, *, decision_format=DECISION_FORMAT):
         raise HowHardError("decision.semantic.worlds: nonempty panels required")
     allowed = set()
     for row in baseline:
-        keys(row, FIELDS, ["token_usage", *(() if legacy else INTERVAL_FIELDS)], where="decision.semantic.forecast")
+        keys(row, FIELDS, ["token_usage", *(() if legacy else INTERVAL_FIELDS), *(RANGE_FIELDS if ranges else ())],
+             where="decision.semantic.forecast")
         text(row["family"], "forecast.family")
         text(row["effort"], "forecast.effort")
         allowed.add((row["family"], row["effort"]))
@@ -902,7 +934,7 @@ def validate_receipt(state, *, decision_format=DECISION_FORMAT):
     for key, panel in state["worlds"].items():
         if key not in {"llm"} | memory_keys:
             raise HowHardError("decision.semantic.worlds: unknown memory version")
-        validate_panel(panel, allowed, intervals=not legacy)
+        validate_panel(panel, allowed, intervals=not legacy, ranges=ranges)
     if not isinstance(state["exposures"], dict):
         raise HowHardError("decision.semantic.exposures: expected object")
     for key, pairs in state["exposures"].items():
@@ -933,7 +965,7 @@ def validate_receipt(state, *, decision_format=DECISION_FORMAT):
         duration_obs = state["duration_observations"]
         max_duration = (
             max(SETTINGS["evidence_limit"], max(1, len(allowed)) * SETTINGS["outcome_evidence_limit"])
-            if decision_format == DECISION_FORMAT
+            if per_cell_evidence
             else SETTINGS["evidence_limit"]
         )
         if not isinstance(duration_obs, list) or len(duration_obs) > max_duration:
@@ -978,7 +1010,7 @@ def validate_receipt(state, *, decision_format=DECISION_FORMAT):
         panels_by_key = {k: panel_lookup(p) for k, p in state["worlds"].items()}
         min_conc = (
             min(EMPIRICAL_FLOOR, sampling["policy"]["min_concentration"])
-            if decision_format == DECISION_FORMAT
+            if per_cell_evidence
             else sampling["policy"]["min_concentration"]
         )
         for c in sampling["cells"]:

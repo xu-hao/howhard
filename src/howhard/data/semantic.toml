@@ -1,5 +1,5 @@
-format = "howhard-semantic-v7"
-prompt_version = "semantic-reader-v7"
+format = "howhard-semantic-v8"
+prompt_version = "semantic-reader-v8"
 writer_version = "semantic-writer-v1"
 memory_limit = 8
 evidence_limit = 8

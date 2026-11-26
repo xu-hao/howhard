@@ -183,12 +183,16 @@ retain the selected cell's original classification and position. Excluded cells 
 never ran contribute no outcome. Reported rates are descriptive diagnostics.
 
 Configuration defaults and validation are in [configuration](configuration.md).
-Decision v10 receipts freeze the full filter, expert priors, task-specific order,
+Decision v11 receipts freeze the full filter, expert priors, task-specific order,
 clearing and timely-clearing probabilities, band, widening, disagreements, fine
 forecasts, and accepted-result selection. Newly aggregated capability blocks use
-`howhard-capability-v5`, supporting materialized prototype priors, mixed seen/unseen
+`howhard-capability-v6`, supporting materialized prototype priors, mixed seen/unseen
 `prior_sources` PAV projection, geometric prior mass outside both cuts, per-cell
-precedent lists, and a band checked against the frozen probabilities. Persisted decision
+precedent lists, and a band checked against the frozen probabilities. Each of its cells
+also stores the candidate's {ref}`agent label <host-and-agent-names>` (`null` when
+unnamed), which must match the receipt's inventory and does not affect the order, the
+probabilities or the band. Persisted decision v10 receipts use
+`howhard-capability-v5`, the same block without agent labels. Persisted decision
 v10 and v9 receipts also accept `howhard-capability-v4`, while persisted decision v9 and
 v8 receipts with capability v3 retain the linear prior prefix, geometric tail, and
 contiguous band. Persisted decision v7 receipts support capability v2 and v1. Capability v1

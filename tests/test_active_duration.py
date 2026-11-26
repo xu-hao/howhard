@@ -351,9 +351,9 @@ def test_frozen_v7_receipts_and_historical_journals_load_validate_observe_replay
     p = engine.prepare("task", "Repair rollback", native_candidates=cells)
     b = engine.decide(p["request_id"], filtering(p["baseline_request"], 0, 1))
     current = load(engine.config, engine.decide(b["request_id"], forecasts(b["baseline_request"]), seed=11)["decision_id"])
-    assert current["format"] == "howhard-decision-v10"
-    assert current["semantic"]["format"] == "howhard-semantic-v7"
-    assert current["capability"]["format"] == "howhard-capability-v5"
+    assert current["format"] == "howhard-decision-v11"
+    assert current["semantic"]["format"] == "howhard-semantic-v8"
+    assert current["capability"]["format"] == "howhard-capability-v6"
     v9_receipt = to_v9(current)
     v9_id = digest(v9_receipt)
     with locked(engine.config):

@@ -47,8 +47,9 @@ When availability changes, pass Python `native_candidates=[...]` or CLI
 there is no union or fallback between them. An empty list or unknown inventory name is
 an error. Without an explicit list or inventory selector, the backend refuses selection
 even when saved lists exist. The same nonempty, unbounded inventory validation and optional pricing,
-`cost_per_credit` and `credit_budget` fields apply to both sources; invalid configured lists
-fail before creating state. Candidate `rate_card` and `usd_per_mtok` values are raw
+`cost_per_credit`, `credit_budget` and `agent` fields apply to both sources; invalid configured lists
+fail before creating state. `agent = "NAME"` labels the agent product that would run an
+entry (see {ref}`host and agent names <host-and-agent-names>`). Candidate `rate_card` and `usd_per_mtok` values are raw
 list-price quota credit rates. `cost_per_credit` converts forecast credit use to actual
 session money cost and defaults to `1.0`; set it to `0.0` for a free tier. The
 `[models]` registry describes identities and evidence weights, not availability.

@@ -16,6 +16,8 @@ from .memory import MemoryStore
 from .llm import LLMError, resolve
 from . import semantic
 
+REQUEST_FORMAT = "howhard-agent-request-v7"
+
 
 class Engine:
     def __init__(self, config=None, *, directory=None, state_directory=None, journal_path=None, llm=None, retrieval=None,
@@ -102,22 +104,27 @@ class Engine:
             self._summaries[key] = prepare(self.config, task_type, risk, context, native_candidates=native_candidates)
         return self._summaries[key]
 
-    def summary(self, task_type, task_text="", *, project_context=None, risk=None, native_candidates=None, inventory=None):
-        from .native import resolve
+    def summary(self, task_type, task_text="", *, project_context=None, risk=None, native_candidates=None, inventory=None,
+                host=None):
+        from .native import host_name, resolve
+        host = host_name(host)
         candidates = resolve(self.config, native_candidates, inventory)
         try:
             return self._drive(task_type, task_text, project_context=project_context, risk=risk,
-                               native_candidates=candidates, select=False)
+                               native_candidates=candidates, select=False, host=host)
         except HowHardError as exc:
             self._refresh_stale(exc)
             raise
 
-    def pick(self, task_type, task_text="", *, project_context=None, risk=None, seed=None, native_candidates=None, inventory=None):
-        from .native import resolve
+    def pick(self, task_type, task_text="", *, project_context=None, risk=None, seed=None, native_candidates=None, inventory=None,
+             host=None):
+        from .native import host_name, resolve
+        host = host_name(host)
         native_candidates = resolve(self.config, native_candidates, inventory)
         started = time.monotonic()
         try:
-            result = self._pick(task_type, task_text, project_context=project_context, risk=risk, seed=seed, native_candidates=native_candidates)
+            result = self._pick(task_type, task_text, project_context=project_context, risk=risk, seed=seed,
+                                native_candidates=native_candidates, host=host)
         except Exception as exc:
             self._refresh_stale(exc)
             self._failed_decision_event(exc, task_type, started)
@@ -148,17 +155,18 @@ class Engine:
         with storage.locked(self.config, operation="decision event"):
             storage.append_bytes(self.config.state_root / "decision-events.jsonl", canonical(event) + b"\n")
 
-    def _pick(self, task_type, task_text="", *, project_context=None, risk=None, seed=None, native_candidates=None):
+    def _pick(self, task_type, task_text="", *, project_context=None, risk=None, seed=None, native_candidates=None,
+              host=None):
         if seed is not None and (type(seed) is not int or seed < 0):
             raise HowHardError("seed: expected a non-negative integer")
         return self._drive(task_type, task_text, project_context=project_context, risk=risk,
-                           seed=seed, native_candidates=native_candidates)
+                           seed=seed, native_candidates=native_candidates, host=host)
 
     def _drive(self, task_type, task_text, *, project_context=None, risk=None, seed=None,
-               native_candidates=None, select=True):
+               native_candidates=None, select=True, host=None):
         from copy import deepcopy
         pending = self.prepare(task_type, task_text, project_context=project_context, risk=risk,
-                               native_candidates=native_candidates)
+                               native_candidates=native_candidates, host=host)
         while "request_id" in pending:
             from .request_state import view, StaleRequest
             try:
@@ -206,12 +214,13 @@ class Engine:
         return self.last_memory_update
 
     def prepare(self, task_type, task_text="", *, project_context=None, risk=None, native_candidates=None,
-                inventory=None, auto_decide=False, seed=None):
+                inventory=None, auto_decide=False, seed=None, host=None):
         if seed is not None and (type(seed) is not int or seed < 0):
             raise HowHardError("seed: expected a non-negative integer")
         from . import prototypes
-        from .native import resolve
+        from .native import host_name, resolve
         from .request_state import capture, configuration
+        host = host_name(host)
         started = time.monotonic()
         candidates = self._register(resolve(self.config, native_candidates, inventory))
         prototypes.sync_observations(self)
@@ -221,7 +230,8 @@ class Engine:
         payload["weights_policy"] = "snapshot"
         self.last_retrieval_usage = reader.last_retrieval_usage
         from .capability import evidence_scores, observations, request
-        bundle = {"format": "howhard-agent-request-v6", "evidence_key": reader.evidence_key,
+        # The host's name travels with the request to the receipt; it never enters a payload.
+        bundle = {"format": REQUEST_FORMAT, "host": host, "evidence_key": reader.evidence_key,
                   "payload": request(payload, self.config.data["capability"]), "snapshot": snapshot,
                   "stage": "filter", "capability": None, "refilter_round": 0,
                   "forecast_template": payload, "forecast_state": None, "coarse_usage": None}
@@ -264,7 +274,8 @@ class Engine:
                 self._check_request(bundle)
             from .payload_store import put
             put(self.config, "requests", request_id, canonical(bundle) + b"\n")
-        return {"request_id": request_id, "stage": bundle["stage"], "refilter_round": bundle["refilter_round"],
+        return {"request_id": request_id, "host": bundle["host"], "stage": bundle["stage"],
+                "refilter_round": bundle["refilter_round"],
                 "capability": bundle["capability"], "request": semantic.visible_request(bundle["payload"]),
                 "baseline_request": semantic.baseline_request(bundle["payload"])}
 
@@ -283,12 +294,14 @@ class Engine:
         except (ValueError, UnicodeError) as exc:
             raise HowHardError("request_id: unavailable or invalid agent request") from exc
         from .validation import keys
-        keys(bundle, ["format", "evidence_key", "payload", "snapshot", "native_candidates", "project_root", "stage", "capability", "refilter_round", "forecast_template", "forecast_state", "coarse_usage"],
+        keys(bundle, ["format", "host", "evidence_key", "payload", "snapshot", "native_candidates", "project_root", "stage", "capability", "refilter_round", "forecast_template", "forecast_state", "coarse_usage"],
              ["read_state", "dependencies", "learned_state", "inventory_source", "prototype_state"], where="request")
-        if digest(bundle) != request_id or bundle["format"] != "howhard-agent-request-v6":
+        if digest(bundle) != request_id or bundle["format"] != REQUEST_FORMAT:
             raise HowHardError("request_id: request integrity or format mismatch")
         if bundle["project_root"] != str(self.config.project_root):
             raise HowHardError("request_id: belongs to another worktree; prepare in the current project")
+        from .native import host_name
+        host_name(bundle["host"])
         with storage.reading(self.config):
             self._check_request(bundle)
         return bundle
@@ -313,7 +326,8 @@ class Engine:
             options = ({"inventory": bundle["inventory_source"]} if bundle.get("inventory_source")
                        else {"native_candidates": bundle["native_candidates"]})
             error.refreshed_request = self.prepare(payload["task_type"], payload["context"]["task_text"],
-                project_context=payload["context"]["project_context"], risk=payload["risk_class"], **options)
+                project_context=payload["context"]["project_context"], risk=payload["risk_class"],
+                host=bundle["host"], **options)
             error.baseline_unchanged = semantic.baseline_request(payload) == error.refreshed_request["baseline_request"]
         except HowHardError as exc:
             error.refresh_error = str(exc)
@@ -400,9 +414,10 @@ class Engine:
                 if "no_memory_filter" not in source_payload and not bundle["refilter_round"]
                 else None
             )
+            from .native import agents
             state = capability.aggregate(self, payload, response,
                 observed=bundle.get("learned_state", {}).get("capability_observations"),
-                covered_priors=covered_priors)
+                covered_priors=covered_priors, agents=agents(bundle["native_candidates"]))
             bundle["coarse_usage"] = semantic.combine_usage(bundle["coarse_usage"], usage)
             state["reader_usage"] = {k: deepcopy(bundle["coarse_usage"][k]) for k in ("backend", "seconds", "cost_usd", "calls")}
             state["refilter_rounds"] = bundle["refilter_round"]
@@ -444,6 +459,7 @@ class Engine:
                               payload["context"]["project_context"], inventory)
         prepared = deepcopy(full[0]), [deepcopy(c) for c in full[1] if (c["family"], c["effort"]) in forecast_pairs]
         prepared[0]["native_candidates"] = deepcopy(bundle["native_candidates"])
+        prepared[0]["host"] = bundle["host"]
         prepared = semantic.augment(self, prepared, combined, combined_payload, snapshot, usage,
                                     duration_obs=bundle.get("learned_state", {}).get("duration_observations"),
                                     outcome_obs=bundle.get("learned_state", {}).get("outcome_observations"))

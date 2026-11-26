@@ -37,3 +37,11 @@ def text(value, where, *, label=False):
     if label and not re.fullmatch(r"[A-Za-z0-9_-]+", value):
         raise HowHardError(f"{where}: names must contain only letters, digits, '_' or '-'")
     return value
+
+
+def name(value, where, *, limit=64):
+    """A short caller-supplied label such as a host or agent name; never verified."""
+    text(value, where, label=True)
+    if len(value) > limit:
+        raise HowHardError(f"{where}: names must be at most {limit} characters")
+    return value

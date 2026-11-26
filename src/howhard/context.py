@@ -16,7 +16,8 @@ from .validation import HowHardError, keys, number
 SETTINGS = tomllib.loads(packaged("context.toml").decode())
 FORMAT = SETTINGS["format"]
 PROJECT_FORMAT = "howhard-project-v1"
-DECISION_FORMAT = "howhard-decision-v10"
+DECISION_FORMAT = "howhard-decision-v11"
+LEGACY_DECISION_V10 = "howhard-decision-v10"
 LEGACY_DECISION_V9 = "howhard-decision-v9"
 LEGACY_DECISION_V8 = "howhard-decision-v8"
 LEGACY_DECISION_V7 = "howhard-decision-v7"

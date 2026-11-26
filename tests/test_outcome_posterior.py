@@ -12,7 +12,7 @@ from howhard.payload_store import put
 from howhard.report import report
 from howhard.storage import locked
 from howhard.validation import HowHardError
-from legacy_receipts import to_v7, to_v8, to_v9
+from legacy_receipts import to_v7, to_v8, to_v9, to_v10
 from test_capability_filter import SimilarityDouble, filtering
 
 FIELDS = ("P_clean", "P_loud", "P_silent", "P_silent_accepted")
@@ -91,7 +91,7 @@ def test_llm_only_forecasts_report_real_nondegenerate_beta_credible_intervals(tm
     posterior = calibration(result, "fixture/worker")["outcome_posterior"]
     assert posterior["prior_concentration"] == 8. and posterior["evidence_weight"] == 0.
     receipt = load(engine.config, result["decision_id"])
-    assert receipt["format"] == "howhard-decision-v10"
+    assert receipt["format"] == "howhard-decision-v11"
     assert receipt["semantic"]["outcome_observations"] == []
 
 
@@ -247,15 +247,15 @@ def test_recency_decay_detects_regression_and_recovers_before_undecayed_counts(t
     assert recovered["admission_risk"] < undecayed["admission_risk"]
 
 
-def test_frozen_v7_v8_and_v9_receipts_load_observe_replay_and_report(tmp_path):
+def test_frozen_v7_to_v10_receipts_load_observe_replay_and_report(tmp_path):
     engine = Engine(directory=tmp_path, retrieval=SimilarityDouble())
     candidates = [{"model": f"fixture/model-{i}", "effort": "high", "usd_per_mtok": 1.0} for i in range(2)]
     specs = {c["model"]: spec(.95, .04, .01) for c in candidates}
     current_id = decide(engine, candidates, specs, seed=11)["decision_id"]
     current = load(engine.config, current_id)
-    assert current["format"] == "howhard-decision-v10"
+    assert current["format"] == "howhard-decision-v11"
     ids = {}
-    for name, legacy in (("v9", to_v9(current)), ("v8", to_v8(current)), ("v7", to_v7(current))):
+    for name, legacy in (("v10", to_v10(current)), ("v9", to_v9(current)), ("v8", to_v8(current)), ("v7", to_v7(current))):
         ids[name] = digest(legacy)
         with locked(engine.config):
             put(engine.config, "decisions", ids[name], canonical(legacy) + b"\n")
@@ -263,12 +263,13 @@ def test_frozen_v7_v8_and_v9_receipts_load_observe_replay_and_report(tmp_path):
     engine.observe_decision(ids["v7"], "clean", id="from-v7", seconds=12.)
     engine.observe_decision(ids["v8"], "loud", id="from-v8", cause="capability", active_seconds=10.)
     engine.observe_decision(ids["v9"], "clean", id="from-v9", active_seconds=10.)
-    engine.observe_decision(current_id, "clean", id="from-v10", active_seconds=10.)
+    engine.observe_decision(ids["v10"], "clean", id="from-v10", active_seconds=10.)
+    engine.observe_decision(current_id, "clean", id="from-v11", active_seconds=10.)
     beliefs = engine.memory_beliefs()
     assert beliefs["unscored_runs"] == 0
-    assert next(e for e in beliefs["experts"] if e["key"] == "llm")["evidence_count"] == 4
+    assert next(e for e in beliefs["experts"] if e["key"] == "llm")["evidence_count"] == 5
     stats = report(engine)
-    assert stats["unsupported_receipts"] == [] and stats["forecast_metrics"]["llm"]["runs"] == 4
+    assert stats["unsupported_receipts"] == [] and stats["forecast_metrics"]["llm"]["runs"] == 5
     # The new decision sees those outcomes as per-cell evidence.
     later = decide(engine, candidates, specs, seed=12)
     assert {o["outcome"] for o in later["semantic"]["outcome_observations"]} == {"clean", "loud"}
