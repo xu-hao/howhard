@@ -131,6 +131,8 @@ Every range is optional and is a central 95% range `[lo, hi]`.
   `forecast.token_usage_ci.input`).
 - A rate range of `[0, 1]`, or anything wider than `[0.025, 0.975]`, states a flat
   belief: no knowledge of that probability. There is no other ceiling on a stated width.
+  Selection reads such a range through the moment matching above, like any other
+  stated rate range.
 - A token kind forecast at zero is exactly zero unless a non-zero upper end is stated.
 - `token_usage_ci` needs `token_usage` on the same row and accepts only the six kinds.
   There is no range on total `tokens` or on credit: token counts do not depend on
