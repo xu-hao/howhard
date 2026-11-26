@@ -548,7 +548,9 @@ def test_frozen_capability_receipts_validate_replay_and_observe(tmp_path, monkey
     current = load(engine.config, current_id)
 
     def to_decision_v9_with_capability_v3(receipt):
-        receipt.update(with_capability_v3(receipt))
+        legacy = with_capability_v3(receipt)
+        receipt.clear()  # A v9 receipt has no v11 keys such as the host's name.
+        receipt.update(legacy)
 
     v3_id, _ = _rewrite_stored_receipt(engine, current_id, to_decision_v9_with_capability_v3)
 
