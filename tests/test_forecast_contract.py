@@ -1,13 +1,14 @@
 """Forecast contract v11 at public boundaries (#128).
 
 The host's name on a request, the agent label on a candidate, and stated ranges on active
-time and token kinds are validated, stored and reported. Nothing here changes which cell
-is chosen: ``GOLDEN`` holds the selection of ``scenario`` as it was before these inputs
-existed. Every fixture is synthetic and owns its state.
+time and token kinds are validated, stored and reported. The two names never change which
+cell is chosen; the ranges are read into the beliefs for active time and tokens (#132).
+Every fixture is synthetic and owns its state.
 """
 
 from copy import deepcopy
 import json
+import math
 
 import pytest
 
@@ -33,65 +34,6 @@ CELLS = {
     ("fixture/large", "high"): (None, .97, .025, .005, 900., 5.0),
 }
 PRICE = {"fixture/small": 1., "fixture/medium": 3., "fixture/large": 9.}
-# The selection of ``scenario``, by seed, under the evidence rules for recorded runs (direct
-# similarity, age by time, one run's weight per ticket). The first seed chooses the cell with the
-# lowest mean cost; the second chooses another cell by its sampled cost. The cell that is not
-# admissible is on trial, so it competes beside the two trusted cells. A host name, agent labels
-# and stated ranges must all reproduce it.
-GOLDEN = json.loads("""
-{"20261126": {"cap_met": true, "cells": [{"J": 35.5774262094975, "P_clean": 0.7200002437932107, "P_loud":
-0.26999970993207834, "P_silent": 0.010000046274710878, "P_silent_accepted": 0.01369868808378205, "T":
-0.09582998725953851, "admissible": true, "admission_risk": 0.0009079031017286353, "credit_ok": true, "effort": "low",
-"expected_attempts": 1.3698624693792336, "model": "fixture/medium", "needed_credit_usd": 0.07575, "sampled_J":
-68.84686732284035, "session_cost_usd": 0.07575}, {"J": 41.78299625468165, "P_clean": 0.86, "P_loud": 0.11, "P_silent":
-0.03, "P_silent_accepted": 0.033707865168539325, "T": 0.06666666666666667, "admissible": true, "admission_risk":
-0.05139379746836233, "credit_ok": true, "effort": "high", "expected_attempts": 1.1235955056179776, "model":
-"fixture/small", "needed_credit_usd": 0.0202, "sampled_J": 185.4925833351196, "session_cost_usd": 0.0202}, {"J":
-134.52317370656766, "P_clean": 0.7224242424469671, "P_loud": 0.17696969654427097, "P_silent": 0.10060606100876185,
-"P_silent_accepted": 0.12223858658221748, "T": 0.04997910566274901, "admissible": false, "admission_risk":
-0.21517533643877096, "credit_ok": true, "effort": "low", "expected_attempts": 1.2150220906827038, "model":
-"fixture/small", "needed_credit_usd": 0.012625, "sampled_J": 104.36121302982659, "session_cost_usd": 0.012625}],
-"chosen": {"effort": "low", "family": "native-096766504d3bd86fa493766c00210ce6e8bf21c30f0e9c9e3872da33695be808",
-"model": "fixture/medium"}, "exploration": {"eligible_cells": [{"effort": "low", "family":
-"native-269c62909b2bbad4d5089d46107f9e654e7e5e6b1c0e89ddd9e0b1e94dc6e4af", "model": "fixture/small"}, {"effort": "high",
-"family": "native-269c62909b2bbad4d5089d46107f9e654e7e5e6b1c0e89ddd9e0b1e94dc6e4af", "model": "fixture/small"}, {"effort":
-"low", "family": "native-096766504d3bd86fa493766c00210ce6e8bf21c30f0e9c9e3872da33695be808", "model":
-"fixture/medium"}], "enabled": true, "mean_best": {"effort": "low", "family":
-"native-096766504d3bd86fa493766c00210ce6e8bf21c30f0e9c9e3872da33695be808", "model": "fixture/medium"}, "reason":
-"mean-best"}, "needs_review": false, "sampled_expert": "llm", "sampling":
-[["native-096766504d3bd86fa493766c00210ce6e8bf21c30f0e9c9e3872da33695be808", "low", 3.9999814902013027,
-63.90603758433072, 5.8374178067182685, 0.11037838693229358, 2.8799876481132682, 1.0799938420880342, 0.04],
-["native-269c62909b2bbad4d5089d46107f9e654e7e5e6b1c0e89ddd9e0b1e94dc6e4af", "high", 8.0, 64.13025552650046,
-5.480638923341991, 0.0, 6.88, 0.88, 0.24], ["native-269c62909b2bbad4d5089d46107f9e654e7e5e6b1c0e89ddd9e0b1e94dc6e4af",
-"low", 5.5, 142.07449834217593, 5.129370187284915, 0.3554396981803716, 3.9733333334583194, 0.9733333309934904,
-0.5533333355481902]], "seed": 20261126}, "20261128": {"cap_met": true, "cells": [{"J": 35.57742602590199, "P_clean":
-0.7200002447691897, "P_loud": 0.26999970901137066, "P_silent": 0.010000046219439727, "P_silent_accepted":
-0.0136986879907908, "T": 0.09582998726106512, "admissible": true, "admission_risk": 0.0009079030943361979,
-"credit_ok": true, "effort": "low", "expected_attempts": 1.3698624676515043, "model": "fixture/medium",
-"needed_credit_usd": 0.07575, "sampled_J": 117.84511357611854, "session_cost_usd": 0.07575}, {"J": 41.78299625468165,
-"P_clean": 0.86, "P_loud": 0.11, "P_silent": 0.03, "P_silent_accepted": 0.033707865168539325, "T":
-0.06666666666666667, "admissible": true, "admission_risk": 0.05139379746836233, "credit_ok": true, "effort": "high",
-"expected_attempts": 1.1235955056179776, "model": "fixture/small", "needed_credit_usd": 0.0202, "sampled_J":
-27.00822459458156, "session_cost_usd": 0.0202}, {"J": 134.5231737333546, "P_clean": 0.7224242424265346, "P_loud":
-0.17696969654231454, "P_silent": 0.10060606103115086, "P_silent_accepted": 0.12223858660913003, "T":
-0.04997910566348833, "admissible": false, "admission_risk": 0.21517533648444812, "credit_ok": true, "effort": "low",
-"expected_attempts": 1.2150220906798155, "model": "fixture/small", "needed_credit_usd": 0.012625, "sampled_J":
-512.5590760135832, "session_cost_usd": 0.012625}], "chosen": {"effort": "high", "family":
-"native-269c62909b2bbad4d5089d46107f9e654e7e5e6b1c0e89ddd9e0b1e94dc6e4af", "model": "fixture/small"}, "exploration":
-{"eligible_cells": [{"effort": "low", "family":
-"native-269c62909b2bbad4d5089d46107f9e654e7e5e6b1c0e89ddd9e0b1e94dc6e4af", "model": "fixture/small"}, {"effort": "high",
-"family": "native-269c62909b2bbad4d5089d46107f9e654e7e5e6b1c0e89ddd9e0b1e94dc6e4af", "model": "fixture/small"}, {"effort":
-"low", "family": "native-096766504d3bd86fa493766c00210ce6e8bf21c30f0e9c9e3872da33695be808", "model":
-"fixture/medium"}], "enabled": true, "mean_best": {"effort": "low", "family":
-"native-096766504d3bd86fa493766c00210ce6e8bf21c30f0e9c9e3872da33695be808", "model": "fixture/medium"}, "reason":
-"sampled-within-posterior-overlap"}, "needs_review": false, "sampled_expert": "llm", "sampling":
-[["native-096766504d3bd86fa493766c00210ce6e8bf21c30f0e9c9e3872da33695be808", "low", 3.9999815123095583,
-63.90603719113812, 5.837417806752199, 0.11037838676922296, 2.8799876679351155, 1.079993844374443, 0.04],
-["native-269c62909b2bbad4d5089d46107f9e654e7e5e6b1c0e89ddd9e0b1e94dc6e4af", "high", 8.0, 64.13025552650046,
-5.480638923341991, 0.0, 6.88, 0.88, 0.24], ["native-269c62909b2bbad4d5089d46107f9e654e7e5e6b1c0e89ddd9e0b1e94dc6e4af",
-"low", 5.500000000000001, 142.0744983553764, 5.129370187295387, 0.35543969819252685, 3.9733333333459404,
-0.9733333309827301, 0.5533333356713298]], "seed": 20261128}}
-""")
 
 
 def candidates(*, agents=False):
@@ -171,18 +113,19 @@ def scenario(directory, *, host=None, agents=False, ranges=False, seed=20261126)
 
 
 def selection(result):
-    """The chosen cell, its sampled values and the admission fields of every forecast cell."""
-    fields = ("model", "effort", "J", "sampled_J", "T", "admissible", "admission_risk", "credit_ok",
-              "needed_credit_usd", "session_cost_usd", "expected_attempts")
+    """The chosen cell, its sampled values, and the admission fields and beliefs of every forecast cell."""
+    fields = ("model", "effort", "J", "sampled_J", "T", "admissible", "admission_risk", "pi", "tier", "credit_ok",
+              "needed_credit_usd", "credit_variance", "credit_p80_usd", "session_cost_usd", "expected_attempts",
+              "active_time", "token_beliefs")
     return {"chosen": result["chosen"], "seed": result["seed"], "cap_met": result["cap_met"],
             "needs_review": result["needs_review"],
-            "exploration": {k: result["exploration"][k] for k in ("enabled", "reason", "mean_best", "eligible_cells")},
+            "exploration": {k: result["exploration"][k] for k in ("enabled", "reason", "pool", "mean_best", "eligible_cells")},
             "sampled_expert": result["semantic"].get("sampled_expert"),
             "cells": [{**{k: row[k] for k in fields},
                        **{k: row[k]["mean"] for k in ("P_clean", "P_loud", "P_silent", "P_silent_accepted")}}
                       for row in sorted(result["cells"], key=lambda row: (row["model"], row["effort"]))],
-            "sampling": sorted(([c["family"], c["effort"], c["concentration"], c["cost_sd"], c["duration"]["mu"],
-                                 c["duration"]["sigma"], *c["outcome_posterior"]["alpha"]]
+            "sampling": sorted(([c["family"], c["effort"], c["concentration"], c["cost_sd"],
+                                 *c["outcome_posterior"]["alpha"]]
                                 for c in result["semantic"]["sampling"]["cells"]), key=lambda c: c[:2])}
 
 
@@ -490,27 +433,57 @@ def test_forecast_stored_without_a_host_or_ranges_reads_as_unnamed(tmp_path):
     assert all("seconds_ci" not in f["forecast"] and "token_usage_ci" not in f["forecast"] for f in kept)
 
 
-# --- 5. No change to selection -----------------------------------------------------------
+# --- 5. Names never change selection; ranges are read into beliefs -------------------------
 
-@pytest.mark.parametrize("seed, reason", [(20261126, "mean-best"), (20261128, "sampled-within-posterior-overlap")])
+# The first seed chooses the trusted cell with the lowest mean cost, the second another trusted
+# cell by its sampled cost, and the third the cell on trial, which flags the decision for review.
+@pytest.mark.parametrize("seed, reason, trusted", [(20261127, "mean-best", True),
+                                                   (20261128, "sampled-within-posterior-overlap", True),
+                                                   (20261126, "sampled-within-posterior-overlap", False)])
 @pytest.mark.parametrize("options", [
-    {},
     {"host": "host-one"},
     {"agents": True},
-    {"ranges": True},
-    {"host": "host-one", "agents": True, "ranges": True},
-], ids=["plain", "host", "agents", "ranges", "all"])
-def test_selection_equals_the_pinned_selection_whatever_the_new_inputs(tmp_path, options, seed, reason):
-    _, result = scenario(tmp_path / "store", seed=seed, **options)
-    actual = json.loads(json.dumps(selection(result)))
-    expected = GOLDEN[str(seed)]
-    # The fixture exercises sampled selection over admissible and inadmissible cells.
-    assert expected["exploration"]["reason"] == reason and expected["cap_met"]
+    {"host": "host-one", "agents": True},
+], ids=["host", "agents", "both"])
+def test_host_and_agent_names_do_not_change_selection(tmp_path, options, seed, reason, trusted):
+    _, plain = scenario(tmp_path / "plain", seed=seed)
+    _, named = scenario(tmp_path / "named", seed=seed, **options)
+    expected = selection(plain)
+    # The fixture exercises sampled selection over trusted cells and one on trial beside them.
+    assert expected["exploration"]["reason"] == reason
+    assert expected["cap_met"] is trusted and expected["needs_review"] is not trusted
     assert {c["admissible"] for c in expected["cells"]} == {True, False}
-    assert close(actual, expected), actual
+    assert {c["tier"] for c in expected["cells"]} == {"trusted", "on-trial"}
+    assert close(json.loads(json.dumps(selection(named))), json.loads(json.dumps(expected))), selection(named)
 
 
-def test_selection_without_a_met_cap_is_also_unchanged_by_the_new_inputs(tmp_path):
+def test_stated_ranges_widen_the_beliefs_and_leave_their_averages(tmp_path):
+    _, plain = scenario(tmp_path / "plain")
+    _, ranged = scenario(tmp_path / "ranged", ranges=True)
+    stated = {(c["model"], c["effort"]): c for c in ranged["cells"]}
+    for row in plain["cells"]:
+        other = stated[row["model"], row["effort"]]
+        usage = forecast(row["model"], row["effort"])["token_usage"]
+        # A range never moves a belief's average: time and each stated kind keep their forecast.
+        # (The two scenarios were prepared seconds apart, which ages their earlier runs differently.)
+        assert other["T"] == pytest.approx(row["T"], rel=1e-3)
+        beliefs = other["token_beliefs"]
+        assert beliefs["cache_read"]["expected_tokens"] == pytest.approx(usage["cache_read"])
+        # [0, 4x] around x is wider than the minimum spread and is used; [x/2, 2x] is narrower and is not.
+        assert beliefs["cache_read"]["spread"] == pytest.approx(math.log(4 * usage["cache_read"]) / 3.92)
+        assert beliefs["cache_read"]["spread"] > row["token_beliefs"]["cache_read"]["spread"]
+        assert beliefs["input"]["spread"] == pytest.approx(row["token_beliefs"]["input"]["spread"])
+        assert beliefs["input"]["stated_spread"] == pytest.approx(math.log(4) / 3.92)
+        # A kind forecast at zero is exactly zero unless a non-zero upper end is stated.
+        assert row["token_beliefs"]["cache_write_5m"]["expected_tokens"] == 0.
+        assert beliefs["cache_write_5m"]["expected_tokens"] == pytest.approx(1.)
+        assert beliefs["cache_write_5m"]["spread"] == pytest.approx(math.log(500) / 3.92)
+        assert beliefs["cache_write_1h"]["expected_tokens"] == 0. and beliefs["cache_write_1h"]["spread"] == 0.
+        assert other["credit_variance"] > row["credit_variance"]
+    assert ranged["chosen"] == plain["chosen"]
+
+
+def test_names_do_not_change_selection_without_a_met_cap_either(tmp_path):
     """Both variants of an inadmissible request agree, including the review flag."""
     def run(directory, **options):
         directory.mkdir()
@@ -520,7 +493,7 @@ def test_selection_without_a_met_cap_is_also_unchanged_by_the_new_inputs(tmp_pat
         pending = engine.prepare("task", TASK, native_candidates=cells, **({"host": "host-one"} if options else {}))
         pending = engine.decide(pending["request_id"], filtering(pending["baseline_request"]))
         row = {"family": pending["baseline_request"]["cells"][0]["family"], "effort": "high", "clean": .5,
-               "loud": .2, "silent": .3, "tokens": 1000, "seconds": 60, **({"seconds_ci": [10, 600]} if options else {})}
+               "loud": .2, "silent": .3, "tokens": 1000, "seconds": 60}
         return engine.decide(pending["request_id"], {"forecasts": [row], "memory_forecasts": [], "reason": "Synthetic"}, seed=5)
     plain, named = run(tmp_path / "plain"), run(tmp_path / "named", new=True)
     assert not plain["cap_met"] and plain["needs_review"]

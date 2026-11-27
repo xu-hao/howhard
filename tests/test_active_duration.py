@@ -1,4 +1,4 @@
-"""Active vs. queue-wait duration, log-normal J calibration, and timely capability saturation (#99)."""
+"""Active vs. queue-wait duration, the active-time belief in J, and timely capability saturation (#99, #132)."""
 
 from copy import deepcopy
 import json
@@ -166,7 +166,7 @@ def test_beliefs_scores_forecasts_against_effective_active_seconds_excluding_que
     assert after["log_score"] > before["log_score"]
 
 
-def test_empirical_duration_calibration_and_right_tail_variance_price_out_slow_cheap_cell(tmp_path):
+def test_active_time_belief_updated_by_slow_runs_prices_out_slow_cheap_cell(tmp_path):
     candidates = [
         {"model": "fixture/cheap-thrasher", "effort": "high", "usd_per_mtok": 0.1},
         {"model": "fixture/fast-strong", "effort": "high", "usd_per_mtok": 10.0},
@@ -190,15 +190,17 @@ def test_empirical_duration_calibration_and_right_tail_variance_price_out_slow_c
         req_id, resp = prepare_band(eng)
         return eng.decide(req_id, resp, seed=seed)
 
-    # 1. Zero duration evidence preserves the expert's 900s (0.25h) forecast and picks the cheap cell.
+    # 1. Zero duration evidence preserves the expert's 900s (0.25h) forecast as the belief's average,
+    #    leaving the two cells close enough to trade places between seeds.
     zero_engine = Engine(directory=tmp_path / "zero", retrieval=SimilarityDouble())
     zero_req, zero_resp = prepare_band(zero_engine)
     zero_result = zero_engine.decide(zero_req, zero_resp, seed=1)
     cells_zero = {c["model"]: c for c in zero_result["cells"]}
     assert cells_zero["fixture/cheap-thrasher"]["T"] == pytest.approx(0.25)
-    assert zero_result["chosen"]["model"] == "fixture/cheap-thrasher"
+    assert cells_zero["fixture/cheap-thrasher"]["active_time"]["evidence_weight"] == 0
+    assert abs(cells_zero["fixture/cheap-thrasher"]["J"] - cells_zero["fixture/fast-strong"]["J"]) < 1.0
 
-    # 2. Multi-hour active runtime reality (with right-tail variance) calibrates E[T] = exp(mu + sigma^2/2),
+    # 2. Multi-hour active runtime reality pulls the belief E[T] = exp(m' + s'^2/2) toward the runs,
     #    raises cost_sd, and prices out the slow cheap cell in J and Thompson sampling.
     thrash_engine = Engine(directory=tmp_path / "thrash", retrieval=SimilarityDouble())
     for i, active in enumerate((7200.0, 10800.0, 14400.0, 10800.0)):
@@ -210,19 +212,22 @@ def test_empirical_duration_calibration_and_right_tail_variance_price_out_slow_c
     thrash_req, thrash_resp = prepare_band(thrash_engine)
     calibrated_result = thrash_engine.decide(thrash_req, thrash_resp, seed=1)
     cells_cal = {c["model"]: c for c in calibrated_result["cells"]}
-    # Geometric mean of [7200, 10800, 14400, 10800] is ~10392s; shrunk + exp(sigma^2/2) exceeds 2.5 hours (> $62 time cost).
-    assert cells_cal["fixture/cheap-thrasher"]["T"] > 2.5
+    # Geometric mean of [7200, 10800, 14400, 10800] is ~10392s; four runs against a forecast worth
+    # under one run move the average past 1.75 hours (> $43 time cost).
+    assert cells_cal["fixture/cheap-thrasher"]["T"] > 1.75
     assert cells_cal["fixture/fast-strong"]["T"] == pytest.approx(0.25)
-    assert cells_cal["fixture/cheap-thrasher"]["J"] > cells_cal["fixture/fast-strong"]["J"] + 50.0
+    assert cells_cal["fixture/cheap-thrasher"]["J"] > cells_cal["fixture/fast-strong"]["J"] + 30.0
 
     cal_by_family = {c["family"]: c for c in calibrated_result["semantic"]["sampling"]["cells"]}
     zero_by_family = {c["family"]: c for c in zero_result["semantic"]["sampling"]["cells"]}
     weak_family = cells_cal["fixture/cheap-thrasher"]["family"]
-    assert cal_by_family[weak_family]["duration"]["sigma"] > 0
+    belief = cells_cal["fixture/cheap-thrasher"]["active_time"]
+    assert belief["evidence_weight"] > 3 and 0 < belief["spread"] < belief["prior_spread"]
     assert cal_by_family[weak_family]["cost_sd"] > zero_by_family[weak_family]["cost_sd"]
 
     # Across 200 Thompson seeds, multi-hour active duration shifts selection strongly to the fast strong cell
-    # (unseen fast-strong retains bounded Dirichlet outcome uncertainty, so rare high-silent draws still explore).
+    # (unseen fast-strong retains bounded Dirichlet outcome uncertainty and its own active-time spread,
+    # so rare high-silent or slow draws still explore).
     zero_wins = [zero_engine.decide(zero_req, zero_resp, seed=s)["chosen"]["model"] for s in range(200)].count("fixture/fast-strong")
     thrash_wins = [thrash_engine.decide(thrash_req, thrash_resp, seed=s)["chosen"]["model"] for s in range(200)].count("fixture/fast-strong")
     assert thrash_wins >= 165 and thrash_wins > zero_wins + 50
@@ -239,7 +244,7 @@ def test_empirical_duration_calibration_and_right_tail_variance_price_out_slow_c
     queued_result = decide_once(queued_engine, seed=1)
     cells_queued = {c["model"]: c for c in queued_result["cells"]}
     assert cells_queued["fixture/cheap-thrasher"]["T"] == pytest.approx(0.25)
-    assert queued_result["chosen"]["model"] == "fixture/cheap-thrasher"
+    assert cells_queued["fixture/cheap-thrasher"]["active_time"]["evidence_weight"] > 3
 
 
 def test_between_expert_duration_disagreement_increases_cost_sd(tmp_path):
@@ -270,7 +275,11 @@ def test_between_expert_duration_disagreement_increases_cost_sd(tmp_path):
 
     cal_disagree = res_disagree["semantic"]["sampling"]["cells"][0]
     cal_agree = res_agree["semantic"]["sampling"]["cells"][0]
-    assert cal_disagree["duration"]["between_experts_log_variance"] > 0
+    # Disagreement between experts is stated uncertainty: here wider than the minimum spread.
+    disagree, agree = res_disagree["cells"][0]["active_time"], res_agree["cells"][0]["active_time"]
+    assert agree["stated_spread"] == 0 and disagree["stated_spread"] > agree["prior_spread"]
+    assert disagree["spread"] == disagree["stated_spread"]
+    assert res_agree["cells"][0]["T"] == pytest.approx(res_disagree["cells"][0]["T"])
     assert cal_disagree["cost_sd"] > cal_agree["cost_sd"]
 
 

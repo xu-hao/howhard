@@ -1,29 +1,96 @@
 """Derive authentic frozen legacy receipts from a current receipt's base structure.
 
 ``to_v10`` is the base of every older builder: it removes what v11 added (the host's name,
-agent labels, ranges on active time and token kinds, the scored evidence candidates and
-admission tiers) and restores the v10 format names, evidence rows, sampling policy and
-meaning of the silent cap.
+agent labels, ranges on active time and token kinds, the scored evidence candidates, admission
+tiers, and the beliefs and credit spread) and restores the v10 format names, evidence rows,
+sampling policy, meaning of the silent cap, per-expert active-time calibration, forecast
+pricing and credit check.
 """
 
 from copy import deepcopy
+import math
 
 import numpy as np
 
+from howhard.accounting import CATEGORIES, price
 from howhard.capability import prior_cdf
 from howhard.semantic import OUTCOMES, panel_lookup
 from howhard.success import (
+    COUNT_AGED_DEFAULTS,
+    MAX_DURATION_LOG_SD,
     POSTERIOR_FIELDS,
     accepted_risk,
-    calibration,
+    calibrate_duration,
     cost,
     denominator,
     envelope,
+    outcome_posterior,
     posterior_intervals,
 )
 
 LEGACY_SAMPLING = {"min_concentration": 8., "max_concentration": 1000000., "prior_strength": 8.,
                    "explore_within": .1, "uncertainty_multiplier": 1.}
+
+
+def legacy_credit(row, candidate):
+    """v7 to v10 priced one expert's forecast row directly; ``None`` for an unpriced cell."""
+    card = candidate.get("rate_card")
+    if card is not None:
+        return price(row["token_usage"], card) if all(card["rates"][k] is not None for k in CATEGORIES) else None
+    rate = candidate.get("usd_per_mtok")
+    return row["tokens"] / 1e6 * rate if rate is not None else None
+
+
+def legacy_calibration(constants, policy, state, expert, candidate, money_included, pair, *, legacy_v9=False):
+    """A v8 to v10 sampling cell: the sampled expert's own calibrated active time and priced forecast."""
+    def run_cost(row):
+        return legacy_credit(row, candidate) * candidate["cost_per_credit"] if money_included else 0.
+
+    experts = state["beliefs"]["experts"]
+    panels = {e["key"]: panel_lookup(state["worlds"][e["key"]]) for e in experts}
+    row = panels[expert["key"]][pair]
+    posterior = outcome_posterior(row, pair, state["outcome_observations"], policy, legacy_v9=legacy_v9)
+    probabilities = np.asarray(posterior["mean"])
+    concentration = posterior["concentration"]
+    durations = {key: calibrate_duration(panel[pair]["seconds"], pair, state["duration_observations"])
+                 for key, panel in panels.items()}
+    dur = dict(durations[expert["key"]])
+    mean_mu = sum(e["weight"] * durations[e["key"]]["mu"] for e in experts)
+    between = sum(e["weight"] * (durations[e["key"]]["mu"] - mean_mu) ** 2 for e in experts)
+    dur["between_experts_log_variance"] = between
+    hours = dur["expected_seconds"] / 3600
+    expected = cost(run_cost(row), hours, probabilities[1], probabilities[2], constants)
+    d = denominator(probabilities[1])
+    gradient = np.array([0., (constants["C_loud"] + expected) / d, constants["C_silent"] / d])
+    covariance = (np.diag(probabilities) - np.outer(probabilities, probabilities)) / (concentration + 1)
+    sigma_sq = min(MAX_DURATION_LOG_SD ** 2, max(dur["sigma"] ** 2, between))
+    variance = max(0., float(gradient @ covariance @ gradient)) + (
+        (constants["lambda_per_hour"] / d) ** 2) * (math.exp(sigma_sq) - 1.0) * hours ** 2
+    expert_costs = []
+    for e in experts:
+        mean = outcome_posterior(panels[e["key"]][pair], pair, state["outcome_observations"], policy,
+                                 legacy_v9=legacy_v9)["mean"]
+        expert_costs.append((e["weight"], cost(run_cost(panels[e["key"]][pair]),
+                                               durations[e["key"]]["expected_seconds"] / 3600, mean[1], mean[2], constants)))
+    mean_cost = sum(w * j for w, j in expert_costs)
+    variance = max(variance, sum(w * (j - mean_cost) ** 2 for w, j in expert_costs))
+    return {"family": pair[0], "effort": pair[1], "expert": expert["key"],
+            "outcome_posterior": {k: posterior[k] for k in POSTERIOR_FIELDS},
+            "probabilities": probabilities.tolist(), "concentration": concentration,
+            "duration": dur, "cost_sd": math.sqrt(variance)}
+
+
+def legacy_sampling_cells(receipt, *, legacy_v9=False):
+    """Rebuild every sampled cell of a receipt with the v8 to v10 calibration."""
+    sem, selection = receipt["semantic"], receipt["selection"]
+    candidates = {(c["model"], c["effort"]): c for c in receipt["native_candidates"]}
+    models = {(c["family"], c["effort"]): c["model"] for c in selection["cells"]}
+    experts = {e["key"]: e for e in sem["beliefs"]["experts"]}
+    return [legacy_calibration(selection["constants"], selection["sampling_policy"], sem, experts[cell["expert"]],
+                               candidates[models[cell["family"], cell["effort"]], cell["effort"]],
+                               receipt["cost_policy"]["worker_money_included"], (cell["family"], cell["effort"]),
+                               legacy_v9=legacy_v9)
+            for cell in sem["sampling"]["cells"]]
 
 
 def legacy_capability_prior(flt, policy, *, linear_tail=False):
@@ -64,7 +131,7 @@ def restore_cap(receipt):
 
 
 def to_v10(receipt, on_cap_unmet="flag-review"):
-    """A v10 receipt: no host name, agent labels, ranges on active time or token kinds, or tiers."""
+    """A v10 receipt: no host name, agent labels, ranges on active time or token kinds, tiers or beliefs."""
     receipt = deepcopy(receipt)
     if receipt["format"] != "howhard-decision-v11":
         return receipt
@@ -96,24 +163,44 @@ def to_v10(receipt, on_cap_unmet="flag-review"):
         obs.update(score=scored[obs["id"]]["score"], similarity=scored[obs["id"]]["similarity"], age=ages.get(pair, 0))
         ages[pair] = ages.get(pair, 0) + 1
     for obs in sem["duration_observations"]:
+        del obs["tokens"], obs["token_usage"]
         obs.update(score=scored[obs["id"]]["score"], similarity=scored[obs["id"]]["similarity"])
     for item in cap["evidence"]:
         del item["strength"], item["ticket_share"]
         item.update(score=scored[item["id"]]["score"], similarity=scored[item["id"]]["similarity"])
-    for policy in (sem["sampling"]["policy"], receipt["selection"]["sampling_policy"]):
-        del policy["half_life_days"], policy["comparison_cap"]
-        policy["outcome_recency"] = .95
-    # v10 has no tiers: a cell is admissible or not (trusted is exactly v10 admissible), the
-    # policy lacks the two tier constants, and the cap-unmet policy is recorded.
+
+    # v10 has no tiers: a cell is admissible or not (trusted is exactly v10 admissible), and the
+    # cap-unmet policy is recorded. Its policy aged evidence by count and had neither the two
+    # tier constants nor the amount-belief keys.
     selection = receipt["selection"]
     selection["on_cap_unmet"] = on_cap_unmet
     selection["exploration"].pop("pool")
-    for policy in (selection["sampling_policy"], sem["sampling"]["policy"]):
-        policy.pop("trial_probability", None)
-        policy.pop("all_excluded_factor", None)
+    selection["sampling_policy"] = {**{k: selection["sampling_policy"][k] for k in COUNT_AGED_DEFAULTS
+                                       if k != "outcome_recency"}, "outcome_recency": .95}
+    sem["sampling"]["policy"] = deepcopy(selection["sampling_policy"])
+    # v10 calibrated each expert's active time, priced each expert's forecast, and checked the
+    # average credit alone.
+    panels = {k: panel_lookup(p) for k, p in sem["worlds"].items()}
+    experts = sem["beliefs"]["experts"]
+    candidates = {(c["model"], c["effort"]): c for c in receipt["native_candidates"]}
     for row in selection["cells"]:
-        row.pop("pi")
-        row.pop("tier")
+        for field in ("pi", "tier", "active_time", "token_beliefs", "credit_variance", "credit_p80_usd"):
+            row.pop(field)
+        pair = row["family"], row["effort"]
+        candidate = candidates[row["model"], row["effort"]]
+        row["T"] = sum(e["weight"] * calibrate_duration(panels[e["key"]][pair]["seconds"], pair,
+                                                        sem["duration_observations"])["expected_seconds"]
+                       for e in experts) / 3600
+        credits = [legacy_credit(panels[e["key"]][pair], candidate) for e in experts]
+        needed = None if None in credits else sum(e["weight"] * c for e, c in zip(experts, credits))
+        row["needed_credit_usd"] = needed
+        row["session_cost_usd"] = row["C_run"] = None if needed is None else needed * row["cost_per_credit"]
+        # A fixture whose credit check differs between the two rules needs its own builder.
+        assert row["credit_ok"] == (row["available_credit_usd"] is None or needed <= row["available_credit_usd"])
+        run = row["session_cost_usd"] if receipt["cost_policy"]["worker_money_included"] else 0.
+        row["J"] = cost(run, row["T"], row["P_loud"]["mean"], row["P_silent"]["mean"], selection["constants"])
+    if sem["sampling"]["enabled"]:
+        sem["sampling"]["cells"] = legacy_sampling_cells(receipt)
     restore_cap(receipt)
     return receipt
 
@@ -157,37 +244,7 @@ def to_v9(receipt):
         row["J"] = cost(run, row["T"], loud, silent, constants)
 
     if sem["sampling"]["enabled"]:
-        cand_by_pair = {(c["model"], c["effort"]): c for c in receipt["native_candidates"]}
-        sel_by_pair = {(c["family"], c["effort"]): c for c in selection["cells"]}
-        synth_result = {
-            "constants": constants,
-            "sampling_policy": policy,
-        }
-        new_cal = []
-        for cal_row in sem["sampling"]["cells"]:
-            pair = cal_row["family"], cal_row["effort"]
-            sel_cell = sel_by_pair[pair]
-            cand = cand_by_pair[sel_cell["model"], sel_cell["effort"]]
-            expert_obj = next(e for e in experts if e["key"] == cal_row["expert"])
-            cell_meta = {
-                "family": pair[0],
-                "effort": pair[1],
-                "rate_card": cand.get("rate_card"),
-                "credit_rate": cand.get("usd_per_mtok"),
-                "cost_per_credit": cand["cost_per_credit"],
-                "money_included": money_included,
-            }
-            new_cal.append(
-                calibration(
-                    synth_result,
-                    sem,
-                    expert_obj,
-                    cell_meta,
-                    panels[cal_row["expert"]][pair],
-                    legacy_v9=True,
-                )
-            )
-        sem["sampling"]["cells"] = new_cal
+        sem["sampling"]["cells"] = legacy_sampling_cells(receipt, legacy_v9=True)
 
     restore_cap(receipt)
     return receipt

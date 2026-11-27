@@ -143,6 +143,15 @@ howhard usage attach EXECUTION_ID --manifest /tmp/EXECUTION_ID-usage-manifest.js
 howhard evidence EXECUTION_ID --json
 ```
 
+Record usage by token kind, and active time apart from waiting, whenever the host
+reports them. A `complete` envelope gives the backend the count of each of the six
+token kinds, and it then updates its belief about each kind for the same model and
+effort; a scalar `--tokens` total updates only a total. `--active-seconds` with
+`--queue-wait-seconds` records the time the worker actually ran; a lone `--seconds`
+total is read as active time, so waiting in a queue would count as work. Later routes
+use these beliefs for expected time, expected cost and the credit check. Never estimate
+a kind or a split that the host did not report.
+
 `collect` emits a `howhard-execution-usage-v1` envelope without changing outcomes.
 `attach` appends a measurement correction to the existing execution. An outcome remains
 durable if collection or attachment fails. Reconcile ambiguous writes with

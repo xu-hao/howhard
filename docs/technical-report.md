@@ -12,8 +12,9 @@ traces a defect to an earlier execution, the original outcome can be corrected
 and its learning replayed.
 
 The statistical design combines weighted Bayesian updates for a latent capability
-threshold, approximate predictive-evidence weights for memories, and heuristic
-uncertainty estimates for selection. These components support decisions under
+threshold, approximate predictive-evidence weights for memories, log-normal beliefs for
+active time and token use, and heuristic uncertainty estimates for selection. These
+components support decisions under
 explicit assumptions. Demonstrating net credit savings requires chronological
 evaluation that includes routing, learning and worker costs.
 
@@ -38,11 +39,10 @@ Acceptance is therefore observable workflow behavior, not proof of correctness.
 An execution retains its actual model, effort, outcome and measured usage. An
 alternative that never ran has forecasts but no observed outcome.
 
-For each candidate, define {math}`C_{\mathrm{run}}` as forecast worker cost,
-{math}`T` as calibrated expected active execution hours (combining expert active-duration
-forecasts with shrunk log-residuals from similar executions and pricing log-normal
-right-tail variance {math}`\mathbb{E}[T]=\exp(\mu+\sigma^2/2)`), {math}`p_l` as loud-failure
-probability and {math}`p_s` as silent-failure probability. The selection objective is:
+For each candidate, define {math}`C_{\mathrm{run}}` as the expected worker cost of one
+run, {math}`T` as the expected active execution hours of one run, {math}`p_l` as
+loud-failure probability and {math}`p_s` as silent-failure probability. The selection
+objective is:
 
 ```{math}
 J(a)=\frac{C_{\mathrm{run}}(a)+\lambda T(a)
@@ -54,6 +54,62 @@ Here {math}`\lambda` prices elapsed time, {math}`C_l` prices extra overhead per
 caught failure, {math}`C_s` prices an escaped defect, and {math}`\delta` is a
 numerical probability floor. These penalties express policy assumptions; actual
 charges and rework remain separately measured evidence.
+
+### Beliefs for active time and tokens
+
+{math}`T` and {math}`C_{\mathrm{run}}` are averages of beliefs, not forecasts taken
+at face value. Active time and each token kind have one log-normal belief per
+candidate. Let {math}`A` be such an amount, with
+
+```{math}
+\ln A\sim\mathcal{N}(m,s^2),\qquad
+s=\max\!\left(s_g,\frac{\tau}{\sqrt{N_{\mathrm{start}}}}\right),\qquad
+m=\ln(\mathrm{prediction})-\frac{s^2}{2}.
+```
+
+- {math}`\mathrm{prediction}` is where the belief starts: the experts' forecasts of
+  the amount, averaged on the log scale with their support weights.
+- {math}`s_g` is the stated spread: each expert's stated 95% range read as
+  {math}`(\ln hi-\ln lo)/3.92`, combined with the disagreement between experts,
+  {math}`s_g^2=\sum_k w_k\,(s_k^2+(m_k-m_g)^2)`, where {math}`w_k` is expert
+  {math}`k`'s weight, {math}`m_k` the log of its forecast, {math}`s_k` its stated
+  spread and {math}`m_g=\sum_k w_k m_k`.
+- {math}`\tau=D\sqrt{\text{scatter share}}` is the run-to-run scatter of the amount
+  on one task. {math}`D` is the typical remaining miss of a prediction, as a spread
+  of {math}`\ln(\mathrm{actual}/\mathrm{prediction})` (1.3 by default), and the
+  scatter share is the part of {math}`D^2` that is scatter (0.5 by default).
+- {math}`N_{\mathrm{start}}=1/(1/\mathrm{worth}+1/N_{\mathrm{task}})` is how many
+  runs the prediction is worth: {math}`\mathrm{worth}` (5) is what the record says
+  about the model family's own level, and {math}`N_{\mathrm{task}}` (1) is the most
+  a record on other tasks is worth for one task.
+- Subtracting {math}`s^2/2` makes the belief's average equal the prediction.
+
+A stated range can widen the belief and never narrow it below
+{math}`\tau/\sqrt{N_{\mathrm{start}}}`, which is 1.007 with the defaults. For a
+prediction of 3,600 seconds with no range, {math}`N_{\mathrm{start}}=0.833`,
+{math}`\tau=0.919`, {math}`s=1.007` and {math}`m=7.682`: an average of 1 hour and a
+median of 0.60 hours. A stated range of 600 to 60,000 seconds gives a spread of 1.175,
+which is used.
+
+Recorded runs of the same candidate then update the belief conjugately. The runs and
+their weights are those of section 3's evidence weights: task similarity, a 14-day
+half-life and at most one run's weight per ticket. With
+{math}`w_i` the weight of run {math}`i`, {math}`W=\sum_i w_i` and {math}`y_i` the log
+of the amount it recorded:
+
+```{math}
+\frac{1}{s'^2}=\frac{1}{s^2}+\frac{W}{\tau^2},\qquad
+m'=m+s'^2\,\frac{\sum_i w_i\,(y_i-m)}{\tau^2},\qquad
+\mathbb{E}[A]=\exp\!\left(m'+\frac{s'^2}{2}\right).
+```
+
+Each run pulls the centre {math}`m'` toward its own amount and narrows the spread
+{math}`s'`, by its weight. Two runs with weights 0.5 and 0.3 that recorded 1,800 and
+5,400 seconds give {math}`W=0.8`, {math}`s'=0.719`, {math}`m'=7.792` and an average of
+3,137 seconds. {math}`T` is the average of the active-time belief, in hours.
+{math}`C_{\mathrm{run}}` prices the averages of the token beliefs at the candidate's
+rates; section 7 gives its spread. A token kind that every expert forecasts at zero,
+with no non-zero upper end, is exactly zero.
 
 ### Why the retry denominator matters
 
@@ -439,14 +495,17 @@ c^{*}&=\arg\min_{c\in\mathcal{P}}J(c),\\
   second line runs over the cells {math}`c'` that have enough credit.
 - {math}`f`: `all_excluded_factor`, 0.5.
 - {math}`J(c)`, {math}`\mathrm{sd}(c)`: the cell's mean cost and the delta-method
-  standard deviation of that cost.
+  standard deviation of that cost. It combines the Dirichlet covariance of the cell's
+  outcome probabilities with the variance of its active time,
+  {math}`(\lambda/(1-p_l))^2\,\mathbb{E}[T]^2\,(e^{s'^2}-1)`; run cost is exact in it.
 - {math}`c^{*}`: the pool cell with the lowest mean cost.
 - {math}`u`: `uncertainty_multiplier`, 1. A risk class's `explore_within` additionally
   caps the gap at that fraction of {math}`|J(c^{*})|`.
 - {math}`\tilde J(c)`: the cell's cost under the seed's draw. Selection samples a
   predictive expert in proportion to its support and draws outcome probabilities from
-  that expert's per-cell Dirichlet posterior, and an active duration from its
-  log-normal calibration (Thompson sampling).
+  that expert's per-cell Dirichlet posterior, and each cell's active time from its
+  belief, {math}`\ln T\sim\mathcal{N}(m',s'^2)`; run cost stays at its average
+  (Thompson sampling).
 
 In plain words, trusted and on-trial cells compete as equals, and nothing limits how
 often an on-trial cell is chosen. A cell must still be close enough to the cheapest
@@ -513,13 +572,44 @@ If evaluated candidates are unpriced or money bases are incompatible, worker
 money is excluded uniformly and the decision identifies the partial risk/time
 comparison. Unknown usage and cost remain unknown.
 
-Optional candidate credit budgets add a scheduling constraint against forecast
-invocation cost, separate from the admission tiers. They require uniform pricing
-and can represent remaining session and weekly windows. Selection refuses a
-candidate whose forecast exceeds its available credit, and refuses routing when
-none of the evaluated candidates is schedulable. This forecast-based check does
-not reserve the full uncertain cost of future retries or prevent concurrent
-external spending.
+The credit one run needs is uncertain because its token counts are. Let
+{math}`a` and {math}`b` index token kinds, {math}`\mathrm{price}_a` be the candidate's
+rate for kind {math}`a` per million tokens, and {math}`\mathbb{E}[\mathrm{tokens}_a]`
+and {math}`s_a` the average and spread of that kind's belief after its runs:
+
+```{math}
+c_a=\frac{\mathrm{price}_a\,\mathbb{E}[\mathrm{tokens}_a]}{10^6},\qquad
+\mathbb{E}[K]=\sum_a c_a,\qquad
+\mathrm{Var}(K)=\sum_a\sum_b c_a c_b\left(e^{\rho_{ab}s_a s_b}-1\right).
+```
+
+{math}`K` is the credit of one run. {math}`\rho_{ab}` says how kinds {math}`a` and
+{math}`b` move together; it is 1, because no run records how the kinds co-vary, so the
+spread is not understated by assuming independence. A log-normal with the same
+average and variance has spread {math}`\sigma_K` and 80% point {math}`K_{80}`:
+
+```{math}
+\sigma_K^2=\ln\!\left(1+\frac{\mathrm{Var}(K)}{\mathbb{E}[K]^2}\right),\qquad
+K_{80}=\mathbb{E}[K]\,\exp\!\left(0.8416\,\sigma_K-\frac{\sigma_K^2}{2}\right),
+```
+
+where 0.8416 is the 80% point of the standard normal. With input at 2 and output at
+10 dollars per million tokens, an input forecast of 1,000,000 tokens with no range
+(spread 1.007) and an output forecast of 100,000 tokens with a range of 10,000 to
+1,000,000 (spread 1.175): {math}`c=2.00` and {math}`1.00`, {math}`\mathbb{E}[K]=3.00`,
+{math}`\mathrm{Var}(K)=19.06`, {math}`\sigma_K=1.066` and {math}`K_{80}=4.17`.
+
+Optional candidate credit budgets add a scheduling constraint, separate from the
+admission tiers. They require uniform pricing and can represent remaining session and
+weekly windows. A candidate is schedulable when
+{math}`\max(\mathbb{E}[K],K_{80})` is at most its available credit: a run must fit
+the remaining credit four times out of five, not only on average. The larger of the
+two is taken because a belief with {math}`\sigma_K` above 1.68 has its 80% point below
+its average, and the check must not get easier as a belief gets wider. In the example,
+4.00 of available credit fails although the average fits, and 5.00 passes. Selection
+refuses routing when none of the evaluated candidates is schedulable. This check does
+not reserve the full uncertain cost of future retries or prevent concurrent external
+spending.
 
 Receipts freeze the inputs, retrieved evidence, memory versions, forecasts,
 capability state and selection details. A recorded seed reproduces selection
@@ -581,6 +671,8 @@ The components have distinct statistical meanings:
 | Cross-model ordering | Constrained local posterior/MAP search | Approximate search over rankings |
 | Memory support | Tempered, recency-weighted predictive evidence | Forecast support does not establish truth or causality |
 | Outcome posterior | Per-cell Dirichlet–multinomial update with continuous prior decay (`tau_emp = 2`) | Prior decay scale, base floor and the 14-day evidence half-life are fixed modelling choices |
+| Active time and token beliefs | Per-cell log-normal belief with a conjugate update from same-cell runs | The miss `D`, scatter share and worths are fixed modelling choices; token kinds are taken to move together |
+| Credit check | 80% point of a log-normal matched to the average and variance of run credit | A moment match, not the exact distribution of a sum |
 | Admission tiers | Share of the mixture accepted-defect posterior within epsilon, cut at 0.80 and 0.20 | No calibrated coverage guarantee; the two lines are policy choices |
 | Selection sampling | Thompson sampling within posterior cost overlap, among trusted and on-trial cells | Delta-method overlap is approximate |
 | Outcome amendments | Correction and replay of an earlier execution | Requires supported attribution and preserved provenance |
