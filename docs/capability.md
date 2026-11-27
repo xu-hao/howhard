@@ -15,6 +15,10 @@ universal model leaderboard is fitted or reused. Within a model, known efforts f
 within-model order. Cross-model placements can change with related execution evidence.
 
 Threshold-clearing probability `P_clear` is monotone along this decision's order.
+It is the posterior probability that the task's threshold lies at or below the cell:
+the running sum of the posterior masses up to that cell, held within [0, 1] so that
+rounding cannot carry a saturated sum past 1. `P_timely`, below, is held the same way.
+A receipt with a probability above 1 is refused.
 The clearing interval starts at the first cell whose `P_clear` reaches the lower edge
 `e`. Its upper cut is the first cell at or above its anchor whose gain to the strongest
 cell is below the upper margin `g`. Both edges follow the share of its failures that

@@ -665,3 +665,70 @@ def test_frozen_capability_receipts_validate_replay_and_observe(tmp_path, monkey
     unsupported_fmt["capability"]["format"] = "howhard-capability-v6"
     with pytest.raises(HowHardError, match="decision.capability.format: unsupported version"):
         load(engine.config, unsupported_fmt)
+
+
+@pytest.fixture
+def minute_clock(monkeypatch):
+    """A fixed clock for run ages: each reading is one minute after the previous one."""
+    from datetime import datetime, timedelta, timezone
+    from howhard import evidence, storage
+    epoch = datetime(2026, 11, 1, tzinfo=timezone.utc)
+
+    class Clock(datetime):
+        readings = 0
+
+        @classmethod
+        def now(cls, tz=None):
+            cls.readings += 1
+            return epoch + timedelta(minutes=cls.readings)
+
+    # Recording a run and preparing a request are the two readings that set a run's age.
+    monkeypatch.setattr(storage, "datetime", Clock)
+    monkeypatch.setattr(evidence, "datetime", Clock)
+
+
+def test_saturated_threshold_posterior_receipt_saves_loads_observes_replays_and_reports(tmp_path, minute_clock):
+    """Many clean runs and a few failures at the strongest cell saturate its cumulative probability."""
+    engine = Engine(directory=tmp_path, retrieval=SimilarityDouble())
+    cells = inventory(2)
+    strongest = cells[1]
+    for outcome, count in (("clean", 30), ("loud", 2), ("silent", 1)):
+        extra = {} if outcome == "clean" else {"cause": "capability"}
+        for i in range(count):
+            engine.observe("task", strongest["model"], "high", outcome, native=True,
+                           task_text="Repair rollback", id=f"{outcome}-{i}", **extra)
+
+    def route():
+        pending = start(engine, cells)
+        return finish(engine, pending, filtering(pending["baseline_request"], 0, 1))
+
+    result = route()
+    receipt = load(engine.config, result["decision_id"])
+    state = receipt["capability"]
+    assert state["cells"] == result["capability"]["cells"]
+    top = state["cells"][-1]
+    assert top["model"] == strongest["model"] and top["placement"] == "learned"
+    # The running sum of the posterior masses reaches 1 here; no probability may exceed it.
+    assert top["P_clear"] == top["P_timely"] == 1.
+    assert all(0 <= c["P_timely"] <= c["P_clear"] <= 1 for c in state["cells"])
+
+    engine.observe_decision(result["decision_id"], "clean", id="after-saturation", active_seconds=10.)
+    beliefs = engine.memory_beliefs()
+    assert beliefs["unscored_runs"] == 0
+    assert next(e for e in beliefs["experts"] if e["key"] == "llm")["evidence_count"] == 1
+    stats = report(engine)
+    assert stats["unsupported_receipts"] == []
+    assert result["decision_id"] in {r["decision_id"] for r in stats["routing"]}
+    assert [e["execution_id"] for e in stats["filter_quality"]["executions"]] == ["after-saturation"]
+    # A later decision counts that outcome as evidence and its receipt validates too.
+    later = route()
+    assert "after-saturation" in {item["id"] for item in later["capability"]["evidence"]}
+    load(engine.config, later["decision_id"])
+
+    # The check itself stays strict: a probability above 1 beyond rounding is refused.
+    for field, message in (("P_clear", "probabilities must be monotone"),
+                           ("P_timely", "timely probabilities must be monotone and at most P_clear")):
+        tampered = deepcopy(receipt)
+        tampered["capability"]["cells"][-1][field] = 1.000001
+        with pytest.raises(HowHardError, match=message):
+            load(engine.config, tampered)

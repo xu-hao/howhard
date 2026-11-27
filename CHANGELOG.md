@@ -175,6 +175,17 @@
   them per decision under `filter_quality.bands`. `v7` to `v10` receipts load, observe,
   replay and report as before.
 
+- Fix: a capability probability can no longer round above 1 (#146). When many clean
+  runs at the strongest cell left almost no posterior mass above it, the running sum
+  behind `P_clear` and `P_timely` could come out a few units in the last place above 1
+  (for example `1.0000000000000004`). The receipt was saved, then refused on load with
+  `probabilities must be monotone along this task's order`, which also stopped
+  `observe --decision` and `report` on that store. Because run weights depend on each
+  run's age in seconds, the same scenario failed only some of the time. Both
+  probabilities are now held within [0, 1] when they are computed; the receipt check
+  is unchanged, so a receipt with a probability above 1 is still refused, including one
+  stored by an earlier build.
+
 ## 5.0.0 — 2026-11-24
 
 - Dynamic synthesized `(task, context)` prototypes with materialized per-cell priors and

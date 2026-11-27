@@ -351,7 +351,10 @@ def _posterior(order, cdf, obs, policy, *, targets=None):
     peak = float(logs.max())
     normalizer = peak + math.log(float(np.exp(logs-peak).sum()))
     posterior = np.exp(logs-normalizer)
-    return dict(zip(order, np.cumsum(posterior)[:-1].tolist())), normalizer
+    # The running sum can round a few units in the last place past 1 once the mass above
+    # the strongest cell vanishes; a probability of clearing never exceeds 1.
+    cumulative = np.clip(np.cumsum(posterior)[:-1], 0., 1.)
+    return dict(zip(order, cumulative.tolist())), normalizer
 
 
 def _upper_cut(learned_order, probabilities, lo, policy, *, margin=None):
