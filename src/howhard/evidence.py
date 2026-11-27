@@ -118,10 +118,11 @@ def collect(engine, payload, proto_state, receipts=None):
         days = max(0.0, (prepared - _observed(row)).total_seconds() / 86400.0)
         # What the run recorded for the beliefs of its own cell: active time, total tokens, and
         # usage by kind when its execution usage is complete.
-        # The run's agent is the label its decision stored for the chosen cell; a run with no
-        # decision, an older receipt or an unlabeled candidate belongs to the one unnamed agent.
+        # The run's agent is the label its decision stored for the chosen cell. A run with no
+        # decision or an older receipt takes the agent imported for its family, if any; with
+        # none, and for an unlabeled candidate, it belongs to the one unnamed agent.
         candidates.append({"id": row["id"], "family": row["family"], "effort": row["resolved_effort"],
-                           "agent": run_agent(engine.config, row, receipts), "outcome": row["outcome"], "active_seconds": effective_active_seconds(row),
+                           "agent": run_agent(engine.config, row, receipts, getattr(engine, "names", None)), "outcome": row["outcome"], "active_seconds": effective_active_seconds(row),
                            "tokens": row.get("tokens"), "token_usage": usage_by_kind(row.get("execution_usage")),
                            "ticket": row["ticket"], "run_weight": float(row["weight"]),
                            "score": float(score), "similarity": similarity(score),

@@ -17,6 +17,9 @@ from .llm import LLMError, resolve
 from . import semantic
 
 REQUEST_FORMAT = "howhard-agent-request-v7"
+# What a request scored when it was prepared: the candidate runs, the capability reader's
+# observations, the failed runs behind the host's caught share and the record on other tasks.
+LEARNED_FIELDS = ("weights_policy", "evidence_candidates", "capability_observations", "caught_record", "prediction")
 
 
 class Engine:
@@ -61,6 +64,9 @@ class Engine:
             raw_rows, _ = storage.snapshot(config)
             if not claimed:
                 state.claim(config)
+            from . import names
+            # Imported names for runs whose receipt stores none, read with the same rows.
+            self.names = names.read(config)
         self.raw_rows = raw_rows
         self.rows = storage.effective_rows(config, raw_rows)
         # Historical identity admission does not change forecasts for a disjoint
@@ -319,6 +325,13 @@ class Engine:
             raise HowHardError("request_id: belongs to another worktree; prepare in the current project")
         from .native import host_name
         host_name(bundle["host"])
+        if "learned_state" in bundle:
+            # A request keeps what it scored when it was prepared. One prepared by a build whose
+            # scored shape differs is refused here, not part-way through a decision.
+            from . import evidence
+            keys(bundle["learned_state"], LEARNED_FIELDS, where="request.learned_state")
+            evidence.validate(bundle["learned_state"]["evidence_candidates"],
+                              where="request.learned_state.evidence_candidates")
         with storage.reading(self.config):
             self._check_request(bundle)
         return bundle
@@ -586,6 +599,18 @@ class Engine:
         return self.observe(current["task_type"], current["model"], current["effort"],
                             current["outcome"], cause=current["cause"], amends=execution_id,
                             id=id, _preserve_outcome=True, measurement_corrections={"execution_usage": usage})
+
+    def import_names(self, value):
+        """Name the host of decisions older than v11 and the agent of families; see ``howhard.names``.
+
+        ``value`` is the parsed names file. Returns, per table, how many names were stored,
+        unchanged, replaced and skipped, and each skipped entry with its reason.
+        """
+        from . import names
+        self.refresh()
+        result = names.import_names(self.config, value)
+        self.refresh()
+        return result
 
     def save_decision(self, decision, path):
         receipt = decisions.load(self.config, decision)

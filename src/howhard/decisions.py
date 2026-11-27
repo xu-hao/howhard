@@ -11,7 +11,8 @@ from .validation import HowHardError, keys, text
 def host(receipt):
     """The name of the host that asked for the route; ``None`` is the one unnamed host.
 
-    Receipts older than v11 carry no name and read as unnamed.
+    Receipts older than v11 carry no name and read as unnamed; ``howhard.names.host`` adds
+    the name an operator imported for one.
     """
     return receipt.get("host")
 
@@ -40,14 +41,18 @@ def scored_receipt(config, row, receipts=None):
     return receipt
 
 
-def run_agent(config, row, receipts=None):
+def run_agent(config, row, receipts=None, names=None):
     """The agent that ran a recorded row: the label its decision stored for the chosen cell.
 
-    A run with no decision, a receipt older than v11 or an unlabeled candidate belongs to the
-    one unnamed agent, ``None``.
+    A v11 receipt's label, or its unlabeled candidate, is final. A run whose receipt stores no
+    agent label (one older than v11, or a run with no decision) takes the agent ``names``
+    imported for its family; with none it belongs to the one unnamed agent, ``None``.
     """
+    from .names import family_agent
     receipt = scored_receipt(config, row, receipts)
-    return None if receipt is None else agent(receipt)
+    if receipt is not None and receipt["format"] == DECISION_FORMAT:
+        return agent(receipt)
+    return family_agent(row["family"], names)
 
 
 def counted_observations(receipt, cell=None):

@@ -62,6 +62,9 @@ def _connect(config, *, write=False):
             db.execute("CREATE TABLE IF NOT EXISTS prototype_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
             db.execute("""CREATE TABLE IF NOT EXISTS prototype_row_state (
                 evidence_id TEXT PRIMARY KEY, row_digest TEXT NOT NULL, position INTEGER NOT NULL)""")
+            # Imported names for runs whose receipt stores none; see howhard.names.
+            db.execute("CREATE TABLE IF NOT EXISTS decision_hosts (decision_id TEXT PRIMARY KEY, host TEXT NOT NULL)")
+            db.execute("CREATE TABLE IF NOT EXISTS family_agents (family TEXT PRIMARY KEY, agent TEXT NOT NULL)")
     except sqlite3.Error as exc:
         if db is not None:
             db.close()
@@ -202,5 +205,42 @@ def decision_ids(config):
         return []
     try:
         return [row[0] for row in db.execute("SELECT decision_id FROM decisions ORDER BY decision_id")]
+    finally:
+        db.close()
+
+
+NAME_TABLES = {"hosts": ("decision_hosts", "decision_id", "host"), "agents": ("family_agents", "family", "agent")}
+
+
+def imported_names(config):
+    """The imported names, ``{"hosts": {decision_id: host}, "agents": {family: agent}}``; empty when none."""
+    result = {table: {} for table in NAME_TABLES}
+    db = _connect(config)
+    if db is None:
+        return result
+    try:
+        present = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        for table, (sql_table, key, value) in NAME_TABLES.items():
+            if sql_table in present:
+                result[table] = dict(db.execute(f"SELECT {key}, {value} FROM {sql_table}").fetchall())
+        return result
+    except sqlite3.Error as exc:
+        raise HowHardError(f"payload store: cannot read imported names: {exc}") from exc
+    finally:
+        db.close()
+
+
+def store_names(config, hosts, agents):
+    """Write imported names, replacing earlier ones for the same key; caller must hold storage.locked admission."""
+    db = _connect(config, write=True)
+    try:
+        with db:
+            for table, entries in (("hosts", hosts), ("agents", agents)):
+                sql_table, key, value = NAME_TABLES[table]
+                db.executemany(f"INSERT OR REPLACE INTO {sql_table} ({key}, {value}) VALUES (?, ?)",
+                               sorted(entries.items()))
+    except sqlite3.Error as exc:
+        from .writes import WriteDependencyError
+        raise WriteDependencyError(config.state_root, "payload database", str(exc)) from exc
     finally:
         db.close()

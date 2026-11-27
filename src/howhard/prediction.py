@@ -100,15 +100,17 @@ def stored_forecast(receipt):
     """What a stored decision says about its cells: its host, their agents and what it guessed.
 
     Receipts of every readable format give a guess by the same merge rule; one older than v11
-    names neither a host nor an agent. A cell the decision stored no forecast for has no guess.
+    names neither a host nor an agent (``named`` is false), so its runs take the names an
+    operator imported. A cell the decision stored no forecast for has no guess.
     """
+    from .context import DECISION_FORMAT
     from .decisions import host
     from .semantic import panel_lookup
     state = receipt["semantic"]
     panels = {key: panel_lookup(panel) for key, panel in state["worlds"].items()}
     experts = state["beliefs"]["experts"]
     covered = all(e["key"] in panels for e in experts)
-    return {"host": host(receipt),
+    return {"named": receipt["format"] == DECISION_FORMAT, "host": host(receipt),
             "agents": {(c["model"], c["effort"]): c.get("agent") for c in receipt["native_candidates"]},
             "guesses": {pair: guesses(panels, experts, pair) for pair in (panels["llm"] if covered else ())
                         if all(pair in panels[e["key"]] for e in experts)}}
@@ -118,12 +120,14 @@ def routed_runs(engine, excluded, prepared, half_life):
     """The finished routed runs on other tasks: what each recorded and what its decision had guessed.
 
     A run enters when its outcome is clean, loud or silent and its decision stored a forecast
-    for the cell that ran. Its host and agent are the ones that decision stores. ``excluded``
+    for the cell that ran. Its host and agent are the ones that decision stores, or for a
+    decision older than v11 the names imported for it and for the run's family. ``excluded``
     holds the evidence candidates of the request, which count through the similar runs
     instead. Each run carries, per kind of value it enters, ``(y, g)``: what happened and
     what had been guessed, on the footing of the ladders.
     """
     from .decisions import exists, load
+    from .names import family_agent, host as named_host
     from .success import log_amount
     # A receipt is immutable under its ID, so what it guessed is read once per engine.
     known, result = engine.receipt_forecasts, []
@@ -152,7 +156,12 @@ def routed_runs(engine, excluded, prepared, half_life):
             if amount is not None and amount > 0 and kind in guessed and guessed[kind]["positive"]:
                 values[kind] = (log_amount(amount), guessed[kind]["guess"])
         days = max(0., (prepared - datetime.fromisoformat(row["observed_at"])).total_seconds() / 86400.)
-        result.append({"host": stored["host"], "agent": stored["agents"].get((row["model"], row["effort"])),
+        if stored["named"]:
+            run_host, run_agent = stored["host"], stored["agents"].get((row["model"], row["effort"]))
+        else:
+            names = getattr(engine, "names", None)
+            run_host, run_agent = named_host({}, decision_id, names), family_agent(pair[0], names)
+        result.append({"host": run_host, "agent": run_agent,
                        "family": pair[0], "effort": pair[1], "ticket": row["ticket"],
                        "age": age_factor(days, half_life), "values": values})
     return result

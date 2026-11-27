@@ -17,6 +17,9 @@ LEGACY_FORMAT_V4 = "howhard-capability-v4"
 LEGACY_FORMAT_V3 = "howhard-capability-v3"
 LEGACY_FORMAT_V2 = "howhard-capability-v2"
 LEGACY_FORMAT_V1 = "howhard-capability-v1"
+# A stored probability may exceed 1 by rounding alone; this is the most a receipt of any
+# format may carry above 1, the same tolerance the order check allows between cells.
+PROBABILITY_TOLERANCE = 1e-10
 OVERRUN_GRACE_RATIO = 1.5
 # Why a widening round ran, and why widening ended. v11 reads admission tiers; older receipts
 # recorded the silent cap. The other three stop labels are shared.
@@ -218,11 +221,13 @@ def caught_record(engine, host, candidates):
     for the cell that ran. It counts at its age factor ``a = 0.5 ** (days / half_life_days)``,
     limited so that one ticket's failed runs count as one run at most. ``F`` sums ``a`` and
     ``C`` sums ``a`` over the loud runs, which were caught before acceptance. The host is
-    the name in the run's receipt; a receipt with no name, or older than v11, belongs to
-    the one unnamed host. The age is measured to the request's prepare time.
+    the name in the run's receipt, or the name imported for a receipt older than v11; a
+    receipt with neither belongs to the one unnamed host. The age is measured to the
+    request's prepare time.
     """
     from . import evidence
-    from .decisions import exists, host as receipt_host, load
+    from .decisions import exists, load
+    from .names import host as named_host
     prepared = datetime.fromisoformat(candidates["prepared_at"])
     # A receipt is immutable under its ID, so its host and forecast cells are read once per engine.
     known = engine.receipt_hosts
@@ -235,12 +240,14 @@ def caught_record(engine, host, candidates):
             if not exists(engine.config, decision_id):
                 continue
             receipt = load(engine.config, decision_id, for_scoring=True)
-            known[decision_id] = None if receipt is None else (receipt_host(receipt), frozenset(
-                (c["family"], c["effort"]) for c in receipt["semantic"]["worlds"]["llm"]))
+            known[decision_id] = None if receipt is None else (
+                {k: receipt[k] for k in ("format", "host") if k in receipt},
+                frozenset((c["family"], c["effort"]) for c in receipt["semantic"]["worlds"]["llm"]))
         if known[decision_id] is None or (row["family"], row["resolved_effort"]) not in known[decision_id][1]:
             continue
         days = max(0.0, (prepared - datetime.fromisoformat(row["observed_at"])).total_seconds() / 86400.0)
-        failed.append((row, known[decision_id][0], evidence.age_factor(days, candidates["half_life_days"])))
+        failed.append((row, named_host(known[decision_id][0], decision_id, getattr(engine, "names", None)),
+                       evidence.age_factor(days, candidates["half_life_days"])))
     shares = evidence.ticket_shares([(row["ticket"], age) for row, _, age in failed])
     counted = [(row["outcome"] == "loud", name, age * share) for (row, name, age), share in zip(failed, shares)]
 
@@ -643,6 +650,12 @@ def _recomputed_share(state, constants, host):
     return expected
 
 
+def rounded_above_one(state):
+    """Whether a stored capability block holds a ``P_clear`` or ``P_timely`` above 1 within the tolerance."""
+    return any(1 < c.get(field, 0) <= 1 + PROBABILITY_TOLERANCE
+               for c in state["cells"] for field in ("P_clear", "P_timely"))
+
+
 def validate_receipt(state, inventory, semantic, chosen, *, decision_format=DECISION_FORMAT, constants=None, host=None):
     """Check complete filter coverage and the exact set of prospectively forecast cells."""
     optional_keys = ["prior_sources"] if isinstance(state, dict) and state.get("format") in (FORMAT, LEGACY_FORMAT_V5) else []
@@ -700,12 +713,15 @@ def validate_receipt(state, inventory, semantic, chosen, *, decision_format=DECI
         if c["classification"] != expected or c["placement"] not in ("learned", "prior-only") or c["threshold"] not in ("learned", "prior-only"):
             raise HowHardError("decision.capability: inconsistent classification or evidence status")
         value = number(c["P_clear"], "capability.P_clear", nonnegative=True)
-        if value > 1 or value < previous - 1e-10:
+        # Builds before probabilities were held within [0, 1] could store a running sum a few
+        # units in the last place above 1; that much is accepted, and nothing more.
+        if value > 1 + PROBABILITY_TOLERANCE or value < previous - PROBABILITY_TOLERANCE:
             raise HowHardError("decision.capability: probabilities must be monotone along this task's order")
         previous = value
         if has_timely:
             timely = number(c["P_timely"], "capability.P_timely", nonnegative=True)
-            if timely > 1 or timely < previous_timely - 1e-10 or timely > value + 1e-10:
+            if (timely > 1 + PROBABILITY_TOLERANCE or timely < previous_timely - PROBABILITY_TOLERANCE
+                    or timely > value + PROBABILITY_TOLERANCE):
                 raise HowHardError("decision.capability: timely probabilities must be monotone and at most P_clear")
             previous_timely = timely
     filters = {"filter:llm": state["baseline"]}
