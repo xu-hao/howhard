@@ -38,11 +38,14 @@ output file, outside backend state coordination.
 
 Admitted mutations also hold `storage.lock` and the existing journal advisory lock.
 This keeps JSONL snapshots consistent, including clients selecting different journals
-inside one store. Evidence readers bypass the FIFO queue and take shared data locks;
-they wait only for an active mutation, with the same bounded waiting policy. Memory
-reads use SQLite snapshots without schema writes after initialization. First-use
-schema initialization is a write. `writes` inspects tickets without joining the queue,
-creating a store, or waiting for data locks.
+inside one store. Evidence and memory readers bypass the FIFO queue and take shared
+data locks; they wait only for an active mutation, with the same bounded waiting policy.
+A memory read that meets an admitted SQLite commit therefore waits for it, or ends with
+`WriteTimeout` at its deadline, rather than failing with SQLite's `database is locked`.
+Memory reads use SQLite snapshots without schema writes after initialization. First-use
+schema initialization is a write and takes a write turn before any shared data lock.
+`writes` inspects tickets without joining the queue, creating a store, or waiting for
+data locks.
 
 The independent project identity lock is held only while claiming a new store/anchor,
 not across every operation. Existing independent stores of the same project therefore
