@@ -88,7 +88,11 @@ active time (`seconds_ci`) and on each token kind (`token_usage_ci`). See the
 {ref}`forecast contract <forecast-contract>`.
 
 The decision includes `chosen.model`, `chosen.effort`, `decision_id`, `cap_met`,
-`needs_review` and `cost_policy`. Honor required review. The host executes the task;
+`needs_review` and `cost_policy`. `needs_review` is true when the chosen cell is not
+trusted to keep silently wrong accepted results within the risk class's limit: the cell
+is on trial, or every cell was excluded and the nearest one was drawn. It is advice to
+have the result reviewed independently; nothing enforces or records it. `cap_met` is
+its opposite. See the {ref}`admission tiers <admission-tiers>`. The host executes the task;
 a recommendation alone is not execution. Unknown worker prices stay unknown. If any
 candidate is unpriced, the comparison excludes worker money for every candidate and
 labels that limit.

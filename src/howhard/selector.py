@@ -65,32 +65,29 @@ def choose(prepared, config, seed, parts):
             f"candidates: no candidate has sufficient remaining credit to schedule task "
             f"(minimum needed_credit_usd {min_needed:.6g} USD, maximum available_credit_usd {max_avail:.6g} USD)"
         )
-    eligible = [row for row in schedulable if row["admissible"]]
-    cap_met = bool(eligible)
-    best = min(eligible or schedulable, key=lambda row: (row["J"], row["family"], row["effort"]))
+    from .success import admission_pool
     sampling = result["semantic"]["sampling"]
     policy = result["sampling_policy"]
+    # Trusted and on-trial cells with enough credit compete as equals. When there is none,
+    # the cells with enough credit nearest the best chance of meeting the limit compete instead.
+    pool, pool_kind = admission_pool(schedulable, policy)
+    best = min(pool, key=lambda row: (row["J"], row["family"], row["effort"]))
     # Posterior overlap gates Thompson eligibility. Only an explicit risk-class
     # explore_within additionally caps the mean-cost gap.
     fraction = result["constants"].get("explore_within")
-    if eligible:
-        uncertainty = {(c["family"], c["effort"]): c["cost_sd"] for c in sampling["cells"]}
-        best_sd = uncertainty[best["family"], best["effort"]]
-        def band(row):
-            overlap = policy["uncertainty_multiplier"]*(best_sd+uncertainty[row["family"], row["effort"]])
-            return overlap if fraction is None else min(abs(best["J"])*fraction, overlap)
-        eligible = [row for row in eligible if row["J"]-best["J"] <= band(row) + 1e-12]
-        chosen = min(eligible, key=lambda row: (row["sampled_J"], row["J"], row["family"], row["effort"]))
-        reason = "sampled-within-posterior-overlap" if chosen is not best else "mean-best" if len(eligible) > 1 else "disabled-no-supported-alternative"
-    elif config.data["on_cap_unmet"] == "lowest-bound":
-        chosen = min(schedulable, key=lambda row: (row["admission_risk"], row["J"], row["family"], row["effort"]))
-        reason = "disabled-cap-unmet"
-    else:
-        chosen = best
-        reason = "disabled-cap-unmet"
+    uncertainty = {(c["family"], c["effort"]): c["cost_sd"] for c in sampling["cells"]}
+    best_sd = uncertainty[best["family"], best["effort"]]
+    def band(row):
+        overlap = policy["uncertainty_multiplier"]*(best_sd+uncertainty[row["family"], row["effort"]])
+        return overlap if fraction is None else min(abs(best["J"])*fraction, overlap)
+    eligible = [row for row in pool if row["J"]-best["J"] <= band(row) + 1e-12]
+    chosen = min(eligible, key=lambda row: (row["sampled_J"], row["J"], row["family"], row["effort"]))
+    reason = "sampled-within-posterior-overlap" if chosen is not best else "mean-best" if len(eligible) > 1 else "disabled-no-supported-alternative"
+    # The flag is advice to the caller: the chosen cell is not trusted. Nothing enforces it.
+    cap_met = chosen["tier"] == "trusted"
     result.update(chosen={k: chosen[k] for k in ("model", "family", "effort")}, seed=seed, cap_met=cap_met,
                   needs_review=not cap_met, why=[])
-    result["exploration"] = {"enabled": cap_met and len(eligible) > 1, "reason": reason,
+    result["exploration"] = {"enabled": len(eligible) > 1, "reason": reason, "pool": pool_kind,
                              "mean_best": {k: best[k] for k in ("model", "family", "effort")},
                              "mean_best_J": best["J"], "chosen_mean_J": chosen["J"],
                              "mean_gap": chosen["J"]-best["J"], "relative_band": fraction,
@@ -98,7 +95,7 @@ def choose(prepared, config, seed, parts):
     result["selection"] = {"objective": "cost-to-accepted-result", "retry_policy": "same-cell-until-non-loud",
                            "constants": deepcopy(result["constants"]), "sampling_policy": deepcopy(policy),
                            "cells": deepcopy(result["cells"]), "exploration": deepcopy(result["exploration"]),
-                           "cap_met": cap_met, "needs_review": not cap_met, "on_cap_unmet": config.data["on_cap_unmet"]}
+                           "cap_met": cap_met, "needs_review": not cap_met}
     pick_index = indices[chosen["family"], chosen["effort"]]
     for row in result["cells"]:
         if not result["cost_policy"]["worker_money_included"]:
@@ -111,16 +108,19 @@ def choose(prepared, config, seed, parts):
                 reason="insufficient-credit",
                 message=f"excluded: needed_credit_usd {row['needed_credit_usd']:.6g} > available_credit_usd {row['available_credit_usd']:.6g}",
             )
-        elif not row["admissible"] and cap_met:
-            quantile = policy["admission_quantile"]
-            explanation.update(reason="silent-cap", message=f"excluded: P_silent_accepted posterior q{quantile*100:g} {row['admission_risk']:.6g} > epsilon {result['constants']['epsilon']:.6g}")
-        elif cap_met and row not in eligible:
+        elif row not in pool:
+            if pool_kind == "trusted-and-on-trial":
+                bar = f"trial_probability {policy['trial_probability']:.6g}"
+            else:
+                bar = f"all_excluded_factor {policy['all_excluded_factor']:.6g} of the best pi"
+            explanation.update(reason="silent-cap", message=(
+                f"excluded: pi {row['pi']:.6g}, the chance that P_silent_accepted <= epsilon "
+                f"{result['constants']['epsilon']:.6g}, is below {bar}"))
+        elif row not in eligible:
             if "explore_within" in result["constants"]:
                 explanation.update(reason="explore-within", message="excluded: mean accepted-result cost exceeds the supported exploration band")
             else:
                 explanation.update(reason="posterior-overlap", message="excluded: mean accepted-result cost exceeds the posterior-overlap exploration band")
-        elif not cap_met and config.data["on_cap_unmet"] == "lowest-bound":
-            explanation.update(reason="lowest-bound", message="higher accepted-result silent admission quantile under lowest-bound policy")
         else:
             i = indices[row["family"], row["effort"]]
             differences = {name: float(value[0, i] - value[0, pick_index]) for name, value in parts.items()}

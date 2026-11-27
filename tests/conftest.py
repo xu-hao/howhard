@@ -46,7 +46,7 @@ def project(tmp_path):
         # Synthetic economics: rework dominates token cost, while escaped defects
         # cost twice as much. The cheap class permits no expected-cost exploration.
         policy = '\n[classes.critical]\nC_loud = 1000.0\nC_silent = 2000.0\nlambda_per_hour = 0.0\n[classes.standard]\nC_loud = 1000.0\nC_silent = 2000.0\nlambda_per_hour = 0.0\nepsilon = 0.5\n[classes.routine]\nexplore_within = 0.0\n'
-        path.write_text('on_cap_unmet = "flag-review"\n' + settings + policy + '\n[task_types]\nX = "critical"\nY = "standard"\nZ = "critical"\ncheap = "routine"\n')
+        path.write_text(settings + policy + '\n[task_types]\nX = "critical"\nY = "standard"\nZ = "critical"\ncheap = "routine"\n')
         config = load_config(path)
         log = config.path(config.data["logs"][0]["path"])
         log.parent.mkdir(parents=True, exist_ok=True)

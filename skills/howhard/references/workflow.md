@@ -129,7 +129,7 @@ using the reported cause; report repeated failure. Never silently reuse stale re
 or invent a writer window. Explicit memory writer revisions remain strict.
 
 The decision includes the receipt `decision_id`, `chosen` native ID/control,
-`cost_policy`, and cap/review status. With any unpriced cell, `worker_money_included`
+`cost_policy`, and tier/review status. With any unpriced cell, `worker_money_included`
 is false and the comparison excludes worker money for all cells. Unknown
 `session_cost_usd` is null; known session costs remain visible but do not affect that comparison.
 `J` then includes expected retry-adjusted risk/time cost while omitting unknown worker
@@ -137,16 +137,23 @@ money. The full objective uses `C_run = session_cost_usd` and is
 `(session_cost_usd + lambda*T + C_loud*P_loud + C_silent*P_silent)
 / max(probability_floor, 1-P_loud)`: loud attempts retry the same cell. Fully priced native
 inventories with a uniform credit-rate basis include worker money using each candidate's
-`cost_per_credit`. Mixed bases omit it uniformly. `needs_review` still requires independent review;
-each forecast row is a bounded per-cell Dirichlet prior updated only by that cell's own
+`cost_per_credit`. Mixed bases omit it uniformly.
+Each forecast row is a bounded per-cell Dirichlet prior updated only by that cell's own
 recorded outcomes on similar tasks, weighted by task similarity and age with all runs of
-one ticket counting for at most one run, and the risk cap compares the 80% posterior quantile
-of accepted-result defects, `P_silent/(1-P_loud)`, with epsilon (`admission_risk`).
+one ticket counting for at most one run. Each cell reports `pi`, the posterior chance that
+its accepted-result defect share `P_silent/(1-P_loud)` is at most epsilon, and a `tier`:
+`trusted` when `pi >= 0.80`, `on-trial` when `0.20 <= pi < 0.80`, `excluded` below 0.20
+(`admission_risk` is the 80% posterior point of the same share).
 Reported `P_*` bounds are 95% posterior credible intervals, including for an `llm`-only
-forecast. Exploration (Thompson sampling) covers cells whose posterior cost overlaps the
-mean-best cell; only an explicit risk-class `explore_within` also caps the mean gap.
-An unmet cap disables exploration, chooses minimum mean J (or configured lowest-bound),
-and requires review. Inspect the recorded reason.
+forecast. Trusted and on-trial cells with enough credit compete together. Exploration
+(Thompson sampling) covers the competing cells whose posterior cost overlaps the
+mean-best one; only an explicit risk-class `explore_within` also caps the mean gap.
+When no trusted or on-trial cell has enough credit, the cells with enough credit whose
+`pi` is at least half the best `pi` compete instead (`exploration.pool` is
+`all-excluded`), so a cell is always drawn. `needs_review` means the chosen cell is not
+trusted: an on-trial cell, or a cell drawn when every cell was excluded. `cap_met` is
+its opposite. The flag is advice to have the result reviewed independently; the
+backend enforces and records nothing for it. Inspect the recorded reason and pool.
 
 Capability placement is an order for this task/project, learned from similar actual
 executions. Fitness is an underpowered/fit/overpowered band. Unseen cells have visibly

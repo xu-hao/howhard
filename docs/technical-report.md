@@ -31,7 +31,7 @@ task and captured project context. The outcome categories are:
 | --- | --- | --- |
 | `clean` | No defect has been observed | A non-loud result is accepted; later evidence may correct the label |
 | `loud` | A gate or review caught a model failure | The cost model charges another attempt on the same candidate |
-| `silent` | A defect escaped acceptance and was discovered later | Selection includes an escaped-defect penalty and an accepted-result risk cap |
+| `silent` | A defect escaped acceptance and was discovered later | Selection includes an escaped-defect penalty and an accepted-result risk limit |
 | `interrupted` | Execution stopped operationally (`usage_limit`, `provider_error`, `host_error`, `cancelled`, `unrecorded`) | Preserved for usage/cost accounting and audit; excluded from ternary forecasts, capability thresholds, active-duration calibration and belief scoring |
 
 Acceptance is therefore observable workflow behavior, not proof of correctness.
@@ -85,7 +85,7 @@ acceptance. These hypothetical values illustrate the objective, not measured
 howhard savings. The full decision also considers escaped-defect risk.
 
 The {ref}`selection contract <accepted-result-selection>` specifies the objective,
-policy fields and fallback behavior.
+policy fields and admission tiers.
 
 ## 2 Architecture and independent LLM judgments
 
@@ -131,8 +131,8 @@ Unavailable or invalid independent forecasts stop routing explicitly.
 The full supplied inventory is considered at the capability stage. Only the fit
 band receives detailed outcome and usage forecasts. If the learned band exceeds
 the forecast budget, an explicit re-filter is requested; a second oversized band
-is refused. If no candidate satisfies the risk cap, bounded widening can request
-new forecasts for stronger candidates before applying the review policy.
+is refused. If every forecast candidate is excluded by the risk limit, bounded
+widening can request new forecasts for stronger candidates before a cell is drawn.
 
 The [capability contract](capability.md) defines these transitions, while the
 [context contract](context.md) defines the frozen task and project inputs.
@@ -352,25 +352,134 @@ Reported probabilities are the support-weighted mixture of the experts' posterio
 marginals {math}`\mathrm{Beta}(\alpha_i,\sum_j\alpha_j-\alpha_i)`, with equal-tailed
 95% credible intervals. Under a Dirichlet, accepted-result defect risk
 {math}`p_s/(p_c+p_s)` is exactly {math}`\mathrm{Beta}(\alpha_s,\alpha_c)`, which
-preserves each expert's loud/silent relationship. A candidate passes the risk policy
-when the 80% posterior quantile of that mixture is at most the risk class's epsilon.
-The 80% quantile, rather than the 97.5% bound, avoids rejecting every unseen cell for
-prior width alone while still rejecting forecasts or histories with substantial silent
-risk. The intervals are Bayesian under the stated prior and exchangeability
-assumptions; they are not calibrated frequentist guarantees, and epsilon is a selection
-rule, not an empirical guarantee about the future defect rate.
+preserves each expert's loud/silent relationship. The intervals are Bayesian under the
+stated prior and exchangeability assumptions; they are not calibrated frequentist
+guarantees, and epsilon is a selection rule, not an empirical guarantee about the
+future defect rate.
 
-When the cap is met, selection samples a predictive expert in proportion to its
-support and draws outcome probabilities from that expert's per-cell Dirichlet posterior
-(Thompson sampling). Exploration is restricted to candidates that satisfy risk and
-credit constraints and whose posterior cost distribution overlaps the mean-best
-candidate's, measured by delta-method standard deviations. A fixed fraction of the best
-mean cost caps the gap only when a risk class sets it explicitly; by default a small
-point-forecast difference cannot lock in a favoured cell and starve an unseen cheaper
-one of evidence. After widening is exhausted with no passing candidate, selection
-disables sampling and applies a deterministic fallback that requires review. The
-{ref}`selection reference <accepted-result-selection>` defines the posterior,
-admission and fallback policies.
+### The chance of meeting the limit
+
+Admission asks one question of each forecast cell: how likely is it that the cell keeps
+silently wrong accepted results within the risk class's limit?
+
+```{math}
+\pi(c)=P(S\le\varepsilon)
+      =\sum_k w_k\,I(\varepsilon;\,\alpha_{s,k},\,\alpha_{c,k}).
+```
+
+- {math}`c`: a forecast cell.
+- {math}`S`: the accepted-defect share, silent results divided by accepted results,
+  {math}`p_s/(p_c+p_s)`.
+- {math}`\varepsilon`: the risk class's limit on {math}`S`.
+- {math}`\pi(c)`: the share of the cell's posterior for {math}`S` at or below
+  {math}`\varepsilon`.
+- {math}`k`, {math}`w_k`: a participating expert and its support weight. The weights
+  sum to 1.
+- {math}`\alpha_{s,k}`, {math}`\alpha_{c,k}`: the silent and clean entries of expert
+  {math}`k`'s posterior {math}`\alpha` for the cell.
+- {math}`I(x;a,b)`: the regularized incomplete beta function, the share of a
+  {math}`\mathrm{Beta}(a,b)` distribution at or below {math}`x`.
+
+In plain words, {math}`\pi` is the chance, under the cell's current belief, that no
+more than {math}`\varepsilon` of its accepted results are silently wrong.
+
+Example: {math}`\varepsilon` is 0.10. Two experts weigh 0.6 and 0.4, and their
+posteriors for {math}`S` are {math}`\mathrm{Beta}(1,30)` and
+{math}`\mathrm{Beta}(1,9)`. Then {math}`I` is {math}`1-0.9^{30}=0.958` and
+{math}`1-0.9^{9}=0.613`, so {math}`\pi=0.6\times0.958+0.4\times0.613=0.820`.
+
+### Three tiers
+
+```{math}
+\begin{aligned}
+\text{trusted}  &\iff \pi(c)\ge q,\\
+\text{on trial} &\iff t\le\pi(c)<q,\\
+\text{excluded} &\iff \pi(c)<t.
+\end{aligned}
+```
+
+- {math}`q`: the trusted line, `admission_quantile`, 0.80.
+- {math}`t`: the on-trial line, `trial_probability`, 0.20.
+
+In plain words, a cell that very likely meets the limit is trusted. An uncertain cell
+is on trial. Only a cell that very likely misses the limit is excluded. A wide
+posterior, which is all an unproven cell has, puts the cell on trial instead of
+shutting it out for width alone, while a forecast or history with substantial silent
+risk is still excluded.
+
+Example, with one expert and {math}`\varepsilon=0.10`:
+
+| Posterior for {math}`S` | Average | {math}`\pi` | Tier | 80% point of {math}`S` |
+| --- | --- | --- | --- | --- |
+| {math}`\mathrm{Beta}(1,30)` | 3.2% | 0.958 | trusted | 0.052 |
+| {math}`\mathrm{Beta}(1,9)` | 10.0% | 0.613 | on trial | 0.164 |
+| {math}`\mathrm{Beta}(4,8)` | 33.3% | 0.019 | excluded | 0.445 |
+
+The last column is the receipt's `admission_risk`, the {math}`q` point of the same
+mixture. It is at most {math}`\varepsilon` exactly when {math}`\pi\ge q`, so the
+trusted tier is the same test read from the other side.
+
+### Who competes
+
+```{math}
+\begin{aligned}
+\mathcal{P}&=\{c:\ \mathrm{credit\_ok}(c)\ \text{and}\ c\ \text{is trusted or on trial}\}
+  &&\text{when not empty},\\
+\mathcal{P}&=\{c:\ \mathrm{credit\_ok}(c)\ \text{and}\ \pi(c)\ge f\cdot\max_{c'}\pi(c')\}
+  &&\text{otherwise},\\
+c^{*}&=\arg\min_{c\in\mathcal{P}}J(c),\\
+\mathrm{eligible}(c)&\iff c\in\mathcal{P}\ \text{and}\
+  J(c)-J(c^{*})\le u\,\bigl(\mathrm{sd}(c^{*})+\mathrm{sd}(c)\bigr),\\
+\text{chosen}&=\arg\min_{c\ \mathrm{eligible}}\tilde J(c).
+\end{aligned}
+```
+
+- {math}`\mathcal{P}`: the pool of cells that compete.
+- {math}`\mathrm{credit\_ok}(c)`: the cell has enough credit; the maximum in the
+  second line runs over the cells {math}`c'` that have enough credit.
+- {math}`f`: `all_excluded_factor`, 0.5.
+- {math}`J(c)`, {math}`\mathrm{sd}(c)`: the cell's mean cost and the delta-method
+  standard deviation of that cost.
+- {math}`c^{*}`: the pool cell with the lowest mean cost.
+- {math}`u`: `uncertainty_multiplier`, 1. A risk class's `explore_within` additionally
+  caps the gap at that fraction of {math}`|J(c^{*})|`.
+- {math}`\tilde J(c)`: the cell's cost under the seed's draw. Selection samples a
+  predictive expert in proportion to its support and draws outcome probabilities from
+  that expert's per-cell Dirichlet posterior, and an active duration from its
+  log-normal calibration (Thompson sampling).
+
+In plain words, trusted and on-trial cells compete as equals, and nothing limits how
+often an on-trial cell is chosen. A cell must still be close enough to the cheapest
+pool cell for their cost distributions to overlap; by default a small point-forecast
+difference cannot lock in a favoured cell and starve an unseen cheaper one of
+evidence. When no trusted or on-trial cell has enough credit, the cells nearest the
+best chance compete instead, so a sample is always drawn. Selection is refused only
+when no cell has enough credit.
+
+Example of the second pool: three cells with enough credit have {math}`\pi` 0.12, 0.08
+and 0.05. The bar is {math}`0.5\times0.12=0.06`, so the first two form the pool and the
+third is left out.
+
+### The flag
+
+```{math}
+\begin{aligned}
+\texttt{cap\_met}&\iff \text{the chosen cell is trusted},\\
+\texttt{needs\_review}&\iff \text{not}\ \texttt{cap\_met}.
+\end{aligned}
+```
+
+In plain words, the flag says that the chosen cell is not trusted. It is advice to the
+caller, and nothing is enforced or recorded for it.
+
+Example: a chosen cell with {math}`\pi=0.613` is on trial, so `cap_met` is false and
+`needs_review` is true.
+
+When every forecast cell is excluded, the engine first forecasts the next stronger
+overpowered cell, one per round, up to `widening_rounds` and within the forecast
+budget; one trusted or on-trial cell stops this widening. The
+{ref}`selection reference <admission-tiers>` defines the receipt fields, and the
+[capability filter](capability.md) defines widening.
 
 ## 6 Retrospective defect attribution
 
@@ -405,7 +514,7 @@ money is excluded uniformly and the decision identifies the partial risk/time
 comparison. Unknown usage and cost remain unknown.
 
 Optional candidate credit budgets add a scheduling constraint against forecast
-invocation cost, separate from risk admissibility. They require uniform pricing
+invocation cost, separate from the admission tiers. They require uniform pricing
 and can represent remaining session and weekly windows. Selection refuses a
 candidate whose forecast exceeds its available credit, and refuses routing when
 none of the evaluated candidates is schedulable. This forecast-based check does
@@ -472,8 +581,8 @@ The components have distinct statistical meanings:
 | Cross-model ordering | Constrained local posterior/MAP search | Approximate search over rankings |
 | Memory support | Tempered, recency-weighted predictive evidence | Forecast support does not establish truth or causality |
 | Outcome posterior | Per-cell Dirichlet–multinomial update with continuous prior decay (`tau_emp = 2`) | Prior decay scale, base floor and the 14-day evidence half-life are fixed modelling choices |
-| Risk admission | 80% quantile of the mixture accepted-defect posterior | No calibrated coverage guarantee |
-| Selection sampling | Thompson sampling within posterior cost overlap | Delta-method overlap is approximate |
+| Admission tiers | Share of the mixture accepted-defect posterior within epsilon, cut at 0.80 and 0.20 | No calibrated coverage guarantee; the two lines are policy choices |
+| Selection sampling | Thompson sampling within posterior cost overlap, among trusted and on-trial cells | Delta-method overlap is approximate |
 | Outcome amendments | Correction and replay of an earlier execution | Requires supported attribution and preserved provenance |
 
 Together, these mechanisms give routing access to both immediate outcomes and

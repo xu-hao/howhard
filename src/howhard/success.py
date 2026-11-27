@@ -10,13 +10,15 @@ from .llm import SETTINGS
 from .validation import HowHardError, keys, number
 
 DEFAULTS = {"min_concentration": 2., "max_concentration": 1000000., "prior_strength": 8.,
-            "uncertainty_multiplier": 1., "admission_quantile": .8,
-            "half_life_days": 14., "comparison_cap": 256}
+            "uncertainty_multiplier": 1., "admission_quantile": .8, "trial_probability": .2,
+            "all_excluded_factor": .5, "half_life_days": 14., "comparison_cap": 256}
 # Frozen v7/v8 receipts recorded this policy shape; it is read-only history.
 LEGACY_DEFAULTS = ("min_concentration", "max_concentration", "prior_strength", "explore_within", "uncertainty_multiplier")
-# Frozen v9/v10 receipts aged evidence by count (outcome_recency), not by time; read-only history.
+# Frozen v9/v10 receipts aged evidence by count (outcome_recency), not by time, and had no
+# admission tiers (trial_probability, all_excluded_factor); read-only history.
 COUNT_AGED_DEFAULTS = ("min_concentration", "max_concentration", "prior_strength", "uncertainty_multiplier",
                        "admission_quantile", "outcome_recency")
+POOLS = ("trusted-and-on-trial", "all-excluded")
 INTERVAL = (.025, .975)
 CI_Z_WIDTH = 3.92  # A central 95% interval spans about 3.92 standard deviations.
 POSTERIOR_FIELDS = ("prior", "prior_concentration", "counts", "evidence_weight", "alpha")
@@ -51,7 +53,10 @@ def calibrate_duration(forecast_seconds, pair, duration_observations):
 
 
 def validate_policy(policy, *, legacy=False, count_aged=False):
-    """Validate the sampling policy; ``legacy`` reads v7/v8 receipts and ``count_aged`` v9/v10 ones."""
+    """Validate the sampling policy; ``legacy`` reads v7/v8 receipts and ``count_aged`` v9/v10 ones.
+
+    Only the current policy carries the time-based evidence constants and the two tier constants.
+    """
     if not legacy and isinstance(policy, dict) and "explore_within" in policy:
         raise HowHardError("sampling.explore_within: removed; Thompson eligibility uses posterior overlap. "
                            "Set explore_within on a risk class to cap the mean-cost exploration band explicitly")
@@ -78,6 +83,10 @@ def validate_policy(policy, *, legacy=False, count_aged=False):
         raise HowHardError("sampling.half_life_days: expected a positive number of days")
     if type(policy["comparison_cap"]) is not int or policy["comparison_cap"] < 1:
         raise HowHardError("sampling.comparison_cap: expected a positive integer")
+    if policy["trial_probability"] > policy["admission_quantile"]:
+        raise HowHardError("sampling.trial_probability: expected a probability in [0, admission_quantile]")
+    if policy["all_excluded_factor"] > 1:
+        raise HowHardError("sampling.all_excluded_factor: expected a factor in [0, 1]")
     return policy
 
 
@@ -133,6 +142,11 @@ def _beta_density_logit(t, a, b):
     return math.exp(a * log_x + b * log_1mx - _log_beta(a, b))
 
 
+def mixture_cdf(components, x):
+    """P(X <= x) under a weighted Beta mixture [(weight, a, b)]: sum of w * I_x(a, b)."""
+    return math.fsum(w * beta_cdf(x, a, b) for w, a, b in components if w > 0)
+
+
 def mixture_quantile(components, q):
     """Quantile of a weighted Beta mixture [(weight, a, b)], solved by safeguarded Newton in logit space."""
     components = [(w, a, b) for w, a, b in components if w > 0]
@@ -140,7 +154,7 @@ def mixture_quantile(components, q):
         x = _sigmoid(t)
         if x <= 0. or x >= 1.:  # Underflow at the extremes keeps the bracket finite.
             return 0. if x <= 0. else 1.
-        return math.fsum(w * beta_cdf(x, a, b) for w, a, b in components)
+        return mixture_cdf(components, x)
     lo, hi = -700., 36.
     mean = math.fsum(w * a / (a + b) for w, a, b in components)
     t = min(hi, max(lo, math.log(mean) - math.log1p(-mean) if 0 < mean < 1 else 0.))
@@ -220,8 +234,32 @@ def outcome_posterior(row, pair, outcome_observations, policy, *, legacy_v9=Fals
             "concentration": total, "mean": (alpha / total).tolist()}
 
 
-def posterior_intervals(panels, weights, pair, outcome_observations, policy, *, legacy_v9=False):
-    """Expert-mixture Dirichlet marginals plus the Beta(alpha_silent, alpha_clean) accepted risk."""
+def admission_tier(pi, policy):
+    """Admission tier of a cell from its chance ``pi`` of meeting the silent limit."""
+    if pi >= policy["admission_quantile"]:
+        return "trusted"
+    return "on-trial" if pi >= policy["trial_probability"] else "excluded"
+
+
+def admission_pool(cells, policy):
+    """The cells that compete, and which of the two pools they form.
+
+    Trusted and on-trial cells with enough credit compete together. When there is none, the
+    cells with enough credit whose ``pi`` is nearest the best one compete instead.
+    """
+    schedulable = [row for row in cells if row.get("credit_ok", True)]
+    pool = [row for row in schedulable if row["tier"] != "excluded"]
+    if pool or not schedulable:
+        return pool, POOLS[0]
+    bar = policy["all_excluded_factor"] * max(row["pi"] for row in schedulable)
+    return [row for row in schedulable if row["pi"] >= bar], POOLS[1]
+
+
+def posterior_intervals(panels, weights, pair, outcome_observations, policy, *, legacy_v9=False, epsilon=None):
+    """Expert-mixture Dirichlet marginals plus the Beta(alpha_silent, alpha_clean) accepted risk.
+
+    With ``epsilon``, also ``pi``: the share of that accepted-risk mixture at or below ``epsilon``.
+    """
     from .semantic import OUTCOMES
     posteriors = {
         k: outcome_posterior(panels[k][pair], pair, outcome_observations, policy, legacy_v9=legacy_v9)
@@ -235,6 +273,8 @@ def posterior_intervals(panels, weights, pair, outcome_observations, policy, *, 
     accepted = [(weights[k], posteriors[k]["alpha"][2], posteriors[k]["alpha"][0]) for k in weights]
     intervals["P_silent_accepted"] = mixture_interval(accepted)
     intervals["admission_risk"] = mixture_quantile(accepted, policy["admission_quantile"])
+    if epsilon is not None:
+        intervals["pi"] = min(1., mixture_cdf(accepted, epsilon))
     return intervals, posteriors
 
 
@@ -310,9 +350,12 @@ def calibration(result, state, expert, cell, row, *, legacy_v9=False):
             "duration": dur, "cost_sd": math.sqrt(variance)}
 
 
-def validate_selection(selection, semantic, capability, cost_policy, *, decision_format=DECISION_FORMAT):
+def validate_selection(selection, semantic, capability, cost_policy, *, decision_format=DECISION_FORMAT, chosen=None):
     """Validate frozen objective/cap meanings without reinterpreting older receipts."""
-    keys(selection, ["objective", "retry_policy", "constants", "sampling_policy", "cells", "exploration", "cap_met", "needs_review", "on_cap_unmet"], where="decision.selection")
+    # v11 sorts cells into tiers and retires the cap-unmet policy; older receipts keep theirs.
+    tiered = decision_format == DECISION_FORMAT
+    keys(selection, ["objective", "retry_policy", "constants", "sampling_policy", "cells", "exploration", "cap_met", "needs_review",
+                     *(() if tiered else ("on_cap_unmet",))], where="decision.selection")
     if selection["objective"] != "cost-to-accepted-result" or selection["retry_policy"] != "same-cell-until-non-loud":
         raise HowHardError("decision.selection: unsupported objective/retry policy")
     legacy = decision_format in (LEGACY_DECISION_V7, LEGACY_DECISION_V8)
@@ -334,7 +377,7 @@ def validate_selection(selection, semantic, capability, cost_policy, *, decision
         raise HowHardError("decision.selection.cells: expected array")
     for row in selection["cells"]:
         keys(row, ["model", "family", "effort", "P_clean", "P_loud", "P_silent", "C_run", "session_cost_usd", "cost_per_credit", "needed_credit_usd", "cost_basis", "T", "expected_attempts", "J", "P_silent_accepted", "admissible", "sampled_J", "credit_budget", "available_credit_usd", "credit_ok"]
-             + ([] if legacy else ["admission_risk"]), where="selection cell")
+             + ([] if legacy else ["admission_risk"]) + (["pi", "tier"] if tiered else []), where="selection cell")
         for field in ("T", "expected_attempts", "J", "sampled_J"):
             number(row[field], "selection."+field, nonnegative=True)
         cost_per_credit = number(row["cost_per_credit"], "selection.cost_per_credit", nonnegative=True)
@@ -394,12 +437,21 @@ def validate_selection(selection, semantic, capability, cost_policy, *, decision
                 semantic["outcome_observations"],
                 policy,
                 legacy_v9=(decision_format == LEGACY_DECISION_V9),
+                epsilon=constants["epsilon"] if tiered else None,
             )
             for field in ("P_clean", "P_loud", "P_silent", "P_silent_accepted"):
                 if any(abs(row[field][k] - intervals[field][k]) > 1e-9 for k in ("mean", "lower", "upper")):
                     raise HowHardError("decision.selection: posterior credible interval mismatch")
             risk = number(row["admission_risk"], "selection.admission_risk", nonnegative=True)
-            if abs(risk - intervals["admission_risk"]) > 1e-9 or row["admissible"] != (risk <= constants["epsilon"]):
+            if abs(risk - intervals["admission_risk"]) > 1e-9:
+                raise HowHardError("decision.selection: accepted-result risk/cap mismatch")
+            if tiered:
+                pi = number(row["pi"], "selection.pi", nonnegative=True)
+                if abs(pi - intervals["pi"]) > 1e-9:
+                    raise HowHardError("decision.selection: pi does not match the frozen forecasts and outcome observations")
+                if row["tier"] != admission_tier(pi, policy) or row["admissible"] != (row["tier"] == "trusted"):
+                    raise HowHardError("decision.selection: tier/admissible does not match pi")
+            elif row["admissible"] != (risk <= constants["epsilon"]):
                 raise HowHardError("decision.selection: accepted-result risk/cap mismatch")
             loud, silent = row["P_loud"]["mean"], row["P_silent"]["mean"]
         if decision_format == LEGACY_DECISION_V7:
@@ -422,12 +474,33 @@ def validate_selection(selection, semantic, capability, cost_policy, *, decision
         raise HowHardError("decision.selection: missing forecasted cells")
     if not any(c.get("credit_ok", True) for c in selection["cells"]):
         raise HowHardError("decision.selection: no schedulable cells with sufficient credit")
+    exploration = selection["exploration"]
+    if tiered:
+        if semantic["sampling"]["enabled"] is not True:
+            raise HowHardError("decision.selection: a sample is always drawn")
+        pool, kind = admission_pool(selection["cells"], policy)
+        if not isinstance(exploration, dict) or type(exploration.get("enabled")) is not bool:
+            raise HowHardError("decision.selection: invalid exploration state")
+        if exploration.get("pool") != kind:
+            raise HowHardError("decision.selection: exploration.pool does not match the tiers and credit of the cells")
+        picked = (chosen["model"], chosen["effort"]) if isinstance(chosen, dict) else None
+        chosen_row = next((c for c in selection["cells"] if (c["model"], c["effort"]) == picked), None)
+        if chosen_row is None or not chosen_row["credit_ok"]:
+            raise HowHardError("decision.chosen: selected cell is not schedulable within credit_budget")
+        if not any(c is chosen_row for c in pool):
+            raise HowHardError("decision.selection: the chosen cell is outside the admission pool")
+        cap_met = chosen_row["tier"] == "trusted"
+        if any(type(selection[flag]) is not bool for flag in ("cap_met", "needs_review")) or (
+                selection["cap_met"] != cap_met or selection["needs_review"] != (not cap_met)):
+            raise HowHardError("decision.selection: inconsistent cap/review state")
+        if (capability["widening_stop"] == "pickable") != any(c["tier"] != "excluded" for c in selection["cells"]):
+            raise HowHardError("decision.selection: widening_stop does not match the tiers of the forecast cells")
+        return selection
     cap_met = any(c["admissible"] and c.get("credit_ok", True) for c in selection["cells"])
     if semantic["sampling"]["enabled"] != cap_met:
         raise HowHardError("decision.selection: sampling and cap status disagree")
     if type(selection["cap_met"]) is not bool or selection["cap_met"] != cap_met or selection["needs_review"] != (not cap_met):
         raise HowHardError("decision.selection: inconsistent cap/review state")
-    exploration = selection["exploration"]
     if type(exploration.get("enabled")) is not bool or (not cap_met and (exploration["enabled"] or exploration["reason"] != "disabled-cap-unmet")):
         raise HowHardError("decision.selection: exploration must be disabled when cap is unmet")
     return selection

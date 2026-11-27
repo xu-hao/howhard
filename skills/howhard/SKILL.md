@@ -82,11 +82,14 @@ the host's actual tools execute the task.
    Prepared requests bind candidates, prices and worktree; follow-up retrieve/decide
    commands do not repeat or replace that inventory. Never invent unrun outcomes or
    edit read-only execution experts.
-5. Inspect the chosen native ID/control, cost policy, accepted-result cap/review
-   status and exploration explanation. `J` includes same-cell retries after loud
-   failures; epsilon caps `P_silent/(1-P_loud)` among accepted results. An unmet cap
-   disables exploration, selects by mean cost (or configured lowest-bound) and requires
-   review. Delegate
+5. Inspect the chosen native ID/control, cost policy, tier/review status and
+   exploration explanation. `J` includes same-cell retries after loud failures;
+   epsilon limits `P_silent/(1-P_loud)` among accepted results. Each cell's `pi` is its
+   chance of meeting that limit: `trusted` at 0.80 or more, `on-trial` from 0.20, else
+   `excluded`. Trusted and on-trial cells compete together; if every cell is excluded,
+   one of those nearest the best chance is still drawn. `needs_review` is true when the
+   chosen cell is not trusted (`cap_met` is false): it advises independent review of
+   the result, and nothing enforces or records it. Delegate
    through the actual host tool within the authorized scope, using only supported
    controls. On a host whose native spawn API applies explicit model and effort
    overrides, accepted controls plus completed task execution attribute feedback to

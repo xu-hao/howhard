@@ -35,7 +35,8 @@ CELLS = {
 PRICE = {"fixture/small": 1., "fixture/medium": 3., "fixture/large": 9.}
 # The selection of ``scenario``, by seed, under the evidence rules for recorded runs (direct
 # similarity, age by time, one run's weight per ticket). The first seed chooses the cell with the
-# lowest mean cost; the second chooses another cell by its sampled cost. A host name, agent labels
+# lowest mean cost; the second chooses another cell by its sampled cost. The cell that is not
+# admissible is on trial, so it competes beside the two trusted cells. A host name, agent labels
 # and stated ranges must all reproduce it.
 GOLDEN = json.loads("""
 {"20261126": {"cap_met": true, "cells": [{"J": 35.5774262094975, "P_clean": 0.7200002437932107, "P_loud":
@@ -51,8 +52,9 @@ GOLDEN = json.loads("""
 0.21517533643877096, "credit_ok": true, "effort": "low", "expected_attempts": 1.2150220906827038, "model":
 "fixture/small", "needed_credit_usd": 0.012625, "sampled_J": 104.36121302982659, "session_cost_usd": 0.012625}],
 "chosen": {"effort": "low", "family": "native-096766504d3bd86fa493766c00210ce6e8bf21c30f0e9c9e3872da33695be808",
-"model": "fixture/medium"}, "exploration": {"eligible_cells": [{"effort": "high", "family":
-"native-269c62909b2bbad4d5089d46107f9e654e7e5e6b1c0e89ddd9e0b1e94dc6e4af", "model": "fixture/small"}, {"effort":
+"model": "fixture/medium"}, "exploration": {"eligible_cells": [{"effort": "low", "family":
+"native-269c62909b2bbad4d5089d46107f9e654e7e5e6b1c0e89ddd9e0b1e94dc6e4af", "model": "fixture/small"}, {"effort": "high",
+"family": "native-269c62909b2bbad4d5089d46107f9e654e7e5e6b1c0e89ddd9e0b1e94dc6e4af", "model": "fixture/small"}, {"effort":
 "low", "family": "native-096766504d3bd86fa493766c00210ce6e8bf21c30f0e9c9e3872da33695be808", "model":
 "fixture/medium"}], "enabled": true, "mean_best": {"effort": "low", "family":
 "native-096766504d3bd86fa493766c00210ce6e8bf21c30f0e9c9e3872da33695be808", "model": "fixture/medium"}, "reason":
@@ -76,8 +78,9 @@ GOLDEN = json.loads("""
 "expected_attempts": 1.2150220906798155, "model": "fixture/small", "needed_credit_usd": 0.012625, "sampled_J":
 512.5590760135832, "session_cost_usd": 0.012625}], "chosen": {"effort": "high", "family":
 "native-269c62909b2bbad4d5089d46107f9e654e7e5e6b1c0e89ddd9e0b1e94dc6e4af", "model": "fixture/small"}, "exploration":
-{"eligible_cells": [{"effort": "high", "family":
-"native-269c62909b2bbad4d5089d46107f9e654e7e5e6b1c0e89ddd9e0b1e94dc6e4af", "model": "fixture/small"}, {"effort":
+{"eligible_cells": [{"effort": "low", "family":
+"native-269c62909b2bbad4d5089d46107f9e654e7e5e6b1c0e89ddd9e0b1e94dc6e4af", "model": "fixture/small"}, {"effort": "high",
+"family": "native-269c62909b2bbad4d5089d46107f9e654e7e5e6b1c0e89ddd9e0b1e94dc6e4af", "model": "fixture/small"}, {"effort":
 "low", "family": "native-096766504d3bd86fa493766c00210ce6e8bf21c30f0e9c9e3872da33695be808", "model":
 "fixture/medium"}], "enabled": true, "mean_best": {"effort": "low", "family":
 "native-096766504d3bd86fa493766c00210ce6e8bf21c30f0e9c9e3872da33695be808", "model": "fixture/medium"}, "reason":

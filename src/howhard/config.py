@@ -109,13 +109,15 @@ def load_config(path=None, *, directory=None, state_directory=None):
         base = path.parent
         raw = path.read_bytes()
         overrides = parse_toml(raw, str(path))
-        # An explicitly supplied policy must make its fallback intentional.
-        if "on_cap_unmet" not in overrides:
-            raise HowHardError("config.on_cap_unmet: required; set 'flag-review' or 'lowest-bound'")
+        # Retired with tiered admission: the key is still accepted so older files load, but
+        # nothing reads it. One notice goes to standard error; standard output is untouched.
+        if "on_cap_unmet" in overrides:
+            del overrides["on_cap_unmet"]
+            notice("on_cap_unmet is retired and ignored; tiered admission always draws a cell")
         data = merge(default, overrides)
     else:
         data = default
-    keys(data, ["project", "on_cap_unmet", "journal", "logs", "classes", "models"],
+    keys(data, ["project", "journal", "logs", "classes", "models"],
          ["task_types", "retrieval", "inventories", "capability", "sampling"], "config")
     from .success import DEFAULTS as SAMPLING, validate_policy as validate_sampling
     sampling = dict(table(data.get("sampling", {}), "config.sampling"))
@@ -132,8 +134,6 @@ def load_config(path=None, *, directory=None, state_directory=None):
     for key in ("classes", "models", "task_types"):
         table(data.get(key, {}), f"config.{key}")
     text(data["project"], "config.project", label=True)
-    if data["on_cap_unmet"] not in ("flag-review", "lowest-bound"):
-        raise HowHardError("config.on_cap_unmet: unknown policy")
     text(data["journal"], "config.journal")
     if not isinstance(data["logs"], list) or not data["logs"]:
         raise HowHardError("config.logs: at least one log is required")

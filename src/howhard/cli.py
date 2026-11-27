@@ -134,13 +134,14 @@ def render(result):
                       if (c["model"], c["effort"]) == (chosen["model"], chosen["effort"])), None)
         lines.append(f"{chosen['model']} ({chosen['family']}) effort={chosen['effort']} seed={result['seed']}"
                      + (f" agent={label}" if label is not None else ""))
-        lines.append(f"Accepted-result silent cap: {'met' if result['cap_met'] else 'UNMET'}")
-        lines.append(f"Exploration: {result['exploration']['reason']}")
+        row = next(c for c in result["cells"] if (c["model"], c["effort"]) == (chosen["model"], chosen["effort"]))
+        lines.append(f"Chosen cell: {row['tier']} (chance of meeting the accepted-result silent limit {row['pi']:.3f})")
+        lines.append(f"Exploration: {result['exploration']['reason']} (pool: {result['exploration']['pool']})")
         lines.append(f"Decision: {result['decision_id']} (record with: howhard observe {result['decision_id']} clean)")
         if result["needs_review"]:
-            lines.append("Independent review is required before release.")
+            lines.append("The chosen cell is not trusted: independent review is advised before release.")
     lines.append(f"Task: {result['task_type']}  Risk: {result['risk_class']}  Constants: {json.dumps(result['constants'], sort_keys=True)}")
-    lines.append("family/effort  P_clean [95%]  P_loud [95%]  P_silent [95%]  P_silent accepted [95%]  session_cost_usd (cost)  needed_credit_usd (credit)  time h  J* USD  sampled J*  admissible (accepted-risk quantile)")
+    lines.append("family/effort  P_clean [95%]  P_loud [95%]  P_silent [95%]  P_silent accepted [95%]  session_cost_usd (cost)  needed_credit_usd (credit)  time h  J* USD  sampled J*  tier (pi; accepted-risk quantile)")
     for row in result["cells"]:
         fields = [f"{row['family']}/{row['effort']}"]
         for name in ("P_clean", "P_loud", "P_silent", "P_silent_accepted"):
@@ -150,7 +151,7 @@ def render(result):
                        f"{row['needed_credit_usd']:.4f}" if row["needed_credit_usd"] is not None else "unknown",
                        f"{row['T']:.4f}", f"{row['J']:.4f}",
                        f"{row['sampled_J']:.4f}" if "sampled_J" in row else "—",
-                       f"{row['admissible']} ({row['admission_risk']:.3f})" if "admission_risk" in row else str(row["admissible"])))
+                       f"{row['tier']} ({row['pi']:.3f}; {row['admission_risk']:.3f})"))
         lines.append("  ".join(fields))
     for reason in result.get("why", []):
         lines.append(f"Why {reason['family']}/{reason['effort']} lost: {reason['message']}")

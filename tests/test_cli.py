@@ -52,12 +52,12 @@ def test_journal_override_cannot_alias_tracked_log(project):
         Engine(config, journal_path=log)
 
 
-def test_explicit_config_required_policy_and_unknown_type_risk(tmp_path, capsys, candidate_file):
+def test_explicit_config_needs_no_cap_policy_and_unknown_type_needs_risk(tmp_path, capsys, candidate_file):
     path = tmp_path / "config.toml"
     path.write_text('project = "local"\n')
-    assert main(["pick", "bookkeeping", "--config", str(path), "--candidates", str(candidate_file)]) == 2
-    assert "on_cap_unmet" in capsys.readouterr().err
-    path.write_text('on_cap_unmet = "flag-review"\n')
+    assert main(["pick", "bookkeeping", "--config", str(path), "--json", "--candidates", str(candidate_file)]) == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["risk_class"] == "routine" and captured.err == ""
     assert main(["pick", "unknown", "--config", str(path), "--candidates", str(candidate_file)]) == 2
     assert "--risk" in capsys.readouterr().err
     assert main(["pick", "unknown", "--risk", "docs", "--config", str(path), "--json", "--candidates", str(candidate_file)]) == 0
