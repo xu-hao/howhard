@@ -138,14 +138,16 @@ money. The full objective uses `C_run = session_cost_usd` and is
 / max(probability_floor, 1-P_loud)`: loud attempts retry the same cell. Fully priced native
 inventories with a uniform credit-rate basis include worker money using each candidate's
 `cost_per_credit`. Mixed bases omit it uniformly.
-Each forecast row is a bounded per-cell Dirichlet prior updated only by that cell's own
+Each cell holds one belief for its loud rate and one for its accepted-defect share
+`P_silent/(1-P_loud)`. Each starts from the merged forecast at the weight of about four
+runs and is reshaped only by that cell's own
 recorded outcomes on similar tasks, weighted by task similarity and age with all runs of
-one ticket counting for at most one run. Each cell reports `pi`, the posterior chance that
-its accepted-result defect share `P_silent/(1-P_loud)` is at most epsilon, and a `tier`:
+one ticket counting for at most one run. Each cell reports `pi`, the chance under its
+belief that its accepted-defect share is at most epsilon, and a `tier`:
 `trusted` when `pi >= 0.80`, `on-trial` when `0.20 <= pi < 0.80`, `excluded` below 0.20
-(`admission_risk` is the 80% posterior point of the same share).
-Reported `P_*` bounds are 95% posterior credible intervals, including for an `llm`-only
-forecast. Trusted and on-trial cells with enough credit compete together. Exploration
+(`admission_risk` is the 80% point of the same belief).
+`P_loud` and `P_silent_accepted` report the 95% range of those two beliefs, including
+for an `llm`-only forecast; `P_clean` and `P_silent` report a mean only. Trusted and on-trial cells with enough credit compete together. Exploration
 (Thompson sampling) covers the competing cells whose posterior cost overlaps the
 mean-best one; only an explicit risk-class `explore_within` also caps the mean gap.
 When no trusted or on-trial cell has enough credit, the cells with enough credit whose

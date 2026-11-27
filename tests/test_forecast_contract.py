@@ -124,8 +124,10 @@ def selection(result):
             "cells": [{**{k: row[k] for k in fields},
                        **{k: row[k]["mean"] for k in ("P_clean", "P_loud", "P_silent", "P_silent_accepted")}}
                       for row in sorted(result["cells"], key=lambda row: (row["model"], row["effort"]))],
-            "sampling": sorted(([c["family"], c["effort"], c["concentration"], c["cost_sd"],
-                                 *c["outcome_posterior"]["alpha"]]
+            "sampling": sorted(([c["family"], c["effort"], c["cost_sd"],
+                                 *(c["outcome_beliefs"][rate][field] for rate in ("loud", "silent")
+                                   for field in ("prediction", "spread", "centre", "mean")),
+                                 *c["outcome_beliefs"]["loud"]["counts"], *c["outcome_beliefs"]["silent"]["counts"]]
                                 for c in result["semantic"]["sampling"]["cells"]), key=lambda c: c[:2])}
 
 
@@ -437,9 +439,11 @@ def test_forecast_stored_without_a_host_or_ranges_reads_as_unnamed(tmp_path):
 
 # The first seed chooses the trusted cell with the lowest mean cost, the second another trusted
 # cell by its sampled cost, and the third the cell on trial, which flags the decision for review.
-@pytest.mark.parametrize("seed, reason, trusted", [(20261127, "mean-best", True),
-                                                   (20261128, "sampled-within-posterior-overlap", True),
-                                                   (20261126, "sampled-within-posterior-overlap", False)])
+# A rate is read from its belief at a grid point, and under these seeds no read sits within 1e-4
+# of a step, so the seconds between the two scenarios cannot move one to the next point.
+@pytest.mark.parametrize("seed, reason, trusted", [(20261128, "mean-best", True),
+                                                   (20261132, "sampled-within-posterior-overlap", True),
+                                                   (20261150, "sampled-within-posterior-overlap", False)])
 @pytest.mark.parametrize("options", [
     {"host": "host-one"},
     {"agents": True},

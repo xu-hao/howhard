@@ -170,7 +170,7 @@ stays 0.3. With outcomes loud, loud, clean and clean, `n_loud = 0.7333` and
 ([capability filtering](capability.md)); that reader has no `delta`. For example, a loud run with no
 recorded cause, `sim = 0.8` and `a = 0.7071` weighs
 `0.8 * 0.75 * 0.5 * 0.7071 = 0.2121` in the capability reader. The counts feed the
-{ref}`outcome posterior <outcome-posterior>`, and the active-time reader's runs and
+{ref}`outcome beliefs <outcome-posterior>`, and the active-time reader's runs and
 weights feed the {ref}`beliefs for active time and tokens <amount-beliefs>`: every such
 run updates active time, those that record total `tokens` update the total, and those
 with a complete execution usage update each token kind.

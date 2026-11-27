@@ -9,6 +9,7 @@ is synthetic and owns its state.
 from collections import Counter
 from copy import deepcopy
 import json
+import math
 
 import pytest
 
@@ -19,11 +20,10 @@ from howhard.decisions import load
 from howhard.payload_store import put
 from howhard.report import report
 from howhard.storage import locked
-from howhard.success import beta_cdf, mixture_cdf
 from howhard.validation import HowHardError
 from legacy_receipts import to_v7, to_v8, to_v9, to_v10
 from test_capability_filter import SimilarityDouble, filtering, forecasts, inventory, start
-from test_outcome_posterior import by_model, calibration, decide, observe, spec
+from test_outcome_posterior import by_model, calibration, decide, logit, observe, reference_belief, spec
 
 EPSILON = .10  # The packaged limit of the standard risk class.
 TASK = '[task_types]\ntask = "standard"\n'
@@ -53,57 +53,60 @@ def budget(credit):
             "weekly_7d_remaining_credit_usd": 5.0}
 
 
-def with_silent_share(silent, clean, strength=40.):
-    """A forecast whose prior for the accepted-defect share is Beta(silent, clean) at ``strength``."""
-    return spec(clean / strength, 1 - (clean + silent) / strength, silent / strength)
+def with_silent_share(share, loud=.05):
+    """A forecast whose guess for the accepted-defect share, silent / (clean + silent), is ``share``."""
+    return spec((1 - loud) * (1 - share), loud, (1 - loud) * share)
 
 
-# The three posteriors of the ticket's table, as (alpha_silent, alpha_clean): pi, tier, admission_risk.
-TABLE = {"trusted": ((1, 30), .958, "trusted", .052),
-         "trial": ((1, 9), .613, "on-trial", .164),
-         "excluded": ((4, 8), .019, "excluded", .445)}
-TABLE_SPECS = {f"fixture/{name}": with_silent_share(*row[0]) for name, row in TABLE.items()}
-STRONG_PRIOR = "[sampling]\nprior_strength = 40.0\n"
+# Three forecasts of the accepted-defect share with no stated range and no counted run:
+# the share, then pi, tier and admission_risk at the limit of 0.10.
+TABLE = {"trusted": (.02, .957, "trusted", .021),
+         "trial": (.10, .702, "on-trial", .156),
+         "excluded": (.50, .011, "excluded", .692)}
+TABLE_SPECS = {f"fixture/{name}": with_silent_share(row[0]) for name, row in TABLE.items()}
 
-# Forecasts at the packaged prior strength of 8 whose pi is 0.12, 0.08 and 0.05. The third
-# has the lowest mean cost, so only the rule of the second pool keeps it from being chosen.
-NEAR_BEST = {"fixture/first": spec(1 - .4 - .19602353086223795, .4, .19602353086223795),
-             "fixture/second": spec(1 - .4 - .2204080484977714, .4, .2204080484977714),
-             "fixture/third": spec(1 - .02 - .3277276059298381, .02, .3277276059298381)}
+# Forecasts whose pi is 0.12, 0.08 and 0.05: the shares are solved from the belief's start. The
+# third has the lowest mean cost, so only the rule of the second pool keeps it from being chosen.
+NEAR_BEST = {"fixture/first": with_silent_share(.3100763259434137, loud=.7),
+             "fixture/second": with_silent_share(.34527039736158194, loud=.7),
+             "fixture/third": with_silent_share(.38400454829285435, loud=.02)}
 # A trusted and an on-trial cell whose costs overlap: the on-trial one is faster and riskier.
-OVERLAP = {"fixture/trusted": spec(.93, .05, .02, seconds=3 * 3600), "fixture/trial": spec(.88, .06, .06)}
+OVERLAP = {"fixture/trusted": spec(.93, .05, .02, seconds=3 * 3600), "fixture/trial": spec(.85, .06, .09)}
 
 
-def test_pi_is_the_posterior_share_within_the_limit_and_sorts_cells_into_three_tiers(tmp_path):
-    engine = configured(tmp_path / "table", STRONG_PRIOR)
+def test_pi_is_the_share_of_the_belief_within_the_limit_and_sorts_cells_into_three_tiers(tmp_path):
+    engine = configured(tmp_path / "table")
     result = decide(engine, priced(*TABLE), TABLE_SPECS, seed=1)
     assert result["constants"]["epsilon"] == EPSILON and set(result["semantic"]["worlds"]) == {"llm"}
     cells = by_model(result)
-    for name, ((silent, clean), pi, tier, risk) in TABLE.items():
+    for name, (share, pi, tier, risk) in TABLE.items():
         row = cells[f"fixture/{name}"]
-        alpha = calibration(result, f"fixture/{name}")["outcome_posterior"]["alpha"]
-        assert (alpha[2], alpha[0]) == pytest.approx((silent, clean))
+        belief = calibration(result, f"fixture/{name}")["outcome_beliefs"]["silent"]
+        assert belief["prediction"] == pytest.approx(share) and belief["counts"] == [0., 0.]
+        expected = reference_belief(belief["prediction"])
         assert row["pi"] == pytest.approx(pi, abs=5e-4)
-        assert row["pi"] == pytest.approx(beta_cdf(EPSILON, silent, clean))
+        assert row["pi"] == belief["pi"] and row["pi"] == pytest.approx(expected["pi"](EPSILON), abs=1e-9)
         assert row["tier"] == tier and row["admissible"] is (tier == "trusted")
         assert row["admission_risk"] == pytest.approx(risk, abs=5e-4)
+        assert row["admission_risk"] == pytest.approx(expected["point"](.8), abs=1e-9)
     policy = result["selection"]["sampling_policy"]
     assert (policy["admission_quantile"], policy["trial_probability"], policy["all_excluded_factor"]) == (.8, .2, .5)
     assert "on_cap_unmet" not in result["selection"]
     assert load(engine.config, result["decision_id"])["selection"]["cells"] == result["selection"]["cells"]
 
-    # Two experts weighing 0.6 and 0.4 with Beta(1, 30) and Beta(1, 9): 0.6 * 0.958 + 0.4 * 0.613.
-    assert mixture_cdf([(.6, 1, 30), (.4, 1, 9)], EPSILON) == pytest.approx(.820, abs=5e-4)
-    # At the decision boundary, a memory expert enters pi with its weight in the same way.
-    mixed_engine = configured(tmp_path / "mixed", STRONG_PRIOR, retrieval=SimilarityDouble())
+    # A memory expert enters the one forecast of the cell with its weight, on the log-odds scale:
+    # pi is the share within the limit of the belief that starts from the merged forecast.
+    mixed_engine = configured(tmp_path / "mixed", retrieval=SimilarityDouble())
     memory = mixed_engine.memory.add("Risk", "This worker escapes more defects on rollback repairs")
     mixed = decide(mixed_engine, priced("trusted"), TABLE_SPECS, seed=1, memory_forecasts=[
-        {**memory, "specs": {"fixture/trusted": with_silent_share(1, 9)}}])
+        {**memory, "specs": {"fixture/trusted": with_silent_share(.10)}}])
     weights = {e["key"]: e["weight"] for e in mixed["semantic"]["beliefs"]["experts"]}
     assert len(weights) == 2 and all(0 < w < 1 for w in weights.values())
-    expected = weights["llm"] * beta_cdf(EPSILON, 1, 30) + (1 - weights["llm"]) * beta_cdf(EPSILON, 1, 9)
-    assert mixed["cells"][0]["pi"] == pytest.approx(expected)
-    assert beta_cdf(EPSILON, 1, 9) < mixed["cells"][0]["pi"] < beta_cdf(EPSILON, 1, 30)
+    centre = weights["llm"] * logit(.02) + (1 - weights["llm"]) * logit(.10)
+    stated = math.sqrt(weights["llm"] * (logit(.02) - centre) ** 2 + (1 - weights["llm"]) * (logit(.10) - centre) ** 2)
+    expected = reference_belief(1 / (1 + math.exp(-centre)), stated)
+    assert mixed["cells"][0]["pi"] == pytest.approx(expected["pi"](EPSILON), abs=1e-9)
+    assert cells["fixture/trial"]["pi"] < mixed["cells"][0]["pi"] < cells["fixture/trusted"]["pi"]
     load(mixed_engine.config, mixed["decision_id"])
 
 
@@ -119,15 +122,20 @@ def test_pick_and_summary_report_pi_and_tier_for_every_cell(tmp_path, monkeypatc
         assert len(result["cells"]) == 2
         for row in result["cells"]:
             # The fixture provider forecasts clean 0.5, loud 0.45 and silent 0.05 for every cell.
-            assert row["pi"] == pytest.approx(beta_cdf(EPSILON, 8 * .05, 8 * .5))
+            assert row["pi"] == pytest.approx(reference_belief(.05 / .55)["pi"](EPSILON), abs=1e-9)
             assert row["tier"] == "on-trial" and row["admissible"] is False
     assert picked["selection"]["cells"] == picked["cells"] and picked["needs_review"] and not picked["cap_met"]
     assert main(["pick", *arguments, "--seed", "4"]) == 0
     text = capsys.readouterr().out
-    assert "on-trial (0.697;" in text and "Chosen cell: on-trial" in text and "pool: trusted-and-on-trial" in text
+    assert "on-trial (0.734;" in text and "Chosen cell: on-trial" in text and "pool: trusted-and-on-trial" in text
+    # Only the loud rate and the accepted-defect share have a belief, so only they print a range.
+    header = next(line for line in text.splitlines() if line.startswith("family/effort"))
+    assert "P_clean  P_loud [95%]  P_silent  P_silent accepted [95%]" in header
+    row = next(line for line in text.splitlines() if "on-trial (0.734;" in line).split("  ")
+    assert [field.count("[") for field in row[1:5]] == [0, 1, 0, 1]
 
 
-def test_a_cell_is_trusted_exactly_when_format_v10_marks_it_admissible(tmp_path):
+def test_a_cell_is_trusted_exactly_when_the_trusted_point_of_its_belief_is_within_the_limit(tmp_path):
     decisions = []
     # A grid of forecast silent shares, read by the forecaster alone and beside a memory expert.
     grid = configured(tmp_path / "grid", retrieval=SimilarityDouble())
@@ -151,14 +159,15 @@ def test_a_cell_is_trusted_exactly_when_format_v10_marks_it_admissible(tmp_path)
     seen = Counter()
     for engine, result in decisions:
         for row in result["cells"]:
-            v10_admissible = row["admission_risk"] <= result["constants"]["epsilon"]
-            assert (row["tier"] == "trusted") is row["admissible"] is v10_admissible
-            assert (row["pi"] >= .8) is v10_admissible
+            # admission_risk is the admission_quantile point of the same belief that pi is read from.
+            within = row["admission_risk"] <= result["constants"]["epsilon"]
+            assert (row["tier"] == "trusted") is row["admissible"] is within
+            assert (row["pi"] >= .8) is within
             seen[row["tier"]] += 1
-        # The v10 validator recomputes admission_risk and requires admissible == (risk <= epsilon).
-        legacy = to_v10(load(engine.config, result["decision_id"]))
-        assert [c["admissible"] for c in load(engine.config, legacy)["selection"]["cells"]] == [
-            c["admissible"] for c in result["selection"]["cells"]]
+        # A v10 receipt keeps its own rule on its own recorded posterior: admissible == (risk <= epsilon).
+        legacy = load(engine.config, to_v10(load(engine.config, result["decision_id"])))
+        assert all(c["admissible"] is (c["admission_risk"] <= result["constants"]["epsilon"])
+                   for c in legacy["selection"]["cells"])
     assert seen["trusted"] >= 3 and seen["on-trial"] >= 3 and seen["excluded"] >= 2
 
 
@@ -378,7 +387,7 @@ def test_on_cap_unmet_is_accepted_and_ignored_with_one_notice(routed, tmp_path):
 
 
 def test_trial_probability_zero_excludes_no_cell_and_bad_tier_constants_are_refused(tmp_path):
-    engine = configured(tmp_path / "zero", STRONG_PRIOR.rstrip() + "\ntrial_probability = 0.0\n")
+    engine = configured(tmp_path / "zero", "[sampling]\ntrial_probability = 0.0\n")
     result = decide(engine, priced(*TABLE), TABLE_SPECS, seed=1)
     assert {c["model"]: c["tier"] for c in result["cells"]} == {
         "fixture/trusted": "trusted", "fixture/trial": "on-trial", "fixture/excluded": "on-trial"}
@@ -389,11 +398,11 @@ def test_trial_probability_zero_excludes_no_cell_and_bad_tier_constants_are_refu
     pending = start(never, inventory(6))
     pending = never.decide(pending["request_id"], filtering(pending["baseline_request"], 1, 1))
     hopeless = never.decide(pending["request_id"], forecasts(pending["baseline_request"], silent=.8), seed=1)
-    assert hopeless["cells"][0]["tier"] == "on-trial" and hopeless["cells"][0]["pi"] < 1e-6
+    assert hopeless["cells"][0]["tier"] == "on-trial" and hopeless["cells"][0]["pi"] < 1e-3
     assert hopeless["capability"]["widening"] == [] and hopeless["exploration"]["pool"] == "trusted-and-on-trial"
 
     # The on-trial line may reach the trusted line, which leaves no on-trial tier.
-    edge = configured(tmp_path / "edge", STRONG_PRIOR.rstrip() + "\ntrial_probability = 0.8\n")
+    edge = configured(tmp_path / "edge", "[sampling]\ntrial_probability = 0.8\n")
     assert {c["tier"] for c in decide(edge, priced(*TABLE), TABLE_SPECS, seed=1)["cells"]} == {"trusted", "excluded"}
 
     refused = (("trial_probability = 0.81", "sampling.trial_probability"),
@@ -417,7 +426,7 @@ def executed(receipt, model):
 
 
 def test_a_stored_decision_revalidates_and_changed_tier_fields_are_refused(tmp_path):
-    engine = configured(tmp_path / "frozen", STRONG_PRIOR)
+    engine = configured(tmp_path / "frozen")
     names = ("trusted", "trial", "excluded")
     # Choose the on-trial cell: it is the only cell with enough credit besides the excluded one.
     candidates = [{"model": f"fixture/{name}", "effort": "high", "usd_per_mtok": 1.0,
@@ -452,7 +461,7 @@ def test_a_stored_decision_revalidates_and_changed_tier_fields_are_refused(tmp_p
         "no draw": (lambda r: (r["semantic"]["sampling"].update(enabled=False, reason="cap-unmet", cells=[]),
                                r["semantic"].pop("sampled_expert")), "a sample is always drawn"),
         "retired policy": (lambda r: r["selection"].update(on_cap_unmet="flag-review"), "unknown keys"),
-        "trial line": (lambda r: r["selection"]["sampling_policy"].update(trial_probability=.7),
+        "trial line": (lambda r: r["selection"]["sampling_policy"].update(trial_probability=.75),
                        "tier/admissible does not match pi"),
         "missing tier constant": (lambda r: r["selection"]["sampling_policy"].pop("all_excluded_factor"), "missing keys"),
         "frozen draw policy": (lambda r: r["semantic"]["sampling"]["policy"].pop("trial_probability"), "missing keys"),

@@ -2,6 +2,7 @@
 from conftest import forecast_request
 
 import json
+import math
 
 import pytest
 
@@ -39,7 +40,7 @@ def test_llm_only_forecasts_determine_cap_without_statistical_floor(tmp_path):
     engine = Engine(directory=tmp_path, llm=Confident())
     choice = engine.pick("task", native_candidates=INVENTORY, seed=1)
     assert choice["cap_met"] and not choice["needs_review"]
-    assert choice["cells"][0]["P_silent"]["upper"] == pytest.approx(.0001)
+    assert choice["cells"][0]["P_silent"] == {"mean": pytest.approx(.0001, rel=1e-3)}
     assert set(choice["semantic"]["worlds"]) == {"llm"}
     assert "statistical" not in {e["key"] for e in engine.memory_beliefs()["experts"]}
     assert not (engine.config.state_root / "posterior.npz").exists()
@@ -134,17 +135,28 @@ def test_memory_forecast_can_raise_risk_and_require_review(tmp_path):
     pending = engine.prepare("task", native_candidates=inventory([("opus", "high")]))
     pending = forecast_request(engine, pending)
     cell = pending["baseline_request"]["cells"][0]
-    reference = {"family": cell["family"], "effort": cell["effort"], "clean": .98,
-                 "loud": .015, "silent": .005, "tokens": 1000, "seconds": 10}
+    reference = {"family": cell["family"], "effort": cell["effort"], "clean": .93,
+                 "loud": .015, "silent": .055, "tokens": 1000, "seconds": 10}
+    risky = {**reference, "clean": .5, "loud": .1, "silent": .4}
     response = {"forecasts": [reference], "memory_forecasts": [{"id": memory["id"],
-                "version": memory["version"], "forecasts": [{**reference, "clean": .5, "loud": .1, "silent": .4}]}],
+                "version": memory["version"], "forecasts": [risky]}],
                 "reason": "The observed boundary makes this candidate risky"}
     choice = engine.decide(pending["request_id"], response, seed=1)
     assert not choice["cap_met"] and choice["needs_review"]
     row = choice["cells"][0]
-    assert row["P_silent"]["mean"] == pytest.approx(.8 * .005 + .2 * .4)
-    assert row["P_silent"]["upper"] > .4
-    assert row["admission_risk"] > choice["constants"]["epsilon"]
+    # The two guesses for the accepted-defect share are merged on the log-odds scale by the expert weights.
+    logit = lambda p: math.log(p / (1 - p))
+    centre = .8 * logit(.055 / .985) + .2 * logit(.4 / .9)
+    assert row["P_silent_accepted"]["mean"] == pytest.approx(1 / (1 + math.exp(-centre)))
+    assert row["P_silent_accepted"]["upper"] > .4
+    assert row["tier"] == "on-trial" and row["admission_risk"] > choice["constants"]["epsilon"]
+    # The forecaster alone leaves the same cell trusted: the memory's forecast is what asks for review.
+    alone = Engine(directory=tmp_path / "alone")
+    pending = forecast_request(alone, alone.prepare("task", native_candidates=inventory([("opus", "high")])))
+    plain = alone.decide(pending["request_id"], {"forecasts": [reference], "memory_forecasts": [],
+                                                  "reason": "No memory applies"}, seed=1)
+    assert plain["cap_met"] and plain["cells"][0]["tier"] == "trusted"
+    assert plain["cells"][0]["pi"] > row["pi"]
 
 
 def test_unsurfaced_external_observation_keeps_prepared_request_valid(tmp_path):

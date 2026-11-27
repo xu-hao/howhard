@@ -294,7 +294,7 @@ def test_dissimilar_task_misses_existing_prototype_and_partial_unseen_model_fore
     }
 
 
-def test_continuous_prior_decay_eliminates_pessimistic_cold_start_bias_at_tau(tmp_path):
+def test_counted_runs_move_a_pessimistic_cold_start_forecast_that_never_fades_out(tmp_path):
     candidates = [
         {"model": "post-cutoff/cheap-winner", "effort": "high", "usd_per_mtok": 0.2},
         {"model": "known/expensive", "effort": "high", "usd_per_mtok": 800.0},
@@ -302,14 +302,15 @@ def test_continuous_prior_decay_eliminates_pessimistic_cold_start_bias_at_tau(tm
     spy = SpyLLM(pessimistic_models={"post-cutoff/cheap-winner"})
     engine = Engine(directory=tmp_path, llm=spy, retrieval=TopicSimilarityDouble())
 
-    # Cold start: pessimistic guess (clean=0.35, loud=0.45, silent=0.20) makes cheap-winner inadmissible.
+    # Cold start: the pessimistic guess (clean=0.35, loud=0.45, silent=0.20) excludes cheap-winner.
     cold = engine.pick("task", "Repair rollback", native_candidates=candidates, seed=5)
     by_cold = {c["model"]: c for c in cold["cells"]}
+    assert by_cold["post-cutoff/cheap-winner"]["tier"] == "excluded"
     assert not by_cold["post-cutoff/cheap-winner"]["admissible"]
     assert cold["chosen"]["model"] == "known/expensive"
 
-    # Observe 3 clean runs on post-cutoff/cheap-winner (W_emp > 2.0 == EMPIRICAL_TAU).
-    for idx in range(3):
+    # Observe 6 clean runs on post-cutoff/cheap-winner.
+    for idx in range(6):
         engine.observe(
             "task",
             "post-cutoff/cheap-winner",
@@ -326,25 +327,26 @@ def test_continuous_prior_decay_eliminates_pessimistic_cold_start_bias_at_tau(tm
     warm = engine.pick("task", "Repair rollback", native_candidates=candidates, seed=5)
     assert spy.calls == []
     by_warm = {c["model"]: c for c in warm["cells"]}
-    assert by_warm["post-cutoff/cheap-winner"]["admissible"]
-    assert by_warm["post-cutoff/cheap-winner"]["J"] < by_warm["known/expensive"]["J"]
-    assert warm["exploration"]["mean_best"]["model"] == "post-cutoff/cheap-winner"
-    chosen_models = [
-        engine.pick("task", "Repair rollback", native_candidates=candidates, seed=s)["chosen"]["model"]
-        for s in range(40)
-    ]
-    assert spy.calls == []
-    assert chosen_models.count("post-cutoff/cheap-winner") >= 30
+    # The runs lift the cell out of the excluded tier: it now competes on trial, at a lower cost.
+    assert by_warm["post-cutoff/cheap-winner"]["tier"] == "on-trial"
+    assert by_warm["post-cutoff/cheap-winner"]["pi"] > by_cold["post-cutoff/cheap-winner"]["pi"]
+    assert by_warm["post-cutoff/cheap-winner"]["J"] < by_cold["post-cutoff/cheap-winner"]["J"]
+    assert by_warm["known/expensive"]["pi"] == by_cold["known/expensive"]["pi"]
 
     winner_family = by_warm["post-cutoff/cheap-winner"]["family"]
-    cal = next(c for c in warm["semantic"]["sampling"]["cells"] if c["family"] == winner_family)
-    posterior = cal["outcome_posterior"]
-    assert posterior["evidence_weight"] >= 2.0
-    # Exact 0.0 weight on the pessimistic [0.35, 0.45, 0.20] prior once W_emp >= 2.0!
-    assert posterior["prior_concentration"] == pytest.approx(1.0)
-    assert posterior["alpha"][0] == pytest.approx(0.88 + posterior["counts"][0])
-    assert posterior["alpha"][1] == pytest.approx(0.08 + posterior["counts"][1])
-    assert posterior["alpha"][2] == pytest.approx(0.04 + posterior["counts"][2])
+    beliefs = {name: next(c for c in result["semantic"]["sampling"]["cells"] if c["family"] == winner_family)["outcome_beliefs"]
+               for name, result in (("cold", cold), ("warm", warm))}
+    for rate, guess in (("loud", .45), ("silent", .20 / .55)):
+        before, after = beliefs["cold"][rate], beliefs["warm"][rate]
+        assert before["counts"] == [0., 0.] and before["mean"] == pytest.approx(guess, abs=1e-9)
+        assert after["counts"][0] == 0. and after["counts"][1] > 5.
+        # The stored forecast is the same start, worth N_start runs, beside the six counted runs:
+        # it is outweighed, not removed.
+        for field in ("prediction", "stated_spread", "n_start", "spread", "centre"):
+            assert after[field] == before[field]
+        assert 3.5 < after["n_start"] < 4.5
+        assert 0. < after["mean"] < before["mean"]
+    assert beliefs["warm"]["silent"]["mean"] > .1
     load(engine.config, warm["decision_id"])
 
 

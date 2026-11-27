@@ -211,9 +211,6 @@ silent_weight = 1.0
 unknown_cause_weight = 0.5
 
 [sampling]
-min_concentration = 2.0
-max_concentration = 1000000.0
-prior_strength = 8.0
 uncertainty_multiplier = 1.0
 admission_quantile = 0.80
 trial_probability = 0.20
@@ -224,6 +221,8 @@ model_worth = 5.0
 task_worth_amount = 1.0
 duration_miss = 1.3
 scatter_share = 0.5
+task_worth_silent = 32.0
+task_worth_loud = 16.0
 ```
 
 The full inventory has no size bound. If the span of the clearing and timely intervals
@@ -234,16 +233,36 @@ forecasts the next stronger overpowered cell per round, within the same total bu
 `max_forecast_cells` is a positive integer; widening rounds are nonnegative integers.
 Require `0 < min_clear_probability < reliability_probability < 1` and observation noise
 in `(0,0.5)`. Probability/strength margins are in `[0,1]`; order penalty is nonnegative.
-Concentration bounds satisfy `1 <= min_concentration <= prior_strength` and
-`min_concentration <= max_concentration`; uncertainty multiplier is positive,
+The uncertainty multiplier is positive,
 `admission_quantile` lies in `[0.5, 1)`, `trial_probability` in
-`[0, admission_quantile]`, `all_excluded_factor` in `[0, 1]`, `half_life_days` is positive
-and `comparison_cap` is a positive integer. A value outside its range is refused with a
+`[0, admission_quantile]`, `all_excluded_factor` in `[0, 1]`, `half_life_days` is positive,
+`comparison_cap` is a positive integer, and `model_worth`, `task_worth_silent` and
+`task_worth_loud` are positive. A value outside its range is refused with a
 message that names the key.
-`prior_strength` caps the pseudo-observations any forecast prior contributes to a cell's
-[Dirichlet outcome posterior](outcome-posterior); optional forecast credible intervals
-can lower it to `min_concentration` but never raise it. `max_concentration` caps the
-posterior after observed outcomes are added.
+
+The three worths set how many runs a forecast counts for at the start of a cell's
+{ref}`outcome beliefs <outcome-posterior>`:
+
+```text
+N_start = 1 / (1/model_worth + 1/N_task)
+```
+
+- `model_worth`: how many runs the record says about a model family, 5.
+- `N_task`: the most a record on other tasks is worth for one task:
+  `task_worth_silent` (32) for the accepted-defect share and `task_worth_loud` (16) for
+  the loud rate.
+- `N_start`: how many runs the forecast is worth. Each counted run then adds its own
+  weight, and the forecast keeps the weight of `N_start` runs.
+
+In plain words, a larger worth makes the forecast harder to move and its start
+narrower; a smaller one lets counted runs take over sooner. Example: with the defaults
+the forecast of the accepted-defect share is worth `1 / (1/5 + 1/32) = 4.32` runs and
+that of the loud rate `1 / (1/5 + 1/16) = 3.81` runs.
+
+`prior_strength`, `min_concentration` and `max_concentration` are retired. A file that
+still sets one loads: the key is accepted, its value is ignored, and one notice per key
+is printed on standard error. Standard output is unchanged, and decisions are the same
+as without the key.
 
 `half_life_days` and `comparison_cap` govern which recorded runs count as evidence and
 how much ({ref}`evidence candidates <evidence-candidates>`). A run's weight halves for

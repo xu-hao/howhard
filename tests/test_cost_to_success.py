@@ -75,7 +75,8 @@ def test_retry_formula_and_denominator_floor_are_finite(tmp_path, loud, silent, 
     assert row["J"] == pytest.approx(expected)
     assert math.isfinite(row["J"]) and math.isfinite(row["sampled_J"])
     if loud == 1.:
-        # Push posterior P_loud past 1 - 1e-4 to exercise the denominator floor directly.
+        # Heavy loud evidence pushes P_loud towards the top of the belief's grid, logistic(9) = 0.99988,
+        # which keeps a near-certain loud failure finite but very costly.
         heavy_dir = tmp_path / "heavy"
         heavy_dir.mkdir()
         (heavy_dir / "howhard.toml").write_text(
@@ -89,11 +90,14 @@ def test_retry_formula_and_denominator_floor_are_finite(tmp_path, loud, silent, 
                                  task_text="Repair rollback", note="capability_caused=false", id=f"loud-{i}")
         floored_req, floored_resp = prepare(heavy_engine, [("fixture/worker", "high", clean, loud, silent, 2.)])
         floored = heavy_engine.decide(floored_req["request_id"], floored_resp, seed=1)["cells"][0]
-        assert 1 - floored["P_loud"]["mean"] < .0001
-        assert floored["expected_attempts"] == pytest.approx(1/.0001)
+        top = 1 / (1 + math.exp(-9))
+        assert row["P_loud"]["mean"] < floored["P_loud"]["mean"] <= top and floored["P_loud"]["mean"] > .9998
+        assert floored["P_loud"]["upper"] == pytest.approx(top)
+        assert floored["expected_attempts"] == pytest.approx(1/(1-floored["P_loud"]["mean"]))
+        assert 5000 < floored["expected_attempts"] < 1/.0001
         assert floored["J"] == pytest.approx(
-            (25*2+50*floored["P_loud"]["mean"]+1000*floored["P_silent"]["mean"])/.0001)
-        assert math.isfinite(floored["J"])
+            (25*2+50*floored["P_loud"]["mean"]+1000*floored["P_silent"]["mean"])/(1-floored["P_loud"]["mean"]))
+        assert math.isfinite(floored["J"]) and math.isfinite(floored["sampled_J"])
 
 
 def test_cap_targets_the_accepted_result_even_when_raw_silent_risk_is_small(tmp_path):
@@ -101,11 +105,14 @@ def test_cap_targets_the_accepted_result_even_when_raw_silent_risk_is_small(tmp_
     request, response = prepare(engine, [("fixture/worker", "high", .005, .99, .005, 1.)])
     result = engine.decide(request["request_id"], response, seed=1)
     row = result["cells"][0]
-    assert row["P_silent"]["upper"] < result["constants"]["epsilon"]
+    assert row["P_silent"]["mean"] < result["constants"]["epsilon"]
     assert row["P_silent_accepted"]["mean"] == pytest.approx(.5)
     assert row["P_silent_accepted"]["upper"] > row["admission_risk"] > result["constants"]["epsilon"]
     assert not result["cap_met"] and result["needs_review"]
-    assert row["tier"] == "on-trial" and result["exploration"]["reason"] == "disabled-no-supported-alternative"
+    # Half of the accepted results silently wrong: the cell is excluded, and is drawn only for want of another.
+    assert row["tier"] == "excluded" and row["pi"] < .2
+    assert result["exploration"]["pool"] == "all-excluded"
+    assert result["exploration"]["reason"] == "disabled-no-supported-alternative"
 
 
 def test_evidence_tightens_only_the_observed_cell_while_a_weak_prior_can_explore(tmp_path):
@@ -122,12 +129,15 @@ def test_evidence_tightens_only_the_observed_cell_while_a_weak_prior_can_explore
         engine.observe("task", "fixture/b", "high", "clean", native=True, task_text="Repair rollback", id=f"historical-{i}")
     strong, strong_response = prepare(engine, table)
     first = engine.decide(strong["request_id"], strong_response, seed=0)
-    concentration = lambda result: {c["family"]: c["concentration"] for c in result["semantic"]["sampling"]["cells"]}
+    beliefs = lambda result: {c["family"]: c["outcome_beliefs"] for c in result["semantic"]["sampling"]["cells"]}
     families = {c["model"]: c["family"] for c in first["cells"]}
     added_weight = sum(o["weight"] for o in first["semantic"]["outcome_observations"])
     assert added_weight > 6.5
-    assert concentration(first)[families["fixture/b"]] == pytest.approx(1.0 + added_weight)
-    assert concentration(first)[families["fixture/a"]] == concentration(initial)[families["fixture/a"]]
+    # The clean runs count against both of fixture/b's rates; fixture/a's beliefs are untouched.
+    for rate in ("loud", "silent"):
+        assert beliefs(first)[families["fixture/b"]][rate]["counts"] == pytest.approx([0., added_weight])
+        assert beliefs(first)[families["fixture/b"]][rate]["mean"] < beliefs(initial)[families["fixture/b"]][rate]["mean"]
+    assert beliefs(first)[families["fixture/a"]] == beliefs(initial)[families["fixture/a"]]
     strong_choices = [engine.decide(strong["request_id"], strong_response, seed=seed)["chosen"]["model"] for seed in range(1000)]
     assert strong_choices.count("fixture/b") > weak_choices.count("fixture/b")
 
@@ -147,18 +157,21 @@ def test_no_trusted_cell_still_draws_one_seeded_sample(tmp_path, monkeypatch):
     assert result["chosen"]["model"] == "claude-opus-5-5"
 
 
-def test_accepted_risk_envelope_uses_each_experts_joint_probabilities(tmp_path):
+def test_accepted_risk_merges_each_experts_joint_probabilities(tmp_path):
     engine = Engine(directory=tmp_path)
     memory = engine.memory.add("Risk", "A different correlated loud/silent prediction")
     request, response = prepare(engine, [("fixture/worker", "high", .81, .1, .09, 1.)])
     override = {**response["forecasts"][0], "clean": .01, "loud": .98, "silent": .01}
     response["memory_forecasts"] = [{"id": memory["id"], "version": memory["version"], "forecasts": [override]}]
     result = engine.decide(request["request_id"], response, seed=42)
-    # Per-expert joint ratios are .1 and .5; mixing unrelated marginal bounds could exceed 1.
+    # Per-expert joint ratios silent / (clean + silent) are .1 and .5, merged on the log-odds scale;
+    # mixing unrelated marginal bounds could exceed 1.
     weights = {e["key"]: e["weight"] for e in result["semantic"]["beliefs"]["experts"]}
-    expected = weights["llm"] * .1 + weights[f"memory:{memory['id']}:{memory['version']}"] * .5
+    logit = lambda p: math.log(p / (1 - p))
+    centre = weights["llm"] * logit(.1) + weights[f"memory:{memory['id']}:{memory['version']}"] * logit(.5)
     accepted = result["cells"][0]["P_silent_accepted"]
-    assert accepted["mean"] == pytest.approx(expected, rel=1e-3)
+    assert accepted["mean"] == pytest.approx(1 / (1 + math.exp(-centre)), rel=1e-6)
+    assert .1 < accepted["mean"] < .5
     assert accepted["lower"] < accepted["mean"] < accepted["upper"] <= 1
 
 
