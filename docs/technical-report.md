@@ -1,879 +1,533 @@
 # Technical report
 
-## Abstract
+## 1 Introduction
 
-howhard selects a model and reasoning effort for an AI agent task with the aim
-of reducing the cost of reaching an accepted result. It combines independent
-LLM judgments with learning from actual project executions. A coarse reader
-estimates which candidates have enough capability; a fine reader forecasts
-outcomes and resource use within that band. Selection accounts for repeated
-caught failures and defects that escape acceptance. When a later investigation
-traces a defect to an earlier execution, the original outcome can be corrected
-and its learning replayed.
+An AI agent working in a software project hands many of its tasks to worker models, and
+for each task it must pick a model and a reasoning effort. A capable model at high
+effort can spend more than a routine task needs. A cheaper choice can cost more in the
+end: a review or a test gate may catch its failure and force another attempt, or the
+gate may pass a defect that surfaces weeks later. howhard makes this choice for each
+task. For every candidate it estimates the expected cost of reaching an accepted result,
+including retries, active time and the price of an escaped defect. Among the
+candidates whose costs are too close to separate, it chooses with a randomized rule
+that keeps learning.
 
-The statistical design combines weighted Bayesian updates for a latent capability
-threshold, approximate predictive-evidence weights for memories, log-normal beliefs for
-active time and token use, and heuristic uncertainty estimates for selection. These
-components support decisions under
-explicit assumptions. Demonstrating net credit savings requires chronological
-evaluation that includes routing, learning and worker costs.
+No fixed ranking of models settles the choice, because it depends on the task and on
+the project. Evidence is scarce: a project records tens or hundreds of runs spread over
+many models and efforts, and some outcomes are known only when a later bug fix traces a
+defect back to an earlier accepted run. We therefore start from the judgment of a
+language model that reads the task and the project, and we correct that judgment with
+the project's own record. When an investigation attributes a defect to an earlier run,
+that run's outcome is amended and the learning is replayed.
 
-## 1 Problem and objective
+### A running example
 
-The decision is a pair: model and reasoning effort. A capable model at high effort
-can spend more than a routine task warrants. A cheaper invocation can also become
-expensive through retries, review and later repairs. howhard evaluates candidates
-against the task and current project, rather than relying on a universal ranking.
+We follow one decision through the report. A host agent asks for a route for the task
+"Make transaction rollback safe". The task's risk class prices an hour of active work at
+25 USD, a caught failure at 50 USD and an escaped defect at 1,000 USD, and it limits
+silently wrong accepted results to 10%. We call one model family at one reasoning effort
+a *cell*. The host offers three cells, each priced per token, and the project has no
+recorded runs yet. A language model forecasts each cell's outcome probabilities, active
+time and tokens:
 
-Let {math}`a=(m,e)` be a supplied model/effort candidate and {math}`x` the original
-task and captured project context. The outcome categories are:
+| Cell | Model and effort | USD per million tokens | Clean | Loud | Silent | Active seconds | Tokens |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| A | small model, high | 1 | 0.30 | 0.40 | 0.30 | 900 | 150,000 |
+| B | mid-sized model, medium | 3 | 0.72 | 0.20 | 0.08 | 1,800 | 400,000 |
+| C | large model, high | 15 | 0.931 | 0.05 | 0.019 | 3,600 | 600,000 |
 
-| Outcome | Recorded meaning | Consequence for selection |
+A loud result is a failure that the host catches before acceptance, and a silent result
+is one that it accepts with a defect. The forecaster also states that B's loud
+probability lies between 0.10 and 0.35 and its silent probability between 0.04 and 0.16.
+
+The language model first orders the three cells for this task, A weakest, and judges
+B and C capable enough. No run of A's family has been recorded on this kind of task, so
+A still receives a forecast through a slot reserved for unproven families. Selection
+then compares the three cells. Half of A's accepted results are expected to be wrong,
+so A is excluded. B meets the 10% limit with probability 0.70 and is admitted on trial,
+and C meets it with probability 0.96 and is trusted. The expected cost to an accepted
+result is 137.8 USD for B and 60.8 USD for C, although one run of C costs 9.00 USD and
+one run of B 1.20 USD: B's expected escaped defects alone cost 100 USD. B's belief is
+wide enough that its cost overlaps C's, so B stays eligible for a randomized draw. With
+the decision's seed the draw picks C. C is trusted, so the decision carries no review
+flag.
+
+The host runs C and records the outcome and the measured usage. Suppose a bug fix later
+the same day traces a defect to C's accepted run, and its outcome is amended to silent.
+The next similar task counts that run as silent evidence about C, and at a discount as
+evidence about B. C falls to on trial with an expected cost of 152.9 USD, B rises to
+168.7 USD, and the draw for that task picks B, flagged for review.
+
+### Overview
+
+```{figure} assets/decision-flow.svg
+:alt: The decision flow. A task and its candidate cells pass through a capability stage, a forecast stage and selection before the host runs the chosen cell. The project record feeds the first two stages and receives each outcome, and a later defect attribution amends the record.
+:width: 100%
+
+The decision flow. Each stage reads the project record, and every outcome, including a
+later amendment, returns to it.
+```
+
+A decision has three stages. The capability stage orders every candidate cell for the
+task and keeps a band of cells strong enough without being needlessly strong. The
+forecast stage obtains outcome and usage forecasts for those cells, corrects them with
+the record of earlier tasks and turns them into beliefs that recorded runs of similar
+tasks reshape. Selection computes each cell's expected cost to an accepted result,
+admits cells by their chance of meeting the defect limit and draws one cell among those
+whose costs overlap.
+
+Section 2 relates this design to earlier work and section 3 states the problem and the
+notation. Sections 4 to 12 describe the method in the order in which its parts depend on
+one another: the forecasts (4), how forecast sources are weighted (5), which recorded
+runs count as evidence (6), the capability band (7), the corrected predictions (8), the
+outcome beliefs (9), the beliefs for time, tokens and credit (10), selection (11) and
+the re-estimation of constants (12). Section 13 covers amendments after a defect is
+found, section 14 the operational boundaries, section 15 the evaluation protocol and
+section 16 the statistical assumptions and limits.
+
+## 2 Related work
+
+Routing queries among language models to save cost is an active line of work, and
+howhard draws its statistics from standard results.
+
+Several methods reduce the cost of language-model inference by sending each query to the
+cheapest model likely to answer it well. RouteLLM (Ong et al., 2025) trains routers on
+human preference data to choose between a stronger and a weaker model for each query.
+Hybrid LLM (Ding et al., 2024) routes each query to a small or a large model from its
+predicted difficulty and a quality level that can be tuned at test time. FrugalGPT
+(Chen, Zaharia and Zou, 2024) learns a cascade that queries models in sequence until a
+learned scorer accepts an answer, and AutoMix (Aggarwal et al., 2024) escalates to a
+larger model when a smaller model's few-shot self-verification is not confident, using a
+POMDP-based router. BEST-Route (Ding et al., 2025) chooses a model together with the
+number of responses to sample from it. MixLLM (Wang et al., 2025) treats routing among
+several models as a contextual bandit that trades quality against cost and latency and
+keeps learning from feedback.
+
+These methods route single queries among language models and are trained and evaluated
+on benchmark datasets. howhard routes agent tasks, which run for minutes to hours with
+tools in a changing repository, and it chooses a reasoning effort as well as a model. Its
+evidence is the project's own record of runs. An outcome distinguishes failures caught
+before acceptance from defects found later, and the record can change after the fact
+when a defect is attributed to an earlier run.
+
+The method combines standard statistical tools. Selection is Thompson sampling
+(Thompson, 1933; Russo et al., 2018): each cell draws one value of everything it is
+uncertain about, and the lowest sampled cost wins. Evidence from related tasks enters
+the capability threshold through likelihoods raised to fractional weights, a form of
+generalized Bayesian updating (Bissiri, Holmes and Walker, 2016). Forecast sources are
+weighted by their tempered, recency-discounted log scores, as in exponentially weighted
+expert aggregation (Cesa-Bianchi and Lugosi, 2006), and the log score is a strictly
+proper scoring rule (Gneiting and Raftery, 2007). Outcome rates are held as normal
+beliefs on the log-odds scale, a logistic-normal family (Aitchison and Shen, 1980).
+Active time and token counts have log-normal beliefs with the conjugate normal update,
+and the levels of a forecaster's record are estimated by partial pooling across nested
+groups (Gelman et al., 2013). The credit of one run is matched to a log-normal by its
+first two moments (Fenton, 1960), and the mixed capability prior is made monotone by the
+pool-adjacent-violators algorithm (Ayer et al., 1955).
+
+## 3 Problem setup
+
+To state the decision precisely, we fix the candidates, the outcomes a run can have, the
+record that learning reads and the cost by which candidates are compared, in one
+notation used throughout the report.
+
+### Candidates, hosts and risk classes
+
+A route is requested by a *host*: the agent that asks for the route, makes the forecasts
+and accepts or rejects the result. The host supplies an inventory {math}`\mathcal{C}` of
+candidates. Each candidate names a model and an effort, may carry an *agent* label for
+the agent product that would run it, and may carry prices. A model belongs to a *family*
+in the model registry, and a cell {math}`c` is one family at one effort. Each task has a
+task type, which maps to a risk class. The risk class fixes the price of an hour of
+active work {math}`\lambda`, the extra cost {math}`C_l` of a caught failure, the cost
+{math}`C_s` of an escaped defect and the limit {math}`\varepsilon` on the share of
+accepted results that are silently wrong. The running example uses the packaged
+`standard` class: {math}`\lambda=25`, {math}`C_l=50`, {math}`C_s=1{,}000` and
+{math}`\varepsilon=0.10`.
+
+### Outcomes
+
+Every run ends in one of four outcomes:
+
+| Outcome | Meaning | Use in learning |
 | --- | --- | --- |
-| `clean` | No defect has been observed | A non-loud result is accepted; later evidence may correct the label |
-| `loud` | A gate or review caught a model failure | The cost model charges another attempt on the same candidate |
-| `silent` | A defect escaped acceptance and was discovered later | Selection includes an escaped-defect penalty and an accepted-result risk limit |
-| `interrupted` | Execution stopped operationally (`usage_limit`, `provider_error`, `host_error`, `cancelled`, `unrecorded`) | Preserved for usage/cost accounting and audit; excluded from ternary forecasts, capability thresholds, active-duration calibration and belief scoring |
+| `clean` | Accepted, and no defect has been found | Counts as a success |
+| `loud` | A gate or review caught a failure before acceptance | Counts as a caught failure |
+| `silent` | Accepted, and a defect was found later | Counts as an escaped defect |
+| `interrupted` | Stopped for an operational reason: `usage_limit`, `provider_error`, `host_error`, `cancelled` or `unrecorded` | Kept for usage and cost accounting and audit; excluded from every learned quantity |
 
-Acceptance is therefore observable workflow behavior, not proof of correctness.
-An execution retains its actual model, effort, outcome and measured usage. An
-alternative that never ran has forecasts but no observed outcome.
+Acceptance is the observable behaviour of the workflow. A clean label records that no
+defect has been found so far, and later evidence can amend it.
 
-The selection objective is the cost to an accepted result, averaged over what is
-believed about the candidate:
+### The record
+
+The *record* is the project's store of recorded runs. Each run keeps its model, effort,
+outcome, measured usage, the time it was observed and, when it has one, its *ticket*: the
+unit of work it belongs to, shared by retries. A run made through a decision also keeps
+the decision's *receipt*, which freezes the decision's inputs, forecasts and choice. A
+*routed run* is a run whose receipt holds a forecast for the cell that ran. A
+*prototype* is a cluster of earlier tasks of one task type, represented by a synthesized
+task and project context. A new task matches some prototypes, each with a match weight,
+and the weights of all matched prototypes sum to one. The
+[reference](reference.md) describes the stored forms.
+
+### The objective
+
+Let {math}`\theta_l` be a cell's *loud rate*, the share of its attempts that fail
+loudly, and {math}`\theta_s` the share that end silently wrong. The cost model retries a
+loud attempt on the same cell until a non-loud result is accepted. The number of
+attempts is then geometric, with mean {math}`R`, and the *accepted-defect share*
+{math}`S`, the share of accepted results that are silently wrong, follows from the two
+rates:
 
 ```{math}
-J(a)=\bigl(C_{\mathrm{run}}(a)+\lambda\,\mathbb{E}[T]\bigr)\,\mathbb{E}[R]
+:label: attempts
+
+R=\frac{1}{1-\theta_l}=1+e^{u},\qquad
+S=\frac{\theta_s}{1-\theta_l},
+```
+
+where {math}`u=\operatorname{logit}\theta_l` and
+{math}`\operatorname{logit}p=\ln\bigl(p/(1-p)\bigr)`. Let {math}`K` be the credit of one
+run, its token counts priced at the candidate's list prices, {math}`\psi` the
+candidate's cost per credit and {math}`T` the active hours of one run. The cost of one
+attempt is {math}`\psi K+\lambda T`, and with {math}`R` and {math}`S` from
+{eq}`attempts` the expected cost of reaching an accepted result is
+
+```{math}
+:label: objective
+
+J(c)=\bigl(C_{\mathrm{run}}+\lambda\,\mathbb{E}[T]\bigr)\,\mathbb{E}[R]
      +C_l\,\bigl(\mathbb{E}[R]-1\bigr)+C_s\,\mathbb{E}[S],
-\qquad R=\frac{1}{1-\theta_l}=1+e^{u},
-\qquad C_{\mathrm{run}}=q\,\mathbb{E}[K].
+\qquad C_{\mathrm{run}}=\psi\,\mathbb{E}[K].
 ```
 
-- {math}`\theta_l`, {math}`u`: the candidate's loud rate, the share of attempts that
-  fail loudly, and its log-odds.
-- {math}`R`: the attempts until a run is not loud, so {math}`R-1` is the loud failures
-  per accepted result.
-- {math}`S`: the accepted-defect share, silent results divided by accepted results.
-- {math}`K`: the credit of one run, and {math}`q` the candidate's cost per credit, or
-  0 when worker money is excluded from the comparison (section 7).
-- {math}`T`: the active execution hours of one run.
-- {math}`\lambda`, {math}`C_l`, {math}`C_s`: the risk class's price of an hour, of the
-  extra overhead of a caught failure and of an escaped defect.
+Every attempt costs its credit and its time, each loud failure adds {math}`C_l` for the
+work of catching it, and each accepted defect costs {math}`C_s`. The expectations are
+taken over the cell's beliefs about {math}`\theta_l`, {math}`S`, {math}`T` and
+{math}`K`, which sections 9 and 10 construct. {math}`\psi` is 1 for pay-as-you-go
+credit. It is 0 for every candidate when a candidate that receives a forecast is
+unpriced or the candidates' prices have different bases; worker money then drops out of
+the comparison uniformly, and the decision reports that it compared risk and time only.
 
-In plain words, every attempt costs its credit and its time, a loud run is retried,
-and each loud failure and each accepted defect has a price. The averages
-{math}`\mathbb{E}[R]` and {math}`\mathbb{E}[S]` are taken over the candidate's two
-outcome beliefs (section 5), and {math}`\mathbb{E}[T]` and {math}`\mathbb{E}[K]` over
-its beliefs for active time and tokens (below). The penalties express policy
-assumptions; actual charges and rework remain separately measured evidence.
+The retry factor charges repeated worker cost and time. For example, a candidate that
+costs 0.40 USD per attempt and fails loudly half the time costs 0.80 USD to acceptance,
+and one that costs 0.65 USD and fails loudly 5% of the time costs about 0.684 USD. The
+more expensive invocation is the cheaper route.
 
-Example, with {math}`\lambda=25`, {math}`C_l=50` and {math}`C_s=1{,}000`:
-{math}`C_{\mathrm{run}}=2`, {math}`\mathbb{E}[T]=0.5`, {math}`\mathbb{E}[R]=1.25` and
-{math}`\mathbb{E}[S]=0.04` give
-{math}`J=14.5\times1.25+50\times0.25+1{,}000\times0.04=70.625`.
+Because {math}`1/(1-\theta_l)` is convex, the expected number of attempts exceeds the
+number at the expected loud rate. A belief split evenly between loud rates of 0.2 and
+0.6 averages 0.4, which would charge {math}`1/0.6=1.67` attempts, while the average over
+the belief charges {math}`(1.25+2.5)/2=1.875`. At the same average loud rate, a wider
+belief therefore costs more.
 
-### Beliefs for active time and tokens
+### Notation
 
-{math}`\mathbb{E}[T]` and {math}`C_{\mathrm{run}}` are averages of beliefs, not
-forecasts taken at face value. Active time and each token kind have one log-normal belief per
-candidate. Let {math}`A` be such an amount, with
+Every symbol below keeps one meaning throughout the report. Configuration keys, where a
+constant has one, are given in code font; the [configuration guide](configuration.md)
+lists them all.
+
+| Symbol | Meaning |
+| --- | --- |
+| {math}`\mathcal{C}`, {math}`c`, {math}`c_i`, {math}`c^{*}` | The inventory; a cell; the cell that ran run {math}`i`; the pool cell with the lowest {math}`J` |
+| {math}`f`, {math}`c_f` | A model family; its cell nearest to the core of the band |
+| {math}`i`, {math}`t` | A recorded run; a ticket |
+| {math}`j` | A point of the log-odds grid |
+| {math}`k`, {math}`\mathcal{K}` | A forecast source (expert); the experts that take part in a decision |
+| {math}`p`, {math}`\mu_p`, {math}`\mathcal{U}` | A prototype; its match weight; the matched prototypes with a usable stored forecast |
+| {math}`\theta_l`, {math}`\theta_s`, {math}`u` | Loud rate; silent share of attempts; {math}`\operatorname{logit}\theta_l` |
+| {math}`R`, {math}`S` | Expected attempts until a run is not loud, {math}`1/(1-\theta_l)`; accepted-defect share |
+| {math}`T`, {math}`K`, {math}`A`, {math}`A_\kappa` | Active hours of one run; credit of one run; an amount (active seconds or a token count); token count of kind {math}`\kappa` |
+| {math}`\kappa` | A token kind: `input`, `output`, `cache_read`, `cache_write`, `cache_write_5m` or `cache_write_1h`, or the single total |
+| {math}`\lambda`, {math}`C_l`, {math}`C_s`, {math}`\varepsilon` | Price of an hour; cost of a caught failure; cost of an escaped defect; limit on {math}`S` |
+| {math}`\psi`, {math}`C_{\mathrm{run}}` | Cost per credit (`cost_per_credit`); expected money cost of one run |
+| {math}`J`, {math}`\tilde J`, {math}`\operatorname{sd}(J)` | Expected cost to an accepted result; its sampled value; its standard deviation |
+| {math}`\operatorname{logit}`, {math}`\operatorname{logistic}` | {math}`\operatorname{logit}p=\ln\bigl(p/(1-p)\bigr)` and its inverse {math}`\operatorname{logistic}(x)=1/(1+e^{-x})` |
+| {math}`\varphi` | A value's own scale: {math}`\operatorname{logit}` for a rate, {math}`\ln` for an amount |
+| {math}`m`, {math}`s` | A centre and a spread on a value's own scale, with subscripts: {math}`m_k,s_k` of expert {math}`k`; {math}`m_p,s_p` of prototype {math}`p`; {math}`\bar m,s_{\mathrm{stated}}` merged; {math}`m_0,s_0` at a belief's start; {math}`m',s'` after the counted runs |
+| {math}`g`, {math}`g_i`, {math}`\hat g` | Merged guess of a value; the guess stored by run {math}`i`'s decision; the corrected prediction |
+| {math}`\nu_\bullet` | The weight of one forecast in a merge |
+| {math}`\mu^{+}_\kappa` | Total share of the stored forecasts that state kind {math}`\kappa` above zero |
+| {math}`\alpha_k`, {math}`\alpha^0_k` | Expert {math}`k`'s normalized support weight; its prior mass |
+| {math}`P_k(\mathrm{out}_i)`, {math}`\hat A_{k,i}` | Probability expert {math}`k` gave run {math}`i`'s outcome; its forecast of an amount the run measured |
+| {math}`\mathcal{E}_k`, {math}`\mathrm{later}_{k,i}` | The runs that scored expert {math}`k`; how many scored it after run {math}`i` |
+| {math}`v_i`, {math}`\rho_i`, {math}`\mathrm{sim}_i` | Run {math}`i`'s weight on record; its reranker score against the new task; that score on a 0-to-1 scale |
+| {math}`\mathrm{age}_i`, {math}`h`, {math}`a_i` | Days from the run to the request; half-life, 14 (`half_life_days`); age factor |
+| {math}`w_i`, {math}`W`, {math}`W_t` | A run's evidence weight; a sum of evidence weights; the sum over ticket {math}`t` |
+| {math}`\omega_i` | A run's age factor after the per-ticket limit within one statistic |
+| {math}`\delta(c_i,c)` | Relatedness discount: 1, {math}`\delta_{\mathrm{effort}}=0.5`, {math}`\delta_{\mathrm{model}}=0.25` or {math}`\delta_{\mathrm{agent}}=0.25` (`effort_discount`, `model_discount`, `agent_discount`) |
+| {math}`o(c)`, {math}`o_i`, {math}`o_{\mathrm{lo}}`, {math}`o_{\mathrm{hi}}` | Position of a cell in the task's order, 1 for the weakest; position of {math}`c_i`; positions of the lower and upper cut points |
+| {math}`H` | Capability threshold: the lowest position strong enough for the task, from 1 to {math}`\lvert\mathcal{C}\rvert+1` |
+| {math}`P_0` | The prior distribution of {math}`H` |
+| {math}`P_{\mathrm{clear}}`, {math}`P_{\mathrm{timely}}` | Probability that a cell clears the threshold; that it clears it without overrunning its time |
+| {math}`P_{\min}`, {math}`P_{\mathrm{rel}}`, {math}`G_{\max}` | 0.5, 0.9 and 0.05 (`min_clear_probability`, `reliability_probability`, `overpowered_gain_margin`) |
+| {math}`P_{\mathrm{fit}}`, {math}`g_{\mathrm{tail}}` | Prior probability at the lower cut; prior gain above the upper cut |
+| {math}`P_{\mathrm{lo}}`, {math}`G` | Lower edge and upper margin of the clearing interval |
+| {math}`P_{\mathrm{bar}}(f)`, {math}`P_{\mathrm{unproven}}` | The bar a family's cell must reach for a reserved slot; that bar for an unproven family, 0.2 (`unproven_clear_probability`) |
+| {math}`B`, {math}`B_{\mathrm{res}}` | Forecast budget, 12 cells (`max_forecast_cells`); reserved slots, 2 (`reserved_forecast_cells`) |
+| {math}`\eta`, {math}`\xi_i`, {math}`z_i`, {math}`\ell_i` | Observation noise, 0.05 (`observation_noise`); run {math}`i`'s strength for the threshold; 1 for a clean run and 0 otherwise; its likelihood |
+| {math}`d`, {math}`d_0`, {math}`d_{\mathrm{all}}` | The host's caught share; its reference value; the caught share of all hosts |
+| {math}`F`, {math}`F^{\mathrm{loud}}` | Weight of failed routed runs; of the loud ones among them |
+| {math}`N_{\mathrm{caught}}`, {math}`N_{\mathrm{rung}}`, {math}`N_{\mathrm{model}}`, {math}`N_{\mathrm{task}}` | Worths in runs: 12 (`caught_share_worth`), 40 (`rung_worth`), 5 (`model_worth`), and 32, 16 or 1 (`task_worth_silent`, `task_worth_loud`, `task_worth_amount`) |
+| {math}`N_{\mathrm{family}}`, {math}`N_{\mathrm{worth}}`, {math}`N_{\mathrm{start}}` | Weight of the family's own runs; what the record is worth for the family; what a prediction is worth |
+| {math}`r`, {math}`r^{+}`, {math}`N_r` | A rung of the ladder; the rung above; the worth of the rung above |
+| {math}`\mathrm{level}`, {math}`\mathrm{usual}` | What happened in a cell's record; what its forecaster had guessed for those runs |
+| {math}`y_i`, {math}`e_i` | Run {math}`i`'s recorded value on the value's scale; the miss of its prediction |
+| {math}`\gamma`, {math}`\hat\gamma` | Weight on the forecaster's judgment; its raw estimate |
+| {math}`\Gamma_i`, {math}`\mathcal{G}_\pm`, {math}`\Gamma_\pm`, {math}`O_\pm`, {math}`\Omega` | How far run {math}`i`'s guess sat from usual; the runs guessed above usual and the rest; each group's average {math}`\Gamma_i`; how far its results sat from their levels; the total ladder weight |
+| {math}`D`, {math}`\tau`, {math}`\beta` | Typical miss of an amount's prediction, 1.3 with no record (`duration_miss`); run-to-run scatter; scatter share, 0.5 (`scatter_share`) |
+| {math}`s_1`, {math}`s_{\mathrm{flat}}` | One run's spread; the flat belief's spread, 1.869 |
+| {math}`x_j`, {math}`b^0_j`, {math}`b_j` | Grid point on the log-odds scale; a belief's start on the grid; the belief after the counted runs |
+| {math}`n_{\mathrm{clean}}`, {math}`n_{\mathrm{loud}}`, {math}`n_{\mathrm{silent}}` | Counted weight of each outcome for a cell |
+| {math}`q` | A probability level of a belief's point |
+| {math}`\pi(c)`, {math}`\pi_{\mathrm{trust}}`, {math}`\pi_{\mathrm{trial}}` | Chance that {math}`S\le\varepsilon`; the trusted line, 0.80 (`admission_quantile`); the on-trial line, 0.20 (`trial_probability`) |
+| {math}`\mathrm{credit\_ok}(c)` | The cell fits its available credit |
+| {math}`\mathcal{P}`, {math}`\chi`, {math}`M` | The pool of competing cells; 0.5 (`all_excluded_factor`); 1 (`uncertainty_multiplier`) |
+| {math}`X` | Cost of one attempt plus {math}`C_l` |
+| {math}`\mathrm{price}_\kappa`, {math}`K_\kappa` | The candidate's price of kind {math}`\kappa` per million tokens; the average credit of that kind |
+| {math}`s_K`, {math}`K_{80}` | Spread of the log-normal matched to {math}`K`; its 80% point |
+| {math}`U_S`, {math}`U_u`, {math}`U_T`, {math}`U_K`, {math}`\Phi^{-1}` | The four uniform numbers of a cell's draw; the standard normal quantile |
+| {math}`\tilde S`, {math}`\tilde R`, {math}`\tilde T`, {math}`\tilde A_\kappa`, {math}`\tilde K` | Values drawn from a cell's beliefs |
+| {math}`L_{k,i}`, {math}`V_{k,i}` | Expert {math}`k`'s outcome and resource scores on run {math}`i` |
+| {math}`\Delta_i`, {math}`n` | Score difference of run {math}`i` between two values of a constant; the number of scored runs |
+
+## 4 Forecasts from the language model
+
+Every decision draws on two judgments from a language model, one ordering the cells by
+capability and one forecasting each kept cell's outcomes and usage, and a host's
+forecasts are stored for reuse.
+
+The *capability judgment* covers the full inventory. A stateless call receives the task,
+the project snapshot and the candidate identities, and it returns an order of every cell
+from weakest to strongest for this task with an inclusive lower and upper cut point,
+which delimit the cells it judges fit. Within one model, known efforts keep their
+natural order. A memory reader can propose up to eight adjusted orders, each grounded in
+a retrieved memory or execution, and each such proposal is a separate expert.
+
+The *fine forecast* covers only the cells that the capability stage keeps, its forecast
+cells. For each it states the probabilities of `clean`, `loud` and `silent`, the active
+seconds and the total tokens, and for a cell priced by token kind the six token counts.
+A forecast may add a central 95% range to its loud and silent probabilities, its active
+time and its token kinds. An independent stateless call produces the baseline row, and
+the memory reader may override rows for the cells where a retrieved memory or execution
+changes its expectation. The independent calls receive no memories, recorded runs or
+learned tables, so the baseline remains a reference against which experience can be
+scored. An unavailable or invalid independent forecast stops routing with an error.
+
+Each value has its own scale {math}`\varphi`. A rate is read on the log-odds scale,
+held in {math}`[0.0001,0.9999]`. An amount is read on the log scale, held at 1 or more.
+The loud rate of a row is its `loud` probability and its accepted-defect share is
+{math}`\text{silent}/(\text{clean}+\text{silent})`, after the three probabilities are
+floored at 0.0001 and normalized. A stated 95% range {math}`[\mathrm{lo},\mathrm{hi}]`
+gives the spread
 
 ```{math}
-\ln A\sim\mathcal{N}(m,s^2),\qquad
-s=\max\!\left(s_g,\frac{\tau}{\sqrt{N_{\mathrm{start}}}}\right),\qquad
-m=\ln(\mathrm{prediction})-\frac{s^2}{2}.
+:label: spread
+
+s=\frac{\varphi(\mathrm{hi})-\varphi(\mathrm{lo})}{3.92},
 ```
 
-- {math}`\mathrm{prediction}` is where the belief starts: the corrected prediction
-  of section 5. Its guess is the experts' forecasts of the amount, averaged on the log
-  scale with their support weights; with an empty record the prediction is that guess.
-- {math}`s_g` is the stated spread: each expert's stated 95% range read as
-  {math}`(\ln hi-\ln lo)/3.92`, combined with the disagreement between experts,
-  {math}`s_g^2=\sum_k w_k\,(s_k^2+(m_k-m_g)^2)`, where {math}`w_k` is expert
-  {math}`k`'s weight, {math}`m_k` the log of its forecast, {math}`s_k` its stated
-  spread and {math}`m_g=\sum_k w_k m_k`.
-- {math}`\tau=D\sqrt{\text{scatter share}}` is the run-to-run scatter of the amount
-  on one task. {math}`D` is the typical remaining miss of a prediction, as a spread
-  of {math}`\ln(\mathrm{actual}/\mathrm{prediction})`: section 5 measures it from the
-  record, and it is 1.3 with an empty record. The scatter share is the part of
-  {math}`D^2` that is scatter (0.5 by default).
-- {math}`N_{\mathrm{start}}=1/(1/\mathrm{worth}+1/N_{\mathrm{task}})` is how many
-  runs the prediction is worth: {math}`\mathrm{worth}` is what the record says
-  about the model family's own level (the family's own runs plus 5), and
-  {math}`N_{\mathrm{task}}` (1) is the most a record on other tasks is worth for one
-  task.
-- Subtracting {math}`s^2/2` makes the belief's average equal the prediction.
+because a central 95% range spans 3.92 standard deviations. The range on {math}`S` is
+the `silent` range divided by {math}`\text{clean}+\text{silent}`. A value with no range
+has spread 0.
 
-A stated range can widen the belief and never narrow it below
-{math}`\tau/\sqrt{N_{\mathrm{start}}}`, which is 1.007 with the defaults and an
-empty record. For a
-prediction of 3,600 seconds with no range, {math}`N_{\mathrm{start}}=0.833`,
-{math}`\tau=0.919`, {math}`s=1.007` and {math}`m=7.682`: an average of 1 hour and a
-median of 0.60 hours. A stated range of 600 to 60,000 seconds gives a spread of 1.175,
-which is used.
-
-Recorded runs of the same candidate then update the belief conjugately. The runs and
-their weights are those of section 3's evidence weights: task similarity, a 14-day
-half-life and at most one run's weight per ticket. With
-{math}`w_i` the weight of run {math}`i`, {math}`W=\sum_i w_i` and {math}`y_i` the log
-of the amount it recorded:
+Several forecasts of one value, the forecast {math}`\bullet` with centre
+{math}`m_\bullet`, spread {math}`s_\bullet` and weight {math}`\nu_\bullet` where the
+weights sum to one, are merged on the value's scale into one centre and one spread:
 
 ```{math}
-\frac{1}{s'^2}=\frac{1}{s^2}+\frac{W}{\tau^2},\qquad
-m'=m+s'^2\,\frac{\sum_i w_i\,(y_i-m)}{\tau^2},\qquad
-\mathbb{E}[A]=\exp\!\left(m'+\frac{s'^2}{2}\right).
+:label: merge
+
+\bar m=\sum_\bullet \nu_\bullet\,m_\bullet,\qquad
+s_{\mathrm{stated}}^2=\sum_\bullet \nu_\bullet\bigl(s_\bullet^2+(m_\bullet-\bar m)^2\bigr).
 ```
 
-Each run pulls the centre {math}`m'` toward its own amount and narrows the spread
-{math}`s'`, by its weight. Two runs with weights 0.5 and 0.3 that recorded 1,800 and
-5,400 seconds give {math}`W=0.8`, {math}`s'=0.719`, {math}`m'=7.792` and an average of
-3,137 seconds. {math}`\mathbb{E}[T]` is the average of the active-time belief, in
-hours. {math}`C_{\mathrm{run}}` prices the averages of the token beliefs at the
-candidate's rates; section 7 gives its spread. A token kind that every expert forecasts
-at zero, with no non-zero upper end, is exactly zero. A belief is updated by the runs
-that record its value: a run with a complete usage record and no active time moves the
-token beliefs and leaves the active-time belief unchanged, and a run that records only
-a total token count moves the belief for total tokens alone.
+These are the mean and variance of the mixture of the forecasts, so forecasts that
+disagree widen the merged spread and equal forecasts keep it. Section 8 merges the
+experts' forecasts with this rule, and the stored forecasts below are merged with it too.
 
-### Why the retry factor matters
+### Stored forecasts
 
-Under the model's stationary same-candidate retry assumption, attempts continue
-until a non-loud result is accepted. At a known loud rate {math}`\theta_l`, with
-{math}`p_s` the share of attempts that end silently wrong:
+A new fine forecast is stored on the task's primary prototype, the matched prototype
+with the largest match weight, under the name of the host that asked. A prototype keeps
+one stored forecast per cell and host, and a new one replaces the same host's earlier
+forecast whole. The level of a forecast follows the host that made it, so a stored
+forecast is reused only for that host; a request without a host name belongs to one
+unnamed host. Capability priors are shared by all hosts.
+
+A stored forecast is usable for a cell of a new task when its prototype matches the
+task, it was made under the task's host, and it states every value the cell needs. Let
+{math}`\mathcal{U}` be the matched prototypes with a usable forecast for the cell. Each
+value is merged by {eq}`merge` over {math}`\mathcal{U}` with the shares
+{math}`\mu_p/\sum_{p'\in\mathcal{U}}\mu_{p'}`, from the stored centre {math}`m_p` and the
+stored spread {math}`s_p` of {eq}`spread`. A token kind that every forecast in
+{math}`\mathcal{U}` states as exactly zero stays zero; any other kind is merged over the
+forecasts that state it above zero and multiplied by their total share
+{math}`\mu^{+}_\kappa`. A cell priced by kind sums its kinds into `tokens`. A single
+usable forecast is reused unchanged. The merged row is
 
 ```{math}
-\mathbb{E}[N\mid\theta_l]=R=\frac{1}{1-\theta_l},
+:label: merged-row
+
+\begin{aligned}
+\text{loud}&=\operatorname{logistic}(\bar m_{\mathrm{loud}}), &
+S&=\operatorname{logistic}(\bar m_S),\\
+\text{clean}&=(1-\text{loud})(1-S), &
+\text{silent}&=(1-\text{loud})\,S,\\
+\text{seconds}&=\exp(\bar m_{\mathrm{time}}), &
+A_\kappa&=\mu^{+}_\kappa\exp(\bar m_\kappa),
+\end{aligned}
+```
+
+with {math}`\operatorname{logistic}(x)=1/(1+e^{-x})`, and each value with a positive
+spread states the range {math}`\varphi^{-1}(\bar m\pm1.96\,s_{\mathrm{stated}})`, the
+silent range being the range of {math}`S` times {math}`1-\text{loud}` and a kind's range
+being multiplied by {math}`\mu^{+}_\kappa`. The row stands in place of the forecaster's
+answer, and the beliefs read its centres and spreads back exactly as from a forecaster's
+row.
+
+For example, two prototypes with shares 0.7 and 0.3 store loud rates of 20% and 40%,
+each with spread 0.5. The centres are {math}`\operatorname{logit}0.2=-1.386` and
+{math}`\operatorname{logit}0.4=-0.405`, so {math}`\bar m=-1.092`, a loud rate of 25.1%,
+and {math}`s_{\mathrm{stated}}^2=0.7(0.25+0.294^2)+0.3(0.25+0.687^2)=0.452`, a spread
+of 0.672 and a range of {math}`[0.082,0.556]`. With a merged {math}`S` of 10% the row is
+clean 0.674, loud 0.251 and silent 0.075.
+
+A cell with no usable stored forecast goes to the forecaster, and a task whose cells
+are all covered, with no active memory to consult, is routed without any model call. In
+the running example the project is new, so both stages call the forecaster, and the
+three rows are stored for the host. The {ref}`stored-forecast reference
+<stored-forecasts>` gives the stored fields and the receipt's record of each reused cell.
+
+## 5 Expert support
+
+Forecast sources differ in skill, so each is weighted by how well its earlier forecasts
+predicted what then happened.
+
+Every forecast source is an *expert*. The independent forecast is the expert `llm`, a
+written lesson in memory is the expert `memory:ID:VERSION`, and a recorded execution
+shown to the reader is the read-only expert `execution:RUN_ID`. The capability stage has
+its own experts, `filter:llm` and `filter:memory:ID:VERSION`. An expert earns a score
+only from a run whose receipt holds its forecast for the cell that actually ran, made
+before the run. A memory earns it only when it supplied an explicit changed forecast for
+that cell; a memory that was not retrieved, or that left the baseline unchanged, earns
+nothing. A lesson written after a failure can guide later work, but the failure that
+prompted it cannot score it, and a revised lesson starts a new version without its
+predecessor's score.
+
+On run {math}`i`, a fine expert {math}`k` scores the floored log ratio of the
+probability it gave to the actual outcome against the baseline's,
+
+```{math}
+:label: outcome-score
+
+L_{k,i}=\ln\max\bigl(0.0001,P_k(\mathrm{out}_i)\bigr)-\ln\max\bigl(0.0001,P_{\mathrm{llm}}(\mathrm{out}_i)\bigr),
+```
+
+and, for each of the run's measured tokens and active seconds {math}`A_i`, a resource
+score {math}`V_{k,i}` that sums
+{math}`\bigl[(\ln A_i-\ln\hat A_{\mathrm{llm},i})^2-(\ln A_i-\ln\hat A_{k,i})^2\bigr]/(2\cdot1.5^2)`,
+where {math}`\hat A` is the forecast and every amount is held at 1 or more. Active time
+is the run's active seconds when recorded and its wall-clock seconds otherwise; an
+unmeasured amount adds nothing. The support of expert {math}`k` is
+
+```{math}
+:label: support
+
+\ln\tilde\alpha_k=\ln\alpha^0_k+0.5\sum_{i\in\mathcal{E}_k}0.98^{\,\mathrm{later}_{k,i}}\;v_i\,\bigl(L_{k,i}+0.25\,V_{k,i}\bigr),
 \qquad
-P(\mathrm{silent}\mid\mathrm{accepted})=S=\frac{p_s}{1-\theta_l}.
+\alpha_k=\frac{\tilde\alpha_k}{\sum_{k'\in\mathcal{K}}\tilde\alpha_{k'}}.
 ```
 
-The retry factor {math}`R` charges repeated worker cost and time. The loud penalty adds
-detection or rework overhead beyond those repeated attempts. The model does not
-assume that a failed attempt switches to another candidate. Real retries can be
-correlated or change the task, so the geometric calculation is an approximation
-to assess against observed workflow behavior.
+Here {math}`\mathcal{E}_k` is the set of runs that scored expert {math}`k`,
+{math}`\mathrm{later}_{k,i}` counts the runs that scored {math}`k` after run
+{math}`i`, {math}`v_i` is the run's weight on record (the weight configured for its
+model, 1 unless set) and {math}`\alpha^0_k` is 1 for the independent forecast and 0.25
+for a memory. The factor 0.5 tempers the evidence and 0.98 lets older exposures fade.
+The weights are normalized over the experts {math}`\mathcal{K}` that take part in the
+decision, so growth in unrelated memories does not dilute them. These constants ship in
+the packaged `semantic.toml`.
 
-The loud rate is not known, and the retry factor is curved in it, so the cost is
-averaged over the belief instead of being read at the belief's average. For example, a
-belief split evenly between loud rates of 0.2 and 0.6 averages 0.4. The cost at the
-average charges {math}`1/0.6=1.67` attempts, and the average over the belief charges
-{math}`(1.25+2.5)/2=1.875`. At the same average loud rate, a wider belief therefore
-charges more attempts and a higher cost.
+A capability expert scores, on the cell that ran, the log ratio of its
+{math}`P_{\mathrm{clear}}` against the independent fine forecast's `clean` probability
+for a clean run, and of {math}`1-P_{\mathrm{clear}}` against {math}`1-\text{clean}`
+otherwise, floored as in {eq}`outcome-score`, with no resource term. An amendment
+replaces the run's outcome, and its forecasts are scored once against the effective
+outcome.
 
-As an illustrative calculation, assume known comparable host charges and ignore
-time and defect penalties:
+After each observation, a language-model writer can add, edit, remove, restore, merge
+or split written lessons. Every change keeps history and is refused against a stale
+revision, and a failed writer leaves the observation intact for a retry. Learning is
+shared across models inside the project's store: a lesson may inform a forecast for
+another model, while its source outcome stays attributed to the run that produced it.
+The [semantic-memory contract](semantic-memory.md) specifies the writer and its
+operations, and the [retrieval guide](retrieval.md) specifies how lessons and executions
+are retrieved.
 
-| Candidate | Cost per attempt | Loud probability | Expected worker cost to acceptance |
-| --- | ---: | ---: | ---: |
-| A | $0.40 | 0.50 | $0.80 |
-| B | $0.65 | 0.05 | About $0.684 |
+## 6 Recorded runs as evidence
 
-Candidate B has a higher invocation cost and a lower expected worker cost to
-acceptance. These hypothetical values illustrate the objective, not measured
-howhard savings. The full decision also considers escaped-defect risk.
+Which recorded runs bear on a new task, and how much, is decided once per decision and
+shared by three readers.
 
-The {ref}`selection contract <accepted-result-selection>` specifies the objective,
-policy fields and admission tiers.
-
-## 2 Architecture and independent LLM judgments
-
-The workflow separates capability filtering from detailed forecasting:
-
-```text
-Task + project snapshot + actual host inventory
-                    |
-Independent LLM capability prior + retrieved experience
-                    |
-Learn task-specific order and fit band
-                    |
-Independent LLM fine forecast + memory-conditioned forecasts
-                    |
-Compare cost, accepted-result risk and credit feasibility
-                    |
-Host executes selected model and effort
-                    |
-Record actual outcome and measured usage
-                    |
-Replay predictive scores and update written lessons
-                    ^
-                    |
-Supported later defect attribution amends the original outcome
-```
-
-Separate stateless calls produce cold-start capability priors once per unseen
-`(prototype, model, effort)` cell and fine no-memory forecasts once per unseen
-`(prototype, model, effort, host)`, against a
-synthesized `(representative_task, representative_context)` cluster in
-`payloads.sqlite3` (matched on canonicalized task-only text with positive cross-encoder
-relevance). Neither receives memories, historical
-executions, learned tables or prior conversation. Warm routes whose candidates are
-already covered reuse the prototype's capability priors and stored forecasts
-directly, calling a model only when active semantic memories require
-conditional overrides or a cell has no usable stored forecast. A memory reader separately
-supplies conditional adjustments grounded in retrieved evidence and cannot
-rewrite those baseline judgments.
-
-### Stored forecasts are reused per host and merged on each value's own scale
-
-The host is the agent that asks for a route, makes the forecast and accepts or rejects
-the result. The level of a forecast follows the host that made it, so a stored forecast
-is reused only for requests of that host. A prototype keeps one stored forecast per cell
-and host: the forecaster's memory-free row, made against the prototype's representative
-task and context. A new forecast is stored on the request's primary prototype and
-replaces the same host's forecast whole. Capability priors are shared by all hosts.
-
-A stored forecast is usable for a cell of a new request when its prototype matches the
-task, it was made under the request's host, and it states every value the cell needs,
-including the six token kinds for a cell priced by kind. A request with no host name
-belongs to the one unnamed host and reuses only forecasts stored with no host name,
-which includes every forecast stored before hosts were named. Each value of the cell's
-row is merged over the usable forecasts:
-
-```text
-P       = the matched prototypes with a usable stored forecast for the cell
-omega_p = w_p / (sum of w_q over q in P)
-m       = sum over p in P of omega_p * m_p
-s^2     = sum over p in P of omega_p * (s_p^2 + (m_p - m)^2)
-```
-
-- `w_p`: prototype `p`'s match weight for the new task. The weights of all matched
-  prototypes sum to 1.
-- `omega_p`: `p`'s share within `P`. The shares sum to 1.
-- `m_p`: the stored value's centre on its own scale: `logit(loud)` for the loud rate
-  `theta_l`, `logit(silent / (clean + silent))` for the accepted-defect share `S`,
-  `ln(seconds)` for active time and `ln(tokens_a)` for token kind `a`, where
-  `logit(p) = ln(p / (1 - p))`.
-- `s_p`: the stored value's stated spread, `(phi(hi) - phi(lo)) / 3.92` for a stored
-  95% range `[lo, hi]` on the same scale `phi`, or 0 when no range is stored.
-- `m`, `s`: the merged centre and spread.
-
-In plain words: the merged guess is the share-weighted average on the value's scale.
-The merged spread holds each forecast's own spread plus the distance between the
-forecasts, so forecasts that disagree widen the range.
-
-For example, two prototypes with shares 0.7 and 0.3 store loud guesses of 20% and 40%,
-each with a spread of 0.5. The centres are `logit(0.2) = -1.386` and
-`logit(0.4) = -0.405`, so `m = 0.7 * (-1.386) + 0.3 * (-0.405) = -1.092`, which is
-25.1%, and `s^2 = 0.7 * (0.25 + 0.294^2) + 0.3 * (0.25 + 0.687^2) = 0.452`, so
-`s = 0.672`. With both guesses at 20%, `s` stays 0.5.
-
-For active time, for example, three prototypes match with weights 0.5, 0.3 and 0.2 and
-the third stores nothing usable, so the shares are `0.5 / 0.8 = 0.625` and
-`0.3 / 0.8 = 0.375`. The first stores 600 seconds with a range of 300 to 1,200, a
-spread of `(ln 1200 - ln 300) / 3.92 = 0.354`; the second stores 2,400 seconds with no
-range. The merged guess is `exp(0.625 * ln 600 + 0.375 * ln 2400) = 1,009` seconds with
-spread 0.727.
-
-One prototype in `P` has its forecast reused unchanged. A token kind that every
-forecast in `P` states as exactly zero stays exactly zero; any other kind is merged over
-the forecasts that state it above zero and multiplied by their total share. `tokens` is
-the sum of the merged kinds for a cell priced by kind, and is merged itself otherwise.
-
-The merged forecast is the cell's memory-free row, in place of a forecaster's answer:
-
-```text
-loud    = logistic(m_loud)            S        = logistic(m_S)
-clean   = (1 - loud) * (1 - S)        silent   = (1 - loud) * S
-seconds = exp(m_time)                 tokens_a = k_a * exp(m_a)
-range   = [inverse_phi(m - 1.96 * s), inverse_phi(m + 1.96 * s)]    for each value with s > 0
-```
-
-- `m_loud`, `m_S`, `m_time`, `m_a`: the merged centres of the loud rate, `S`, active
-  time and token kind `a`.
-- `logistic(x) = 1 / (1 + exp(-x))`, the inverse of `logit`.
-- `k_a`: the total share of the forecasts that state kind `a` above zero; 1 when all do.
-- `inverse_phi`: `logistic` for the two rates and `exp` for active time and tokens.
-- `range`: the value's stated 95% range. The silent range is the range of `S` times
-  `1 - loud`, and a kind's range is multiplied by `k_a` like its value. A value with
-  `s = 0` has no range.
-
-In plain words: the row states the merged guesses, each with the range from which the
-beliefs of sections 1 and 5 read the merged centre and spread back, exactly as from a
-forecaster's row.
-
-For example, the loud merge above gives `loud = 0.251` with the range
-`[logistic(-1.092 - 1.96 * 0.672), logistic(-1.092 + 1.96 * 0.672)] = [0.082, 0.556]`.
-With a merged `S` of 10% the row is `clean = 0.749 * 0.9 = 0.674`, `loud = 0.251` and
-`silent = 0.749 * 0.1 = 0.075`.
-
-A cell with no usable stored forecast goes to the forecaster. No forecast, and no
-value of one, is built from a prototype's recorded runs: a record with runs and no
-stored forecast asks the forecaster once per cell and host, and the runs then count as
-evidence beside that forecast. The inference cache of an explicit backend is keyed by
-the host's name as well, with the unnamed host as a key of its own, so the forecast
-stored under a host is always an answer made for that host. The receipt lists each reused cell's sources (prototype,
-match weight, share, host and stored row) and each value's merged centre and spread.
-Loading the receipt recomputes the shares, the merge and the row from those sources and
-refuses a source stored under another host. The [reference](reference.md) gives the
-stored fields.
-
-This separation preserves a reference forecast for evaluating whether experience
-helped. It does not imply that the baseline LLM is unbiased or calibrated.
-Unavailable or invalid independent forecasts stop routing explicitly.
-
-The full supplied inventory is considered at the capability stage. Only the fit
-band receives detailed outcome and usage forecasts. If the learned band exceeds
-the forecast budget, an explicit re-filter is requested; a second oversized band
-is refused. If every forecast candidate is excluded by the risk limit, bounded
-widening can request new forecasts for stronger candidates before a cell is drawn.
-
-The [capability contract](capability.md) defines these transitions, while the
-[context contract](context.md) defines the frozen task and project inputs.
-
-## 3 Bayesian capability learning
-
-### Latent threshold and task-specific order
-
-For an inventory of {math}`n` candidates, the LLM proposes an order from weakest
-to strongest for this task, with lower and upper fit cut points. A discrete latent
-threshold {math}`H` represents the capability required. Its support includes a
-position beyond the strongest supplied candidate, allowing the inventory to be
-insufficient.
-
-Each expert's cut points define a smoothed prior cumulative distribution over
-this threshold. Below the lower cut {math}`\ell`, the prior CDF at rank {math}`r`
-is {math}`0.8\,p_{\min}\,2^{-(\ell-1-r)}`. Above the upper cut, the prior allocates
-half of the remaining overpowered-tail mass per step, normalized to the finite tail.
-Predictive weights mix the independent and memory-conditioned priors.
-Consensus ordering preserves each model's effort chain. A monotone
-projection makes the mixed cumulative distribution consistent with that order.
-Call the resulting threshold prior {math}`\pi_0(h)`.
-
-### Weighted likelihood update
-
-The evidence for one decision is a single set of candidate runs: recorded runs with
-outcome `clean`, `loud` or `silent` that belong to at least one prototype the new task
-matches. Prototypes only choose the candidates; no prototype score and no membership
-weight enters a weight. A task that matches no prototype has no candidate. At most 256
-candidates, the most recent by observation time, are compared with the new task, once,
-when the request is prepared.
-
-Only candidates whose executed cell is present in the inventory contribute threshold
-likelihoods. Let {math}`r_i` be an executed candidate's
-position in the proposed order, and {math}`z_i=1` for a clean outcome and zero
-for a loud or silent outcome. Given observation noise {math}`\eta`, define:
+A run is a *candidate* for a new task when its outcome is `clean`, `loud` or `silent` and
+it belongs to at least one prototype that the task matches. The prototypes only choose
+the candidates; their match weights enter no run weight. A task that matches no
+prototype has no candidates. At most the 256 most recent candidates are scored
+(`comparison_cap`), each compared with the new task once, when the request is prepared.
+The cross-encoder scores the new task's text against run {math}`i`'s own task text,
+giving {math}`\rho_i`, and run {math}`i` weighs
 
 ```{math}
-q_i(h)=
+:label: evidence-weight
+
+\mathrm{sim}_i=\operatorname{logistic}(\rho_i),\qquad
+a_i=0.5^{\,\mathrm{age}_i/h},\qquad
+w_i=v_i\,\mathrm{sim}_i\,a_i\times(\text{the reader's factor}),
+```
+
+where {math}`\mathrm{age}_i`, never below zero, counts the days from the run to the
+request. A run counts more when its task reads like the new one and half as much for
+every {math}`h` days of age. There is no cut-off, so a run with a negative score still
+counts at a small weight. Retries of one ticket follow from one another's failures, so
+the runs of one ticket together count for at most one run:
+
+```{math}
+:label: ticket-limit
+
+w_i\leftarrow\frac{w_i}{\max(1,W_{t})},\qquad W_t=\sum_{i'\in t}w_{i'},
+```
+
+where the sum runs over the reader's counted runs of ticket {math}`t`. A run with no
+ticket is not limited. For example, a run of the judged cell with {math}`\rho=1.386`,
+recorded 7 days before the request, has {math}`\mathrm{sim}=0.8`,
+{math}`a=0.5^{7/14}=0.7071` and {math}`w=0.8\times0.7071=0.5657`.
+
+The three readers differ in their factor. The capability threshold (section 7) uses the
+run's strength {math}`\xi_i` and counts every candidate whose cell is in the inventory.
+The outcome beliefs (section 9) count every candidate for every forecast cell
+{math}`c`, whatever cell ran it, at the relatedness discount
+
+```{math}
+:label: discount
+
+\delta(c_i,c)=
 \begin{cases}
-1-\eta & h\leq r_i,\\
-\eta & h>r_i.
+1&\text{the same family at the same effort (the same cell)},\\
+\delta_{\mathrm{effort}}&\text{the same family at another effort},\\
+\delta_{\mathrm{model}}&\text{another family of the same agent},\\
+\delta_{\mathrm{agent}}&\text{another agent},
 \end{cases}
 ```
 
-The update is:
-
-```{math}
-\pi(h\mid D,x)\propto\pi_0(h)
-\prod_{i\in D}
-\left[q_i(h)^{z_i}(1-q_i(h))^{1-z_i}\right]^{w_i}.
-```
-
-Each weight is a product of four factors, followed by a limit per ticket:
-
-```{math}
-\mathrm{sim}_i=\frac{1}{1+e^{-\rho_i}},\qquad
-a_i=0.5^{\,d_i/h},\qquad
-w_i=m_i\,\mathrm{sim}_i\,s_i\,a_i,\qquad
-w_i\leftarrow\frac{w_i}{\max(1,W_t)},\quad W_t=\sum_{j\in t}w_j.
-```
-
-Here {math}`\rho_i` is the cross-encoder's score for the new task's text against run
-{math}`i`'s own task text, and {math}`\mathrm{sim}_i` is that score on a scale from 0
-to 1. {math}`d_i` is the number of days from the run's observation to the time the
-request was prepared, never below zero, and {math}`h` is the half-life, 14 days, so the
-age factor {math}`a_i` halves a run's weight for every 14 days of age. {math}`m_i` is
-the stored evidence weight of the run's model, 1 unless configured. {math}`s_i` is the
-severity/cause strength: 1 for a clean run, 0.75 for a loud and 1 for a silent failure
-attributed to capability, and half of that when the cause is unknown. {math}`t` is the
-run's ticket and {math}`W_t` the total weight of that ticket's counted runs; a run
-with no ticket is not limited.
-
-In plain words: a run counts more when its task reads like the new one and less as it
-ages; there is no similarity cut-off, so a run with a negative score still counts at a
-small weight; and all runs of one ticket together count for at most one run, because
-retries follow failures. For example, a loud run with no recorded cause,
-{math}`\mathrm{sim}=0.8`, recorded 7 days before the request, weighs
-{math}`0.8\times0.75\times0.5\times0.7071=0.2121`. Failures
-explicitly attributed to capability retain their severity strength; unknown
-causes contribute less. Supported assertions that a failure was not capability
-caused can remove its threshold contribution without removing the outcome.
-
-This is a weighted-likelihood, or generalized Bayesian, update. The relevance
-weights are heuristic transfer strengths, not calibrated probabilities that two
-tasks are equivalent. Related historical tasks are treated as noisy evidence
-about the current threshold under the proposed order.
-
-### From posterior to fit band
-
-The posterior cumulative probability {math}`P(H\leq r\mid D,x)` estimates how
-likely a candidate is to clear the task's capability threshold; write
-{math}`P_{\mathrm{clear}}(o)` for its value at cell {math}`o`. The clearing and
-timely-clearing posteriors each define an interval. An interval starts at the first
-position meeting its lower edge and retains a reliable candidate when one exists. It
-ends at the first position at or above that anchor where the remaining probability
-gain is below its margin. When reliability is unattainable, the lower boundary is the
-gain rule's anchor. When the timely minimum is also unattainable, only the timely gain
-cut is kept.
-
-The two edges of the clearing interval follow the host, the agent that asks for the
-route and accepts or rejects the result. A failure the host finds before acceptance is
-loud and one found afterwards is silent, so the share of its failures a host catches
-decides how much weakness the band can afford. The caught share is estimated from the
-failed routed runs on record, shrunk towards all hosts and towards a reference share:
-
-```{math}
-d_0=\frac{1-2\varepsilon}{1-\varepsilon},\qquad
-d_{\mathrm{all}}=\frac{C_{\mathrm{all}}+\kappa_d\,d_0}{F_{\mathrm{all}}+\kappa_d},\qquad
-d=\frac{C_{\mathrm{host}}+\kappa_d\,d_{\mathrm{all}}}{F_{\mathrm{host}}+\kappa_d},
-\qquad F=\sum_i a_i,\quad C=\sum_i a_i c_i.
-```
-
-Here {math}`\varepsilon` is the risk class's accepted-defect limit. The sums run over
-the failed runs: finished loud or silent runs whose decision receipt holds a forecast
-for the cell that ran, of all hosts for {math}`F_{\mathrm{all}}` and
-{math}`C_{\mathrm{all}}` and of the asking host for {math}`F_{\mathrm{host}}` and
-{math}`C_{\mathrm{host}}`. {math}`c_i` is 1 for a loud run and 0 for a silent one.
-{math}`a_i` is the age factor of the weighted likelihood update above, half as much
-for every 14 days between the run and the request, divided by {math}`\max(1,A_t)`
-where {math}`A_t` is the total age factor of the failed runs of the same ticket, so
-one ticket's failed runs count as one run at most.
-A run's host is the name in its decision receipt. A receipt older than decision v11
-stores none, so its runs belong to the host an operator imported for that decision, or
-else, like a receipt with no name, to one unnamed host. {math}`\kappa_d=12` is the
-number of failed runs the prior is worth. {math}`d_0` is the caught share at which both edges
-below equal the configured ones.
-
-In plain words: {math}`d` is the share of its failures that the host caught. A host
-with few failures of its own leans on all hosts, and an empty record gives
-{math}`d_0`. For example, at {math}`\varepsilon=0.10`, {math}`d_0=0.889`. With
-{math}`F_{\mathrm{all}}=60` and {math}`C_{\mathrm{all}}=42`,
-{math}`d_{\mathrm{all}}=(42+12\times0.889)/72=0.731`. With
-{math}`F_{\mathrm{host}}=20` and {math}`C_{\mathrm{host}}=8`,
-{math}`d=(8+12\times0.731)/32=0.524`.
-
-```{math}
-e=\max\!\left(p_{\min},\;1-\frac{\varepsilon}{1-d+\varepsilon d}\right),\qquad
-g=\min\!\left(g_{\max},\;\frac{g_{\max}\,\varepsilon}{(1-\varepsilon)(1-d)}\right).
-```
-
-The clearing interval starts at the first cell with
-{math}`P_{\mathrm{clear}}(o)\geq e` and ends at the first reliable cell with
-{math}`P_{\mathrm{clear}}(\text{strongest})-P_{\mathrm{clear}}(o)<g`. {math}`p_{\min}`
-is `min_clear_probability` (0.5), the floor of {math}`e`, and {math}`g_{\max}` is
-`overpowered_gain_margin` (0.05), the widest margin. A reliable cell has
-{math}`P_{\mathrm{clear}}` at or above `reliability_probability`, and the strongest
-cell is the last of the order. At {math}`d\geq d_0` both edges are the configured
-values, and below it both tighten.
-
-In plain words: a cell too weak for the task fails. With
-{math}`q=1-P_{\mathrm{clear}}`, a share {math}`q(1-d)` of its results escapes the host
-and a share {math}`1-qd` is accepted. Holding the escaped share of the accepted results
-at {math}`\varepsilon` gives {math}`e`. At the top, 0.05 more
-{math}`P_{\mathrm{clear}}` removes about {math}`(1-d)\times0.05` of the silent
-results, so {math}`g` shrinks to keep {math}`(1-d)\,g` constant. At
-{math}`\varepsilon=0.10`, a host that catches 90% or more keeps {math}`e=0.5` and
-{math}`g=0.05`; {math}`d=0.8` gives 0.643 and 0.0278; {math}`d=0.5` gives 0.818 and
-0.0111; {math}`d=0` gives 0.900 and 0.0056. For example, {math}`d=0.524` gives
-{math}`e=0.811` and {math}`g=0.0117`: with {math}`P_{\mathrm{clear}}` of 0.30, 0.55,
-0.72, 0.84, 0.91, 0.955, 0.985 and 0.99 along the order, the configured edges give
-cells 2 to 6 and these edges give cells 4 to 7.
-
-If no cell reaches {math}`e`, the band starts at the first cell with the highest
-{math}`P_{\mathrm{clear}}` when that value reaches {math}`p_{\min}`, and the request
-is refused otherwise. The timely interval and the prior CDF keep the configured values.
-
-When the span of the two intervals exceeds the forecast budget, the fine reader
-forecasts their union. The gap lies beyond the clearing gain cut and before the
-timely interval. This retains both clearing and timely alternatives for {math}`J` to
-compare, while the receipt keeps probabilities for every rank. If the union itself
-exceeds the budget, request a sharper independent prior over the same inventory.
-
-The band alone can leave out a family that has never run this kind of task, or every
-cell of one agent. Of the {math}`B` cells the forecast budget allows, {math}`R=2` are
-reserved:
-
-```{math}
-\mathrm{core}=\text{the first }B-R\text{ cells of the band},\qquad
-\mathrm{forecast}=\mathrm{core}\;\cup\;\{\text{up to }R\text{ cells }o_f\text{ with }P_{\mathrm{clear}}(o_f)\geq b_f\}.
-```
-
-Here {math}`f` is a family with no core cell and {math}`o_f` its cell nearest to the
-core in the order, the stronger one on a tie. The bar {math}`b_f` is 0.2 when no run
-of {math}`f` is among the decision's candidate runs, and {math}`e` otherwise. Slots go
-first to those unproven families, each on its own and nearest first. The remaining
-slots go to agents with no core cell, at most one slot per agent: a proven family
-whose agent is missing takes the slot on that agent's behalf, at the agent's
-qualifying cell nearest to the core, and an agent whose unproven family already took a
-slot counts as served. In plain words: a slot buys one forecast for a family or an agent
-the band leaves out. For example, a band of 11 cells with {math}`B=12` has a core of
-ten. A family with no candidate run whose nearest cell has
-{math}`P_{\mathrm{clear}}=0.35` takes the first slot, and an agent with no core cell
-whose nearest cell is the band's eleventh takes the second. A slot that no family
-takes goes back to the band, whose next cell beyond the core is then forecast. A
-reserved cell keeps its position's classification, and no decision forecasts more
-than {math}`B` cells.
-
-Cross-model placements can change through constrained local search using marginal
-threshold evidence and an order-distance penalty. This is approximate posterior/MAP
-search, rather than exact inference over all rankings. The scalar ordering and
-monotone threshold are modeling assumptions: different tasks can induce different
-orders, and higher effort does not guarantee success.
-
-An unseen candidate's placement remains prior-based. Observations at other
-positions can still change its threshold-clearing probability, conditional on
-that placement. The receipt distinguishes this inference from an observed outcome.
-See [capability filtering](capability.md) for the exact cuts and evidence rules.
-
-## 4 Learning which memories improve predictions
-
-The fine reader forecasts clean/loud/silent probabilities and resource use for
-each retained candidate. It combines an independent baseline with conditional
-forecasts informed by written lessons or retrieved executions. These forecast
-sources act as predictive experts.
-
-### Predictive scores
-
-For expert {math}`k` and execution {math}`i`, let {math}`p_{k,i}(y_i)` be the
-probability assigned to the actual outcome before execution. Let expert zero be
-the independent fine baseline. The outcome score is a floored log probability
-ratio:
-
-```{math}
-S_{k,i}=\log\frac{\max(\delta,p_{k,i}(y_i))}
-                         {\max(\delta,p_{0,i}(y_i))}.
-```
-
-Measured tokens and effective active duration (`active_seconds` when recorded,
-otherwise wall-clock `seconds`) add broad log-normal resource scores relative
-to the baseline, excluding passive external queue wait when broken out. Unknown
-measurements add no resource evidence. A compact
-expression for the resulting fine-expert support is:
-
-```{math}
-\widetilde W_k=\pi_k\exp\!\left[
-\tau\sum_{i\in E_k}\gamma^{a_{k,i}}v_i
-\left(S_{k,i}+\rho R_{k,i}\right)\right],
-\qquad
-W_k=\frac{\widetilde W_k}{\sum_{j\in A}\widetilde W_j}.
-```
-
-Here {math}`\pi_k` is initial expert mass, {math}`\tau` tempers evidence,
-{math}`\gamma` discounts older exposures, {math}`v_i` is the stored evidence
-weight, and {math}`R_{k,i}` is the resource-score advantage with scale
-{math}`\rho`. The set {math}`E_k` contains eligible earlier forecast exposures;
-{math}`a_{k,i}` counts subsequent eligible exposures for that expert. The set
-{math}`A` contains participating forecast sources for this decision. Their
-forecasts of each rate are merged on the log-odds scale using normalized support
-{math}`W_k` (section 5).
-
-Capability-prior experts use the same support machinery separately, scoring
-clean versus non-clean predictions against the independent fine forecast
-coarsened to those two outcomes. Their scores do not include resource terms.
-
-These are approximate predictive-evidence weights. They do not estimate the
-probability that a natural-language lesson is true, establish a causal explanation,
-or form an exact joint posterior over memories, rankings and outcomes.
-
-### Prospective evidence and writable lessons
-
-A memory earns exposure only when it supplied an explicit changed forecast for
-the candidate actually executed. Unretrieved memories and unchanged overrides
-receive no predictive credit. A lesson created after a failure can explain that
-failure and guide later work, but the triggering failure cannot validate its
-predictive performance. Revised lessons start a new content version without
-inheriting the previous version's score.
-
-After feedback is durable, an LLM writer can add, edit, remove, restore, merge or
-split written memories. Mutations preserve history and reject stale revisions.
-A writer failure leaves the execution outcome intact for retry. Raw execution
-experts remain read-only.
-
-Learning is shared among candidate models and providers inside the project's
-store. A lesson may inform a forecast for another model, while its source outcome
-remains attributed to the invocation that actually ran. The
-[semantic-memory contract](semantic-memory.md) specifies scoring and mutation;
-the [retrieval guide](retrieval.md) specifies precedent selection.
-
-## 5 Outcome beliefs and bounded exploration
-
-Each expert's fine forecast is a prior, not a measurement. A candidate cell holds two
-independent beliefs, each on the log-odds scale
-{math}`\operatorname{logit}(p)=\ln\bigl(p/(1-p)\bigr)`: one for its loud rate
-{math}`\theta_l`, the share of attempts that fail loudly, and one for its
-accepted-defect share {math}`S`, silent results divided by accepted results. A belief
-starts from a prediction, the forecast corrected from the record of the same host on
-other tasks, and is reshaped by the runs counted for the cell: its own runs in full,
-and runs of related cells at a discount.
-
-### One forecast per rate
-
-```{math}
-\begin{aligned}
-g_l&=\text{loud}, & g_S&=\frac{\text{silent}}{\text{clean}+\text{silent}},\\
-m_k&=\operatorname{logit}(g_k), &
-s_k&=\frac{\operatorname{logit}(hi_k)-\operatorname{logit}(lo_k)}{3.92},\\
-m&=\sum_k w_k m_k, & s_{\mathrm{stated}}^2&=\sum_k w_k\bigl(s_k^2+(m_k-m)^2\bigr),\\
-\mathrm{guess}&=\operatorname{logistic}(m)\ \text{held in}\ [0.0001,\,0.9998].
-\end{aligned}
-```
-
-- clean, loud, silent: one expert's forecast for the cell, floored at 0.0001 and
-  normalized. {math}`g_l` and {math}`g_S` are its guesses for {math}`\theta_l` and
-  {math}`S`.
-- {math}`k`, {math}`w_k`: a participating expert and its support weight. The weights
-  sum to 1.
-- {math}`lo_k`, {math}`hi_k`: the ends of the expert's stated 95% range, held in
-  {math}`[0.0001,0.9999]`: `loud_ci` for {math}`\theta_l`, and `silent_ci` divided by
-  clean + silent for {math}`S`.
-- {math}`s_k`: the stated spread on the log-odds scale, 0 when no range is stated. A
-  95% range spans 3.92 spreads.
-- {math}`m`, {math}`s_{\mathrm{stated}}`, guess: the merged centre, the merged
-  spread and the merged guess of the rate for this cell on this task.
-- {math}`\operatorname{logistic}(x)=1/(1+e^{-x})`, the inverse of the logit.
-
-In plain words, each rate gets one forecast per cell, and experts that disagree make it
-less certain.
-
-Example: two experts with weights 0.75 and 0.25 guess {math}`S` at 10% and 25%, each
-with spread 0.4. Then {math}`m=0.75\times(-2.197)+0.25\times(-1.099)=-1.92`,
-a guess of 12.8% and
-{math}`s_{\mathrm{stated}}=\sqrt{0.16+0.75\times0.275^2+0.25\times0.824^2}=0.62`.
-
-### The corrected prediction
-
-The level of a forecast follows the agent that makes it, and outcomes depend on the
-agent that accepts the result. So the record, not the forecast, gives the level of
-every value, and the forecast only says whether this task looks higher or lower than
-that forecaster usually states:
-
-```{math}
-\varphi(\mathrm{prediction})=\varphi(\mathrm{level})
-  +\gamma\,\bigl(\varphi(\mathrm{guess})-\varphi(\mathrm{usual})\bigr).
-```
-
-- {math}`\varphi`: the value's own scale. It is
-  {math}`\operatorname{logit}` for {math}`\theta_l` and {math}`S`, each held in
-  {math}`[0.0001,0.9999]`, and {math}`\ln` for active time and each token count.
-- guess: the merged forecast of the value for this cell on this task.
-- level: what happened in the recorded runs of this cell under this host.
-- usual: what the forecaster had stated for those runs.
-- {math}`\gamma`: the weight on the forecaster's judgment, from 0 to 1.
-- prediction: where the belief starts, before the similar runs are counted.
-
-In plain words, the record gives the level and the forecast only says whether this task
-looks harder or easier than usual. An empty record gives the guess, {math}`\gamma=1`
-the guess moved by level minus usual, and {math}`\gamma=0` the level alone.
-
-Example: level 0.0566, usual 0.188, guess 0.10 and {math}`\gamma=0.74` give
-{math}`-2.81+0.74\times(-2.20+1.46)=-3.36` in log-odds, a prediction of 0.034.
-
-Level and usual come down a ladder of five rungs, each leaning on the rung above it:
-
-```{math}
-\mathrm{level}(r)=\frac{\sum_i a_i\,y_i+\kappa_r\,\mathrm{level}(r^{+})}{\sum_i a_i+\kappa_r},
-\qquad
-\mathrm{usual}(r)=\frac{\sum_i a_i\,g_i+\kappa_r\,\mathrm{usual}(r^{+})}{\sum_i a_i+\kappa_r}.
-```
-
-- {math}`r`, {math}`r^{+}`: a rung and the one above it. From the top: all hosts, this
-  host, this agent under it, this family under it, this cell under it. Above all hosts
-  both ladders equal the guess.
-- {math}`i`: a finished routed run at rung {math}`r`: its outcome is clean, loud or
-  silent and its decision stored a forecast for the cell that ran. Its host and agent
-  are the names that decision stores; for a decision older than v11, the names an
-  operator imported for it and for the run's family. The evidence candidates of the
-  new decision are left out, because they count through their similarity to the new
-  task; a run with no decision enters no ladder.
-- {math}`a_i`: the age factor of section 3's evidence weights, halving every 14 days,
-  divided by {math}`\max(1,A_t)` with {math}`A_t` the summed age factors of the runs of
-  ticket {math}`t` in the ladder. A run with no ticket is not limited.
-- {math}`y_i`: what happened: 1 for a failure and 0 otherwise for a rate, the logarithm
-  of the recorded amount for an amount.
-- {math}`g_i`: the merged guess that run's own decision stored, on the same footing.
-- {math}`\kappa_r`: the worth of the rung above: 5 at the family rung (`model_worth`)
-  and 40 elsewhere (`rung_worth`).
-
-{math}`S` counts accepted results, with silent as the failure; {math}`\theta_l` counts
-every finished run, with loud as the failure; an amount counts the runs whose recorded
-amount and guess are above zero. In plain words, a cell with few runs leans on its
-family, then its agent, its host and all hosts.
-
-Example, for {math}`S` with guess 0.10:
-
-| Rung | {math}`\sum a` | {math}`\sum a\,y` | {math}`\sum a\,g` | level | usual |
-| --- | --- | --- | --- | --- | --- |
-| All hosts | 160 | 24 | 16 | 0.140 | 0.100 |
-| This host | 60 | 6 | 9 | 0.116 | 0.130 |
-| This agent | 40 | 2 | 6 | 0.083 | 0.140 |
-| This family | 15 | 1 | 3 | 0.071 | 0.185 |
-| This cell | 10 | 0 | 2 | 0.057 | 0.188 |
-
-The family level is {math}`(1+5\times0.083)/(15+5)=0.071`.
-
-The weight {math}`\gamma` is measured, one per kind of value, from all hosts' runs:
-
-```{math}
-\hat\gamma=\frac{O_H-O_L}{F_H-F_L}\ \text{held in}\ [0,1],\qquad
-\gamma=\frac{n\,\hat\gamma+\kappa}{n+\kappa}.
-```
-
-- {math}`H`, {math}`L`: the ladder's runs with
-  {math}`d_i=\varphi(g_i)-\varphi(\mathrm{usual}_i)` above zero, and the rest.
-- {math}`\mathrm{usual}_i`, {math}`\mathrm{level}_i`: both ladders at run {math}`i`'s
-  own cell over all the runs, with the record's weighted averages of {math}`g` and
-  {math}`y` above all hosts.
-- {math}`F_H`, {math}`F_L`: each group's weighted average of {math}`d_i`.
-- {math}`O_H`, {math}`O_L`: how far each group's results sat from its levels. For a
-  rate,
-  {math}`\operatorname{logit}\frac{\sum a_i y_i+1/2}{\sum a_i+1}-\operatorname{logit}\frac{\sum a_i\,\mathrm{level}_i+1/2}{\sum a_i+1}`
-  over the group; for an amount, its weighted average of
-  {math}`y_i-\mathrm{level}_i`.
-- {math}`n`, {math}`\kappa`: the runs' total weight, and 40 (`rung_worth`).
-- {math}`\hat\gamma` is 1 when a group is empty or {math}`F_H-F_L` is under 0.05.
-
-In plain words, {math}`\gamma` is the gap that happened divided by the gap that was
-forecast, and it starts at 1.
-
-Example: {math}`H` holds 60 runs' worth with 13 silent and levels summing to 9, and
-{math}`L` holds 100 with 11 silent and levels summing to 15. Then
-{math}`O_H=\operatorname{logit}(13.5/61)-\operatorname{logit}(9.5/61)=0.43` and
-{math}`O_L=-0.34`. With {math}`F_H-F_L=1.15`, {math}`\hat\gamma=0.675` and
-{math}`\gamma=(160\times0.675+40)/200=0.74`.
-
-The family's own runs set how firmly the prediction is held:
-
-```{math}
-\mathrm{worth}=n_{\mathrm{family}}+\kappa_m,\qquad
-N_{\mathrm{start}}=\frac{1}{1/\mathrm{worth}+1/N_{\mathrm{task}}},\qquad
-s=\max\!\left(s_{\mathrm{stated}},\frac{\sigma_1}{\sqrt{N_{\mathrm{start}}}}\right).
-```
-
-- {math}`n_{\mathrm{family}}`, {math}`\kappa_m`: {math}`\sum a_i` at the family rung,
-  and 5 (`model_worth`).
-- {math}`N_{\mathrm{task}}`: the most a record on other tasks is worth for one task:
-  32 for {math}`S`, 16 for {math}`\theta_l`, 1 for an amount.
-- {math}`\sigma_1`: one run's spread: {math}`1/\sqrt{p(1-p)}` for a rate with
-  {math}`p` the prediction, and {math}`\tau=D\sqrt{\text{scatter share}}` for an amount.
-- {math}`s_{\mathrm{stated}}`, {math}`s`: the merged forecast's spread, and the
-  belief's starting spread, at most the flat belief's 1.869 for a rate.
-
-Example: {math}`\mathrm{worth}=15+5=20` gives
-{math}`N_{\mathrm{start}}=1/(1/20+1/32)=12.3`. With {math}`p=0.034`,
-{math}`\sigma_1=5.54` and {math}`\sigma_1/\sqrt{N_{\mathrm{start}}}=1.58`. A stated
-range of 4% to 20% gives 0.46, so {math}`s=1.58`.
-
-For an amount, the same ladder over squared misses gives {math}`D`, the typical miss
-left after the correction:
-
-```{math}
-D^2(r)=\frac{\sum_i a_i\,e_i^2+\kappa_r\,D^2(r^{+})}{\sum_i a_i+\kappa_r},\qquad
-e_i=y_i-\varphi(\mathrm{prediction}_i),\qquad D=\sqrt{D^2(\text{this cell})}.
-```
-
-- {math}`\mathrm{prediction}_i`: the rule above for past run {math}`i`, with
-  {math}`\mathrm{level}_i`, {math}`\mathrm{usual}_i` and the {math}`\gamma` of its kind
-  of value.
-- {math}`D^2(r^{+})` above all hosts: `duration_miss` squared, {math}`1.3^2`.
-
-Example: 100 runs' worth on one cell, each off by a factor of {math}`e^{0.5}`, give
-{math}`D^2` = 0.661, 0.368, 0.284, 0.252 and 0.250 down the rungs, so {math}`D=0.50`.
-
-Total tokens and each of the six token kinds have their own ladders, weight and
-{math}`D`, empty until runs record them. A token kind forecast at zero stays zero. The
-receipt stores every sum under `semantic.prediction`, and each derived number is
-recomputed from those sums when the receipt is loaded.
-
-### The start of each belief
-
-```{math}
-\begin{aligned}
-N_{\mathrm{start}}&=\frac{1}{1/\mathrm{worth}+1/N_{\mathrm{task}}}, &
-\sigma_1&=\frac{1}{\sqrt{p(1-p)}},\\
-s&=\min\Bigl(1.869,\ \max\bigl(s_{\mathrm{stated}},\ \sigma_1/\sqrt{N_{\mathrm{start}}}\bigr)\Bigr),\\
-x_j&=-16+0.01\,j,\quad j=0,\dots,2500,\\
-q_j(m)&=\frac{\exp\bigl(-(x_j-m)^2/(2s^2)\bigr)}{\sum_i\exp\bigl(-(x_i-m)^2/(2s^2)\bigr)},\\
-\text{centre}&:\ \text{the}\ m\ \text{with}\ \sum_j q_j(m)\operatorname{logistic}(x_j)=p.
-\end{aligned}
-```
-
-- {math}`p`: the corrected prediction of the rate, held in {math}`[0.0001,0.9998]`.
-- worth: how many runs the record says about this family: the family's own runs plus
-  `model_worth`, 5.
-- {math}`N_{\mathrm{task}}`: the most a record on other tasks is worth for one task,
-  32 for {math}`S` (`task_worth_silent`) and 16 for {math}`\theta_l`
-  (`task_worth_loud`).
-- {math}`N_{\mathrm{start}}`: how many runs the prediction is worth. With an empty
-  record it is 4.32 for {math}`S` and 3.81 for {math}`\theta_l`.
-- {math}`\sigma_1`: the spread of one run's result on the log-odds scale.
-- {math}`s`: the spread at the start. A stated range can widen it, never narrow it:
-  a forecaster cannot claim the authority of many real runs. 1.869 is the flat belief,
-  the spread of a 95% range of {math}`[0.025,0.975]`.
-- {math}`x_j`, {math}`q_j(m)`: the grid of 2,501 log-odds points, the same for every
-  belief, and a bell curve of centre {math}`m` and spread {math}`s` on it.
-- centre: found by 60 halvings of {math}`[-25,25]`, keeping the upper half when the
-  grid average at the midpoint is below {math}`p`. The grid's top value is
-  {math}`\operatorname{logistic}(9)=0.99988`, so every prediction up to 0.9998 can be
-  met.
-
-In plain words, the start is a bell curve on the log-odds scale whose average, not its
-median, equals the prediction, and it is as wide as a record worth
-{math}`N_{\mathrm{start}}` runs allows. One fixed grid makes every belief a finite sum,
-so a stored decision is recomputed exactly when it is loaded.
-
-Example, with an empty record: clean 0.72, loud 0.20, silent 0.08 with
-`silent_ci = [0.04, 0.16]` gives {math}`p=0.10` for {math}`S` and {math}`s_{\mathrm{stated}}=0.40` (a range of 5% to
-20%). {math}`\sigma_1/\sqrt{N_{\mathrm{start}}}=3.33/2.08=1.60`, so {math}`s=1.60` and
-the centre is {math}`-3.04`. For {math}`\theta_l`, {math}`p=0.20` and
-`loud_ci = [0.10, 0.35]` give {math}`s=1.28` and centre {math}`-1.79`.
-
-### Counted runs reshape the belief
-
-The same candidate runs that feed the capability threshold update the belief. Every
-candidate is kept, whatever cell ran it, and counts for each forecasted cell {math}`c`
-at a discount set by how related the two cells are:
-
-```{math}
-\begin{aligned}
-\delta(c_i,c)&=\begin{cases}
-1&\text{same family, same effort (the same cell)}\\
-\delta_{\mathrm{effort}}&\text{same family, another effort}\\
-\delta_{\mathrm{model}}&\text{another family of the same agent}\\
-\delta_{\mathrm{agent}}&\text{another agent}
-\end{cases}\\
-w_i&=m_i\,\mathrm{sim}_i\,a_i\,\delta(c_i,c),\qquad
-W_t=\sum_{i\in t}w_i,\qquad
-w_i\leftarrow\frac{w_i}{\max(1,W_t)},\qquad
-n_k=\sum_{i:\,y_i=k}w_i.
-\end{aligned}
-```
-
-- {math}`c`, {math}`c_i`: the cell being judged, and the cell that ran candidate run
-  {math}`i`.
-- {math}`\delta`: the relatedness discount. The first line that fits is used. The
-  defaults are {math}`\delta_{\mathrm{effort}}=0.5`, {math}`\delta_{\mathrm{model}}=0.25`
-  and {math}`\delta_{\mathrm{agent}}=0.25` (`sampling.effort_discount`,
-  `sampling.model_discount`, `sampling.agent_discount`).
-- {math}`m_i`, {math}`\mathrm{sim}_i`, {math}`a_i`: the run's recorded weight, its
-  similarity to the new task and its age factor.
-- {math}`t`, {math}`W_t`: a ticket, and the weight its candidate runs carry for cell
-  {math}`c`. The limit follows the discount, so it is taken per judged cell.
-- {math}`y_i`, {math}`n_k`: run {math}`i`'s outcome, and the counted amount of outcome
-  {math}`k`. {math}`n_c`, {math}`n_l` and {math}`n_s` are the clean, loud and silent
-  counts.
-
-In plain words: a run by a related cell counts as a fraction of a run by the cell
-itself, and one ticket still counts for at most one run.
-
-A cell's family comes from the model registry and its agent from the label on its
-candidate. A run's agent is the label stored for the chosen cell in the receipt that
-the run's `decision_id` names. A run with no decision or a receipt older than v11
-stores no label and takes the agent an operator imported for its family; without one it
-belongs, like an unlabeled candidate and an unlabeled cell of the new request, to the
-one unnamed agent.
-
-Example: the judged cell is family `f1` at effort `high` under agent `a1`, and every
-run has {math}`m_i=1`.
+where the first line that fits applies, and the limit {eq}`ticket-limit` is taken
+separately for each judged cell. A cell's agent is the label on its candidate, and a
+run's agent is the label its receipt stores for the cell that ran; a run without one
+takes the agent an operator imported for its family, and otherwise belongs, like an
+unlabeled candidate, to one unnamed agent. The beliefs for active time and tokens
+(section 10) count only the candidates of the same cell, with factor 1.
+
+For example, let the judged cell be family `f1` at effort `high` under agent `a1`, with
+every {math}`v_i=1`:
 
 | Run | Ran on | Relation | {math}`\mathrm{sim}` | {math}`a` | {math}`\delta` | Weight | Ticket | After the limit | Outcome |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -882,482 +536,1034 @@ run has {math}`m_i=1`.
 | 3 | `f2` `high`, `a1` | Same agent | 0.8 | 0.5 | 0.25 | 0.10 | `t2` | 0.10 | clean |
 | 4 | `f3` `high`, `a2` | Another agent | 0.4 | 1 | 0.25 | 0.10 | `t3` | 0.10 | silent |
 
-Ticket `t1` carries {math}`0.80+0.45=1.25`, so both of its runs are divided by 1.25.
-The counts are {math}`n_c=0.74`, {math}`n_l=0.36` and {math}`n_s=0.10`. With the three
-discounts at 0 only run 1 counts, as 0.80 clean.
+Ticket `t1` carries {math}`0.80+0.45=1.25`, so both of its runs are divided by 1.25, and
+the cell counts {math}`n_{\mathrm{clean}}=0.74`, {math}`n_{\mathrm{loud}}=0.36` and
+{math}`n_{\mathrm{silent}}=0.10`. With all three discounts at 0, only run 1 counts, as
+0.80 clean.
 
-The counts then reshape each belief:
+Two statistics of later sections read finished routed runs on other tasks instead of
+the candidates: the host's caught share (section 7) and the corrected prediction
+(section 8). Each weighs its runs by their age factor alone, limited per ticket over the
+runs of that statistic:
 
 ```{math}
+:label: ladder-weight
+
+\omega_i=\frac{a_i}{\max\bigl(1,\sum_{i'\in t}a_{i'}\bigr)}.
+```
+
+In the running example the record is empty, so no reader counts any run. The
+[retrieval guide](retrieval.md) gives the candidate rules in full.
+
+## 7 Capability threshold and the fit band
+
+Not every cell in the inventory needs a fine forecast, and the capability threshold,
+learned from the language model's judgments and the weighted candidates, decides which
+do.
+
+### The threshold prior
+
+We model the capability a task requires as a latent position {math}`H` in the task's
+order: the cells at positions {math}`o\ge H` are strong enough and the weaker ones are
+not. {math}`H` can take the value {math}`\lvert\mathcal{C}\rvert+1`, which says that no
+supplied cell is strong enough. One expert's cut points define a smoothed prior
+distribution function over {math}`H`:
+
+```{math}
+:label: prior-cdf
+
+P_0(H\le o)=
+\begin{cases}
+0.8\,P_{\min}\,2^{-(o_{\mathrm{lo}}-1-o)} & o<o_{\mathrm{lo}},\\[2pt]
+P_{\mathrm{fit}}+\bigl(P_{\mathrm{rel}}-P_{\mathrm{fit}}\bigr)\dfrac{o-o_{\mathrm{lo}}}{o_{\mathrm{hi}}-o_{\mathrm{lo}}} & o_{\mathrm{lo}}\le o\le o_{\mathrm{hi}},\\[6pt]
+P_{\mathrm{rel}}+g_{\mathrm{tail}}\dfrac{1-2^{-(o-o_{\mathrm{hi}})}}{1-2^{-(\lvert\mathcal{C}\rvert-o_{\mathrm{hi}})}} & o>o_{\mathrm{hi}},
+\end{cases}
+```
+
+with {math}`P_{\mathrm{fit}}=\max(P_{\min},P_{\mathrm{rel}}-0.2)`,
+{math}`g_{\mathrm{tail}}=\min\bigl((1-P_{\mathrm{rel}})/2,\,G_{\max}/2\bigr)`, and the
+fit cell at {math}`P_{\mathrm{rel}}` when the two cuts coincide. Below the lower cut each
+step toward weaker cells halves the probability, so a long list of weak cells does not
+spread mass across them. Above the upper cut the remaining gain stays below
+{math}`G_{\max}` and is concentrated near the cut. In the running example, with A, B
+and C at positions 1 to 3 and the cuts at B and C, the prior gives
+{math}`P_0(H\le1)=0.4`, {math}`P_0(H\le2)=0.7` and {math}`P_0(H\le3)=0.9`.
+
+The experts' orders are combined into one consensus order by their support-weighted
+positions, keeping each model's effort chain in the order the independent judgment gave
+it. Each cell's prior probability is the support-weighted average of the experts'
+{eq}`prior-cdf` at that cell, and the pool-adjacent-violators algorithm projects these
+averages onto a distribution function that is monotone along the consensus order; we
+write {math}`P_0` for the result. When matched prototypes already store priors for some
+cells, the stored probabilities replace the independent judgment's values for those
+cells before the projection, and when they cover every cell, the stored priors stand in
+for the independent judgment.
+
+### The weighted likelihood update
+
+A candidate run {math}`i` contributes to the threshold when its cell is in the inventory.
+At position {math}`o_i`, a clean outcome is likely when the threshold lies at or below
+the run's position and unlikely otherwise, up to the observation noise {math}`\eta`.
+For a threshold at position {math}`o`, the probability of a clean outcome is
+
+```{math}
+:label: likelihood
+
+\ell_i(o)=
+\begin{cases}
+1-\eta & o\le o_i,\\
+\eta & o>o_i.
+\end{cases}
+```
+
+With {math}`z_i=1` for a clean run and 0 for a loud or silent one, each likelihood
+{eq}`likelihood` is raised to the run's weight:
+
+```{math}
+:label: posterior
+
+P(H=o\mid\text{runs})\;\propto\;P_0(H=o)\prod_i
+\Bigl[\ell_i(o)^{z_i}\bigl(1-\ell_i(o)\bigr)^{1-z_i}\Bigr]^{w_i},
+\qquad
+P_{\mathrm{clear}}(c)=P\bigl(H\le o(c)\mid\text{runs}\bigr).
+```
+
+The weight is {eq}`evidence-weight` with the strength {math}`\xi_i` as factor, limited by
+{eq}`ticket-limit` over this reader's runs. A clean run has strength 1. A loud failure
+has 0.75 and a silent one 1 when its recorded cause is `capability`, and half of that
+when the cause is `depth` or `unrecorded`; an explicit `capability_caused=false` in the
+note of such a failure sets its strength to 0. For example, a loud run with no recorded
+cause, {math}`\mathrm{sim}=0.8`, recorded 7 days before the request, weighs
+{math}`0.8\times0.75\times0.5\times0.7071=0.2121`.
+
+The order itself can change. A local search swaps the positions of observed cells of
+different models, keeping every effort chain, when the swap raises the marginal
+likelihood of the runs net of a penalty of 0.15 times the normalized distance from the
+initial order. The prior's probabilities stay with the positions, so a cell that moves
+takes the prior of its new position. A cell that has never run keeps its prior
+placement, and runs at other positions can still change its
+{math}`P_{\mathrm{clear}}` through the shared threshold.
+
+### The host's caught share
+
+How much weakness the band can afford depends on the host. A failure the host finds
+before acceptance is loud and one found afterwards is silent, so the share of its
+failures that a host catches decides how many weak results escape. We estimate this
+*caught share* from the failed routed runs on record, those that ended loud or silent,
+on any task, with weights {eq}`ladder-weight`. Let {math}`F` be their total weight and
+{math}`F^{\mathrm{loud}}` that of the loud ones, over all hosts or over the asking host.
+A run's host is the name its receipt stores, or the name an operator imported for an
+older receipt, and otherwise the unnamed host. The estimate is shrunk toward all hosts
+and toward a reference share:
+
+```{math}
+:label: caught-share
+
+d_0=\frac{1-2\varepsilon}{1-\varepsilon},\qquad
+d_{\mathrm{all}}=\frac{F^{\mathrm{loud}}_{\mathrm{all}}+N_{\mathrm{caught}}\,d_0}{F_{\mathrm{all}}+N_{\mathrm{caught}}},\qquad
+d=\frac{F^{\mathrm{loud}}_{\mathrm{host}}+N_{\mathrm{caught}}\,d_{\mathrm{all}}}{F_{\mathrm{host}}+N_{\mathrm{caught}}}.
+```
+
+A host with few failures of its own leans on all hosts, and an empty record gives
+{math}`d_0`. At {math}`\varepsilon=0.10`, {math}`d_0=0.889`. With
+{math}`F_{\mathrm{all}}=60` and {math}`F^{\mathrm{loud}}_{\mathrm{all}}=42`,
+{math}`d_{\mathrm{all}}=(42+12\times0.889)/72=0.731`, and a host with
+{math}`F_{\mathrm{host}}=20` and {math}`F^{\mathrm{loud}}_{\mathrm{host}}=8` has
+{math}`d=(8+12\times0.731)/32=0.524`.
+
+### The fit band
+
+The *clearing interval* starts at the first cell whose {math}`P_{\mathrm{clear}}`
+reaches the lower edge {math}`P_{\mathrm{lo}}`. Its anchor is the first cell from there
+that is *reliable*, with {math}`P_{\mathrm{clear}}\ge P_{\mathrm{rel}}`, or the start
+when no cell is. It ends at the first cell from the anchor whose remaining gain to the
+strongest cell, {math}`P_{\mathrm{clear}}(\text{strongest})-P_{\mathrm{clear}}(c)`, is
+below the upper margin {math}`G`. Both edges follow the caught share:
+
+```{math}
+:label: band-edges
+
+\bigl(P_{\mathrm{lo}},\,G\bigr)=
+\begin{cases}
+\bigl(P_{\min},\,G_{\max}\bigr) & d\ge d_0,\\[4pt]
+\Bigl(\max\Bigl(P_{\min},\,1-\dfrac{\varepsilon}{1-d+\varepsilon d}\Bigr),\;
+\min\Bigl(G_{\max},\,\dfrac{G_{\max}\,\varepsilon}{(1-\varepsilon)(1-d)}\Bigr)\Bigr) & d<d_0.
+\end{cases}
+```
+
+A cell that is too weak fails with probability {math}`1-P_{\mathrm{clear}}`. A share
+{math}`(1-P_{\mathrm{clear}})(1-d)` of its results escapes the host and a share
+{math}`1-(1-P_{\mathrm{clear}})d` is accepted, and holding the escaped share of the
+accepted results at {math}`\varepsilon` gives the lower edge. At the top, 0.05 more
+{math}`P_{\mathrm{clear}}` removes about {math}`(1-d)\times0.05` of the silent results,
+so {math}`G` shrinks to keep {math}`(1-d)\,G` constant. At {math}`\varepsilon=0.10`:
+
+| {math}`d` | {math}`P_{\mathrm{lo}}` | {math}`G` |
+| --- | --- | --- |
+| 0.889 or more | 0.500 | 0.0500 |
+| 0.80 | 0.643 | 0.0278 |
+| 0.524 | 0.811 | 0.0117 |
+| 0.50 | 0.818 | 0.0111 |
+| 0.00 | 0.900 | 0.0056 |
+
+With {math}`P_{\mathrm{clear}}` of 0.30, 0.55, 0.72, 0.84, 0.91, 0.955, 0.985 and 0.99
+along the order, the configured edges give cells 2 to 6 and the edges at
+{math}`d=0.524` give cells 4 to 7. If no cell reaches {math}`P_{\mathrm{lo}}`, the band
+starts at the first cell with the highest {math}`P_{\mathrm{clear}}` when that value
+reaches {math}`P_{\min}`, and the request is refused otherwise. With no counted run,
+the independent judgment as the only expert and {math}`d\ge d_0`, the band is exactly
+that judgment's cut points.
+
+A second interval keeps faster stronger cells within reach. The *timely* probability
+{math}`P_{\mathrm{timely}}` comes from {eq}`posterior` with {math}`z_i` replaced by a
+timely strength: 0 for a failure, {math}`(1.5/\text{overrun})^2` for a clean run
+that took more than 1.5 times its reference time, and 1 for any other clean run. The
+reference is the smaller of the run's own forecast and the weighted geometric mean time
+of the clean runs of stronger cells, and the overrun is the run's time divided by it.
+The timely interval uses the configured {math}`P_{\min}`, {math}`P_{\mathrm{rel}}` and
+{math}`G_{\max}` from the clearing interval's start, and when no cell reaches
+{math}`P_{\min}` it keeps only the first near-best timely cell. The band runs from the
+clearing interval's start to the later of the two ends. When that span exceeds the
+forecast budget and a gap separates the two intervals, the band is their union, and the
+cells of the gap keep their probabilities as intermediate cells. A band that still
+exceeds the budget prompts one request for a sharper judgment over the same inventory,
+and a second oversized band is refused.
+
+### Forecast cells and reserved slots
+
+The band alone can leave out a family that has never run this kind of task, or every
+cell of one agent. Of the {math}`B` forecast cells, {math}`B_{\mathrm{res}}` are
+reserved:
+
+```{math}
+:label: forecast-cells
+
+\text{core}=\text{the first }B-B_{\mathrm{res}}\text{ cells of the band},\qquad
+\text{forecast}=\text{core}\;\cup\;\{\text{up to }B_{\mathrm{res}}\text{ cells }c_f\text{ with }P_{\mathrm{clear}}(c_f)\ge P_{\mathrm{bar}}(f)\}.
+```
+
+Here {math}`f` is a family with no core cell and {math}`c_f` its cell nearest to the
+core in the order, the stronger one on a tie. A family is *unproven* when none of its
+runs is among the decision's candidates. Unproven families take slots first, at the bar
+{math}`P_{\mathrm{bar}}(f)=P_{\mathrm{unproven}}`, each on its own and nearest first.
+The remaining slots go to agents with no core cell, at most one slot per agent: a
+proven family takes a slot on its agent's behalf at the bar
+{math}`P_{\mathrm{bar}}(f)=P_{\mathrm{lo}}`, and an agent whose unproven family already
+took a slot counts as served. A slot that no family takes goes back to the band, whose
+next cell beyond the core is forecast. A reserved cell keeps the classification of its
+position, and no decision forecasts more than {math}`B` cells.
+
+In the running example the record is empty, so {math}`P_{\mathrm{clear}}` equals the
+prior, {math}`d=d_0` and the band is B and C, which also form the core. A's family has
+no core cell and no candidate run, and its {math}`P_{\mathrm{clear}}` of 0.4 reaches the
+bar of 0.2, so A takes a reserved slot and is forecast as an underpowered cell. The
+[capability contract](capability.md) defines the band, the widening rounds and the
+classifications in full.
+
+## 8 Corrected predictions
+
+Before a cell's beliefs can start, each of its values needs one prediction that the
+project's record has corrected.
+
+For each forecast cell of {eq}`forecast-cells` and each value (the loud rate, the
+accepted-defect share, active time and each token count), the experts' forecasts are
+merged by {eq}`merge` with the support weights {math}`\alpha_k` of {eq}`support`. A row
+reused from stored forecasts by {eq}`merged-row` enters as the independent expert's row.
+The merged *guess* is {math}`g=\varphi^{-1}(\bar m)`, held in {math}`[0.0001,0.9998]`
+for a rate. For example, two experts with weights 0.75 and 0.25 guess {math}`S` at 10%
+and 25%, each with spread 0.4. Then
+{math}`\bar m=0.75\times(-2.197)+0.25\times(-1.099)=-1.92`, a guess of 12.8%, and
+{math}`s_{\mathrm{stated}}=\sqrt{0.16+0.75\times0.275^2+0.25\times0.824^2}=0.62`.
+
+The level of a forecast follows the agent that makes it, and outcomes depend on the
+agent that accepts the result. We therefore let the record set the level of every value
+and let the forecast say only whether this task looks higher or lower than its
+forecaster usually states:
+
+```{math}
+:label: correction
+
+\varphi(\hat g)=\varphi(\mathrm{level})+\gamma\,\bigl(\varphi(g)-\varphi(\mathrm{usual})\bigr),
+```
+
+where *level* is what happened in the recorded runs of this cell under this host,
+*usual* is what the forecaster had guessed for those runs, {math}`\gamma` is the weight
+on the forecaster's judgment, estimated by {eq}`forecaster-weight` below, and
+{math}`\hat g` is the *corrected prediction* from which the cell's belief starts. A
+rate's prediction is held in {math}`[0.0001,0.9998]`. An empty record gives the guess,
+{math}`\gamma=0` gives the level alone and {math}`\gamma=1` moves the guess by the
+difference between level and usual. For example, level 0.0566, usual 0.188, guess 0.10
+and {math}`\gamma=0.74` give {math}`-2.81+0.74\times(-2.20+1.46)=-3.36` in log-odds, a
+prediction of 0.034.
+
+### The ladder
+
+A cell has few runs of its own, so level and usual come down a *ladder* of five rungs,
+from all hosts through this host, this agent under it and this family under it to this
+cell, each rung leaning on the one above:
+
+```{math}
+:label: ladder
+
+\mathrm{level}(r)=\frac{\sum_{i\in r}\omega_i\,y_i+N_r\,\mathrm{level}(r^{+})}{\sum_{i\in r}\omega_i+N_r},\qquad
+\mathrm{usual}(r)=\frac{\sum_{i\in r}\omega_i\,g_i+N_r\,\mathrm{usual}(r^{+})}{\sum_{i\in r}\omega_i+N_r}.
+```
+
+The runs are the finished routed runs with outcome clean, loud or silent, weighted by
+{eq}`ladder-weight` over the runs of the ladder. A run's host and agent are the names its
+receipt stores, or the names imported for an older receipt. The ladder leaves out every
+run of the prototypes the new task matches, the pool from which section 6 draws the
+evidence candidates, so no run counts both through its similarity and through the
+ladder. {math}`y_i` is what happened: for a rate, 1 for a failure and 0 otherwise;
+for an amount, the logarithm of the recorded amount. {math}`g_i` is the merged guess
+that run's own decision stored, on the same footing. The accepted-defect share counts
+accepted runs with silent as the failure, the loud rate counts every finished run with
+loud as the failure, and an amount counts the runs whose recorded amount and guess are
+both above zero. {math}`N_r` is the worth of the rung above: {math}`N_{\mathrm{model}}=5`
+at the family rung and {math}`N_{\mathrm{rung}}=40` elsewhere. Above all hosts, both
+ladders equal the guess, and a rung with no run passes the value above through.
+
+Suppose B's cell had this record for {math}`S`, against its guess of 0.10:
+
+| Rung | {math}`\sum\omega` | {math}`\sum\omega\,y` | {math}`\sum\omega\,g` | Level | Usual |
+| --- | --- | --- | --- | --- | --- |
+| All hosts | 160 | 24 | 16 | 0.140 | 0.100 |
+| This host | 60 | 6 | 9 | 0.116 | 0.130 |
+| This agent | 40 | 2 | 6 | 0.083 | 0.140 |
+| This family | 15 | 1 | 3 | 0.071 | 0.185 |
+| This cell | 10 | 0 | 2 | 0.057 | 0.188 |
+
+The all-hosts level is {math}`(24+40\times0.10)/(160+40)=0.140` and the family level
+{math}`(1+5\times0.083)/(15+5)=0.071`. With {math}`\gamma=0.74` these rungs give the
+prediction 0.034 of the example above.
+
+### The weight on the forecaster
+
+The weight {math}`\gamma` measures how much of the forecaster's stated difference from
+its usual level shows up in what happens. It is estimated once per kind of value, from
+the runs of all hosts. Let {math}`\Gamma_i=\varphi(g_i)-\varphi(\mathrm{usual}_i)`,
+where {math}`\mathrm{level}_i` and {math}`\mathrm{usual}_i` are both ladders at run
+{math}`i`'s own cell over all the runs by {eq}`ladder`, with the record's weighted
+averages above all hosts. The runs with {math}`\Gamma_i>0` form the group
+{math}`\mathcal{G}_+` and the rest {math}`\mathcal{G}_-`. With {math}`\Gamma_\pm` each
+group's weighted average of {math}`\Gamma_i` and {math}`O_\pm` how far its results sat
+from their levels,
+
+```{math}
+:label: forecaster-weight
+
+\hat\gamma=\frac{O_+-O_-}{\Gamma_+-\Gamma_-}\ \text{held in}\ [0,1],\qquad
+\gamma=\frac{\Omega\,\hat\gamma+N_{\mathrm{rung}}}{\Omega+N_{\mathrm{rung}}},
+```
+
+where {math}`\Omega=\sum_i\omega_i`. For a rate,
+{math}`O=\operatorname{logit}\frac{\sum\omega_i y_i+1/2}{\sum\omega_i+1}-\operatorname{logit}\frac{\sum\omega_i\,\mathrm{level}_i+1/2}{\sum\omega_i+1}`
+over the group; for an amount, it is the group's weighted average of
+{math}`y_i-\mathrm{level}_i`. {math}`\hat\gamma` is 1 when a group is empty or
+{math}`\Gamma_+-\Gamma_-<0.05`, so {math}`\gamma` starts at 1. For example, if
+{math}`\mathcal{G}_+` holds 60 runs' worth with 13 silent and levels summing to 9, and
+{math}`\mathcal{G}_-` holds 100 with 11 silent and levels summing to 15, then
+{math}`O_+=\operatorname{logit}(13.5/61)-\operatorname{logit}(9.5/61)=0.43` and
+{math}`O_-=-0.34`. With {math}`\Gamma_+-\Gamma_-=1.15`, {math}`\hat\gamma=0.675` and
+{math}`\gamma=(160\times0.675+40)/200=0.74`.
+
+### The remaining miss of an amount
+
+For an amount, the same ladder over squared misses gives {math}`D`, the typical miss
+left after the correction:
+
+```{math}
+:label: miss
+
+D^2(r)=\frac{\sum_{i\in r}\omega_i\,e_i^2+N_r\,D^2(r^{+})}{\sum_{i\in r}\omega_i+N_r},\qquad
+e_i=y_i-\varphi(\hat g_i),\qquad D=\sqrt{D^2(\text{this cell})},
+```
+
+where {math}`\hat g_i` is the prediction {eq}`correction` for past run {math}`i`, with
+its own level and usual and the {math}`\gamma` of its kind of value, and the default
+{math}`D^2=1.3^2` above all hosts. For example, 100 runs' worth on one cell, each off by
+a factor of {math}`e^{0.5}`, give {math}`D^2` of 0.661, 0.368, 0.284, 0.252 and 0.250
+down the rungs, so {math}`D=0.50`. Part of the miss is the scatter between runs of one
+task, which no prediction can remove: the *run-to-run scatter* of an amount is
+{math}`\tau=D\sqrt{\beta}`, where {math}`\beta` is the share of {math}`D^2` that is
+scatter. Total tokens and each token kind have their own ladders, {math}`\gamma` and
+{math}`D`.
+
+### How firmly the prediction is held
+
+The family's own runs set how many runs the prediction is worth. With
+{math}`N_{\mathrm{family}}` the total {math}`\omega` at the family rung,
+
+```{math}
+:label: worth
+
+N_{\mathrm{worth}}=N_{\mathrm{family}}+N_{\mathrm{model}},\qquad
+N_{\mathrm{start}}=\frac{1}{1/N_{\mathrm{worth}}+1/N_{\mathrm{task}}},\qquad
+s_0=\max\Bigl(s_{\mathrm{stated}},\frac{s_1}{\sqrt{N_{\mathrm{start}}}}\Bigr),
+```
+
+where {math}`N_{\mathrm{task}}`, the most a record on other tasks is worth for one task,
+is 32 for {math}`S`, 16 for {math}`\theta_l` and 1 for an amount. The spread of one
+run's result is {math}`s_1=1/\sqrt{\hat g(1-\hat g)}` for a rate and the run-to-run
+scatter {math}`\tau=D\sqrt{\beta}` of {eq}`miss` for an amount. For a rate, {math}`s_0`
+is at most the flat belief's {math}`s_{\mathrm{flat}}=1.869`, the spread of a 95% range
+of {math}`[0.025,0.975]`. A stated range can widen the start and never narrow it. With
+an empty record {math}`N_{\mathrm{worth}}=5`, so {math}`N_{\mathrm{start}}` is 4.32 for
+{math}`S`, 3.81 for {math}`\theta_l` and 0.833 for an amount. In the example above,
+{math}`N_{\mathrm{worth}}=15+5=20` gives {math}`N_{\mathrm{start}}=1/(1/20+1/32)=12.3`;
+with {math}`\hat g=0.034`, {math}`s_1=5.54` and
+{math}`s_1/\sqrt{N_{\mathrm{start}}}=1.58`, which exceeds B's stated spread of 0.40, so
+{math}`s_0=1.58`.
+
+In the running example the record is empty, so every prediction is the merged guess of
+the single expert: for B, {math}`\hat g=0.10` for {math}`S` and 0.20 for
+{math}`\theta_l`. The {ref}`corrected-prediction reference <corrected-prediction>` lists
+the sums a receipt stores and how loading a receipt recomputes them.
+
+## 9 Outcome beliefs and admission
+
+Two beliefs describe a cell's outcomes, one about its loud rate {math}`\theta_l` and one
+about its accepted-defect share {math}`S`, and the second decides whether the cell is
+admitted.
+
+### Beliefs on a log-odds grid
+
+The two beliefs are independent. Each is a normal distribution on the log-odds scale,
+held on one fixed grid:
+
+```{math}
+:label: grid
+
+x_j=-16+0.01\,j,\quad j=0,\dots,2500,\qquad
+b^0_j\propto\exp\Bigl(-\frac{(x_j-m_0)^2}{2s_0^2}\Bigr),\qquad
+\sum_j b^0_j\operatorname{logistic}(x_j)=\hat g.
+```
+
+The start {math}`b^0` has the spread {math}`s_0` of {eq}`worth`, and its centre
+{math}`m_0` is chosen so that its average, rather than its median, equals the
+prediction; it is found by 60 halvings of {math}`[-25,25]`. The grid's top rate,
+{math}`\operatorname{logistic}(9)=0.99988`, lets every prediction up to 0.9998 be met,
+and one fixed grid makes every belief a finite sum that a stored decision recomputes
+exactly. For B, {math}`\hat g=0.10` for {math}`S`. B's stated range of 5% to 20% on
+{math}`S` gives {math}`s_{\mathrm{stated}}=0.40`, while
+{math}`s_1/\sqrt{N_{\mathrm{start}}}=3.33/2.08=1.60`, so {math}`s_0=1.60` and
+{math}`m_0=-3.04`. For {math}`\theta_l`, {math}`\hat g=0.20` and the range 0.10 to 0.35
+give {math}`s_0=1.28` and {math}`m_0=-1.79`.
+
+### Counted runs
+
+Every candidate run counts for every forecast cell {math}`c` at the weight
+{eq}`evidence-weight` with the discount {eq}`discount` as factor, limited per ticket for
+that cell. The counted weights of the three outcomes, {math}`n_{\mathrm{clean}}`,
+{math}`n_{\mathrm{loud}}` and {math}`n_{\mathrm{silent}}`, then reshape the start
+{math}`b^0` of {eq}`grid`:
+
+```{math}
+:label: belief-update
+
+b_j\propto b^0_j\,\operatorname{logistic}(x_j)^{n_{\mathrm{yes}}}\bigl(1-\operatorname{logistic}(x_j)\bigr)^{n_{\mathrm{no}}},\qquad
+\begin{cases}
+S: & n_{\mathrm{yes}}=n_{\mathrm{silent}},\ n_{\mathrm{no}}=n_{\mathrm{clean}},\\
+\theta_l: & n_{\mathrm{yes}}=n_{\mathrm{loud}},\ n_{\mathrm{no}}=n_{\mathrm{clean}}+n_{\mathrm{silent}}.
+\end{cases}
+```
+
+The start counts as {math}`N_{\mathrm{start}}` runs and each counted run as its weight,
+so the forecast keeps its weight however many runs are counted. Because each run's
+weight halves every {math}`h` days, a regression or a recovery moves the belief as older
+runs fade. A cell with no counted run keeps its start, and an expert's global support
+never stands in for a cell's counted runs.
+
+Selection reads the belief's moments and points, each a sum over the grid:
+
+```{math}
+:label: belief-summaries
+
 \begin{aligned}
-b_j&\propto q_j(m)\,\operatorname{logistic}(x_j)^{n_{\mathrm{yes}}}\,
-     \bigl(1-\operatorname{logistic}(x_j)\bigr)^{n_{\mathrm{no}}},\qquad \sum_j b_j=1,\\
-S&:\ n_{\mathrm{yes}}=n_s,\ n_{\mathrm{no}}=n_c;\qquad
-\theta_l:\ n_{\mathrm{yes}}=n_l,\ n_{\mathrm{no}}=n_c+n_s,\\
-E[S]&=\sum_j b_j\operatorname{logistic}(x_j),\\
-E\!\left[\frac{1}{1-\theta_l}\right]&=\sum_j b_j\,(1+e^{x_j}),\qquad
-E\!\left[\frac{\theta_l}{1-\theta_l}\right]=\sum_j b_j\,e^{x_j},\\
-q\ \text{point}&=\operatorname{logistic}(x_j)\ \text{at the first}\ j\
-  \text{whose running total of}\ b\ \text{reaches}\ q.
+\mathbb{E}[S]&=\sum_j b_j\operatorname{logistic}(x_j), &
+\operatorname{Var}(S)&=\sum_j b_j\bigl(\operatorname{logistic}(x_j)-\mathbb{E}[S]\bigr)^2,\\
+\mathbb{E}[R]&=\sum_j b_j\,(1+e^{x_j}), &
+\mathbb{E}[R-1]&=\sum_j b_j\,e^{x_j},
 \end{aligned}
 ```
 
-- {math}`b_j`: the belief after the counted runs, computed in logarithms.
-- {math}`E[S]`: the average of the belief of {math}`S`; the average of the belief of
-  {math}`\theta_l` is read the same way.
-- {math}`E[1/(1-\theta_l)]`, {math}`E[\theta_l/(1-\theta_l)]`: expected attempts, and
-  expected loud failures per accepted result.
-- {math}`q` point: the 2.5% and 97.5% points of each rate, for reports.
+the last two on the belief of {math}`\theta_l`, which gives {math}`\mathbb{E}[\theta_l]`
+the same way as {math}`\mathbb{E}[S]`. The *{math}`q` point* of a belief is
+{math}`\operatorname{logistic}(x_j)` at the first {math}`j` whose running total of
+{math}`b` reaches {math}`q`, and the reported range of a rate is its 2.5% and 97.5%
+points. B's belief of {math}`S` starts with {math}`\mathbb{E}[S]=0.100` and a range of
+0.2% to 52.5%. Four clean runs counted at full weight would move it to
+{math}`\mathbb{E}[S]=0.053`. Its
+belief of {math}`\theta_l` charges 1.38 expected attempts at the start, against 1.25 at
+the average rate.
 
-In plain words, the start counts as {math}`N_{\mathrm{start}}` runs and each counted
-run as its weight. The forecast never fades out: however many runs are counted, it
-keeps the weight of {math}`N_{\mathrm{start}}` runs. Because each count halves for
-every 14 days of age, a regression or a recovery moves the belief as older runs fade.
-A cell with no counted run keeps its start; global expert support weights experts but
-is not a per-cell sample size. The discount applies to these outcome counts only: active
-time and tokens are calibrated from the same cell's candidates alone, each at
-{math}`m_i\,\mathrm{sim}_i\,a_i` after the per-ticket limit over that cell's own runs,
-and the capability threshold keeps its own strength factors.
-
-Example: with the forecast above, at the start {math}`E[S]=0.100` and the 95% range is
-0.2% to 52%. With {math}`n_c=4` and {math}`n_s=0`, {math}`E[S]=0.053`. For
-{math}`\theta_l` at the start, expected attempts are 1.38, against 1.25 at the average
-rate.
-
-Selection reads the two averages:
+The outcome probabilities follow from the two averages:
 
 ```{math}
-P_{\mathrm{loud}}=E[\theta_l],\qquad
-P_{\mathrm{silent}}=(1-E[\theta_l])\,E[S],\qquad
-P_{\mathrm{clean}}=(1-E[\theta_l])\,(1-E[S]).
+:label: probabilities
+
+P_{\mathrm{loud}}=\mathbb{E}[\theta_l],\qquad
+P_{\mathrm{silent}}=(1-\mathbb{E}[\theta_l])\,\mathbb{E}[S],\qquad
+P_{\mathrm{clean}}=(1-\mathbb{E}[\theta_l])\,(1-\mathbb{E}[S]).
 ```
 
-These three means are reports. The cost {math}`J` of section 1 is averaged over the
-two beliefs, through {math}`E[1/(1-\theta_l)]=\mathbb{E}[R]` and {math}`E[S]`, and is
-not the cost at these means. For example, {math}`E[\theta_l]=0.20` and
-{math}`E[S]=0.10` give {math}`P_{\mathrm{silent}}=0.08` and
-{math}`P_{\mathrm{clean}}=0.72`. The reported ranges are those of the two beliefs.
-They are Bayesian under the stated start and exchangeability assumptions; they are not
-calibrated frequentist guarantees, and epsilon is a selection rule, not an empirical
-guarantee about the future defect rate.
+For B, {math}`\mathbb{E}[\theta_l]=0.20` and {math}`\mathbb{E}[S]=0.10` give
+{math}`P_{\mathrm{silent}}=0.08` and {math}`P_{\mathrm{clean}}=0.72`. These are reports;
+the cost {eq}`objective` averages over the two beliefs instead of reading these means.
 
-### The chance of meeting the limit
+### Admission tiers
 
-Admission asks one question of each forecast cell: how likely is it that the cell keeps
-silently wrong accepted results within the risk class's limit?
+Admission asks of each forecast cell how likely it is to keep its silently wrong
+accepted results within the limit:
 
 ```{math}
-\pi(c)=P(S\le\varepsilon)=\sum_{j:\ \operatorname{logistic}(x_j)\le\varepsilon} b_j.
+:label: admission-chance
+
+\pi(c)=P(S\le\varepsilon)=\sum_{j:\ \operatorname{logistic}(x_j)\le\varepsilon}b_j,
 ```
 
-- {math}`c`: a forecast cell.
-- {math}`S`: the accepted-defect share, silent results divided by accepted results.
-- {math}`\varepsilon`: the risk class's limit on {math}`S`.
-- {math}`b_j`, {math}`x_j`: the cell's belief for {math}`S` and its grid points.
-- {math}`\pi(c)`: the share of that belief at or below {math}`\varepsilon`.
-
-In plain words, {math}`\pi` is the chance, under the cell's current belief, that no
-more than {math}`\varepsilon` of its accepted results are silently wrong.
-
-Example: {math}`\varepsilon` is 0.10. The cell forecast at clean 0.72, loud 0.20,
-silent 0.08 has {math}`E[S]=0.100`, and 70% of its belief lies at or below 0.10, so
-{math}`\pi=0.70`. Four counted clean runs move {math}`\pi` to 0.85.
-
-### Three tiers
+the share of the belief {eq}`belief-update` of {math}`S` at or below
+{math}`\varepsilon`. The chance {eq}`admission-chance` sorts the cell into one of three
+tiers:
 
 ```{math}
+:label: tiers
+
+\text{trusted}\iff\pi(c)\ge\pi_{\mathrm{trust}},\qquad
+\text{on trial}\iff\pi_{\mathrm{trial}}\le\pi(c)<\pi_{\mathrm{trust}},\qquad
+\text{excluded}\iff\pi(c)<\pi_{\mathrm{trial}}.
+```
+
+A cell that very likely meets the limit is trusted, an uncertain cell is on trial, and
+only a cell that very likely misses it is excluded. A wide belief, which is all an
+unproven cell has, does not exclude a cell by itself; a forecast or a history with
+substantial silent risk does. The {math}`\pi_{\mathrm{trust}}` point of the same belief
+is at most {math}`\varepsilon` exactly when {math}`\pi(c)\ge\pi_{\mathrm{trust}}`, so
+the trusted tier is the same test read from the other side. In the running example, with
+{math}`\varepsilon=0.10` and no counted run:
+
+| Cell | Prediction of {math}`S` | {math}`s_0` | {math}`\pi` | Tier | 80% point of {math}`S` |
+| --- | --- | --- | --- | --- | --- |
+| A | 0.50 | 0.96 | 0.011 | excluded | 0.692 |
+| B | 0.10 | 1.60 | 0.702 | on trial | 0.156 |
+| C | 0.02 | 1.869 | 0.957 | trusted | 0.021 |
+
+The same four clean runs would move B's {math}`\pi` to 0.85, and B would be trusted. The
+{ref}`outcome-belief reference <outcome-posterior>` and the
+{ref}`admission reference <admission-tiers>` give the receipt fields.
+
+## 10 Active time, tokens and credit
+
+Unlike the two rates, active time and token counts are amounts, and the credit of one
+run follows from the token counts.
+
+### Amount beliefs
+
+Active time and each token kind have one log-normal belief per cell. For an amount
+{math}`A` with prediction {math}`\hat g` and starting spread {math}`s_0` from
+{eq}`worth`, where one run's spread is the scatter {math}`\tau`,
+
+```{math}
+:label: amount-start
+
+\ln A\sim\mathcal{N}(m_0,s_0^2),\qquad
+m_0=\ln\hat g-\frac{s_0^2}{2}.
+```
+
+Subtracting {math}`s_0^2/2` makes the belief's average equal the prediction. With the
+defaults and an empty record, {math}`N_{\mathrm{start}}=0.833` and
+{math}`\tau=1.3\sqrt{0.5}=0.919`, so the smallest starting spread is
+{math}`0.919/\sqrt{0.833}=1.007`. C's forecast of 3,600 seconds with no range gives
+{math}`s_0=1.007` and {math}`m_0=7.682`: an average of 1 hour and a median of 0.60
+hours. A stated range of 600 to 60,000 seconds would give a spread of 1.175, which would
+be used.
+
+The cell's own candidate runs that record the amount then update the start
+{eq}`amount-start` conjugately. With run {math}`i`'s weight {math}`w_i`
+({eq}`evidence-weight` with factor 1, limited per ticket over the cell's own runs),
+{math}`W=\sum_i w_i` and {math}`y_i` the logarithm of its recorded amount,
+
+```{math}
+:label: amount-update
+
+\frac{1}{s'^2}=\frac{1}{s_0^2}+\frac{W}{\tau^2},\qquad
+m'=m_0+s'^2\,\frac{\sum_i w_i\,(y_i-m_0)}{\tau^2},\qquad
+\mathbb{E}[A]=\exp\Bigl(m'+\frac{s'^2}{2}\Bigr).
+```
+
+Each run pulls the centre toward its own amount and narrows the spread, by its weight.
+Had C's record held two runs with weights 0.5 and 0.3 that took 1,800 and 5,400
+seconds, {math}`W=0.8`, {math}`s'=0.719`, {math}`m'=7.792` and the average would be
+3,137 seconds. {math}`\mathbb{E}[T]` is the average of the active-time belief in hours.
+A run's active time is its recorded active seconds, or its total seconds when no active
+time was recorded. Each belief reads only the runs that record its value: a run with a
+complete usage record and no active time moves the token beliefs alone, and a run that
+records only a total token count moves the total-token belief alone. A token kind that
+every expert forecasts at zero, with no non-zero upper end, is exactly zero. A cell whose
+forecasts do not all state usage by kind has one belief, for total tokens.
+
+### The credit of one run
+
+The credit of one run is uncertain because its token counts are. With
+{math}`\mathrm{price}_\kappa` the candidate's rate for kind {math}`\kappa` per million
+tokens and {math}`s'_\kappa` the spread of that kind's belief,
+
+```{math}
+:label: credit
+
+K_\kappa=\frac{\mathrm{price}_\kappa\,\mathbb{E}[A_\kappa]}{10^6},\qquad
+\mathbb{E}[K]=\sum_\kappa K_\kappa,\qquad
+\operatorname{Var}(K)=\sum_\kappa\sum_{\kappa'}K_\kappa K_{\kappa'}\bigl(e^{s'_\kappa s'_{\kappa'}}-1\bigr).
+```
+
+The double sum treats the kinds as moving together, with correlation 1 on the log
+scale. A log-normal with the same average and variance has spread {math}`s_K` and 80%
+point {math}`K_{80}`:
+
+```{math}
+:label: credit-p80
+
+s_K^2=\ln\Bigl(1+\frac{\operatorname{Var}(K)}{\mathbb{E}[K]^2}\Bigr),\qquad
+K_{80}=\mathbb{E}[K]\exp\Bigl(0.8416\,s_K-\frac{s_K^2}{2}\Bigr),
+```
+
+where 0.8416 is the 80% point of the standard normal. For example, with input at 2 and
+output at 10 USD per million tokens, an input forecast of 1,000,000 tokens with no range
+(spread 1.007) and an output forecast of 100,000 tokens with a range of 10,000 to
+1,000,000 (spread 1.175) give {math}`K=2.00` and 1.00 by kind,
+{math}`\mathbb{E}[K]=3.00`, {math}`\operatorname{Var}(K)=19.06`, {math}`s_K=1.066` and
+{math}`K_{80}=4.17`. In the running example, C's single total-token belief gives
+{math}`\mathbb{E}[K]=9.00` and {math}`K_{80}=12.65`.
+
+A candidate may carry a credit budget, the credit available to it in its current
+session and weekly windows. With {math}`K_{80}` from {eq}`credit-p80`, a cell is
+schedulable when
+
+```{math}
+:label: credit-check
+
+\max\bigl(\mathbb{E}[K],K_{80}\bigr)\le\text{available credit},
+```
+
+so a run must fit the remaining credit four times out of five, as well as on average.
+The larger of the two is taken because a belief with {math}`s_K` above 1.68 has its 80%
+point below its average, and the check must not get easier as a belief widens. In the
+example above, 4.00 of available credit fails although the average fits, and 5.00
+passes. A cell with no budget passes. The {ref}`amount-belief reference <amount-beliefs>`
+and the {ref}`credit-budget reference <credit-budget>` give the fields and the budget
+rules.
+
+## 11 Selection
+
+Selection turns each forecast cell's beliefs into an expected cost with a spread, admits
+cells by their tier and draws one cell among those whose costs overlap.
+
+### Expected cost and its spread
+
+The cost {eq}`objective` is averaged over the four beliefs of the cell:
+{math}`\mathbb{E}[R]` and {math}`\mathbb{E}[S]` from {eq}`belief-summaries`,
+{math}`\mathbb{E}[T]` from the active-time belief {eq}`amount-update` and
+{math}`C_{\mathrm{run}}=\psi\,\mathbb{E}[K]` from {eq}`credit`. For the running
+example, with the tiers of {eq}`tiers`:
+
+| Cell | Tier | {math}`C_{\mathrm{run}}` | {math}`\mathbb{E}[T]` | {math}`\mathbb{E}[R]` | {math}`\mathbb{E}[S]` | {math}`J` | {math}`\operatorname{sd}(J)` |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| A | excluded | 0.15 | 0.25 | 2.0515 | 0.500 | 565.70 | 220.04 |
+| B | on trial | 1.20 | 0.50 | 1.3783 | 0.100 | 137.80 | 148.12 |
+| C | trusted | 9.00 | 1.00 | 1.0807 | 0.020 | 60.78 | 76.18 |
+
+For C, {math}`J=(9.00+25\times1.00)\times1.0807+50\times0.0807+1{,}000\times0.020=60.78`,
+and for B, {math}`(1.20+25\times0.50)\times1.3783+50\times0.3783+1{,}000\times0.100=137.80`.
+B's escaped defects cost 100 of its 137.80.
+
+The four beliefs of a cell are built independently of one another, so the spread of the
+cost follows exactly from their means and variances. Write the cost before averaging as
+{math}`XR-C_l+C_sS` with {math}`X=\psi K+\lambda T+C_l`. Then
+
+```{math}
+:label: cost-spread
+
 \begin{aligned}
-\text{trusted}  &\iff \pi(c)\ge q,\\
-\text{on trial} &\iff t\le\pi(c)<q,\\
-\text{excluded} &\iff \pi(c)<t.
+\operatorname{Var}(J)&=\mathbb{E}[X^2]\,\mathbb{E}[R^2]-\bigl(\mathbb{E}[X]\,\mathbb{E}[R]\bigr)^2+C_s^2\operatorname{Var}(S),\\
+\mathbb{E}[X]&=C_{\mathrm{run}}+\lambda\,\mathbb{E}[T]+C_l,\qquad
+\mathbb{E}[X^2]=\psi^2\operatorname{Var}(K)+\lambda^2\operatorname{Var}(T)+\mathbb{E}[X]^2,\\
+\operatorname{Var}(T)&=\mathbb{E}[T]^2\bigl(e^{s'^2}-1\bigr),
 \end{aligned}
 ```
 
-- {math}`q`: the trusted line, `admission_quantile`, 0.80.
-- {math}`t`: the on-trial line, `trial_probability`, 0.20.
+with {math}`\mathbb{E}[R^2]` summed on the grid like {math}`\mathbb{E}[R]` and
+{math}`s'` the spread of the active-time belief {eq}`amount-update`. For C,
+{math}`\operatorname{Var}(T)=1^2\times(e^{1.007^2}-1)=1.7566`,
+{math}`\operatorname{Var}(K)=142.29`, {math}`\mathbb{E}[X]=84`,
+{math}`\mathbb{E}[X^2]=142.29+625\times1.7566+84^2=8{,}296.2`,
+{math}`\mathbb{E}[R^2]=1.3757` and {math}`\operatorname{Var}(S)=0.002632`, so
+{math}`\operatorname{Var}(J)=8{,}296.2\times1.3757-(84\times1.0807)^2+1{,}000^2\times0.002632=5{,}804`
+and {math}`\operatorname{sd}(J)=76.2`. A wider stated range on active time or on a token
+kind raises the spread of that cell's cost without moving its {math}`J`, because a
+belief averages to its prediction however wide it is.
 
-In plain words, a cell that very likely meets the limit is trusted. An uncertain cell
-is on trial. Only a cell that very likely misses the limit is excluded. A wide
-belief, which is all an unproven cell has, puts the cell on trial instead of
-shutting it out for width alone, while a forecast or history with substantial silent
-risk is still excluded.
+### The pool and eligibility
 
-Example, with one expert, no stated range, no counted run and
-{math}`\varepsilon=0.10`:
-
-| Forecast of {math}`S` | {math}`\pi` | Tier | 80% point of {math}`S` |
-| --- | --- | --- | --- |
-| 2% | 0.957 | trusted | 0.021 |
-| 10% | 0.702 | on trial | 0.156 |
-| 50% | 0.011 | excluded | 0.692 |
-
-The last column is the receipt's `admission_risk`, the {math}`q` point of the same
-belief. It is at most {math}`\varepsilon` exactly when {math}`\pi\ge q`, so the
-trusted tier is the same test read from the other side.
-
-### The spread of the cost
-
-The cost of section 1 is uncertain because four things about a cell are: the credit
-{math}`K` and active time {math}`T` of one run, its loud rate and its accepted-defect
-share. Each has its own belief, and the four are independent, so the spread of the cost
-follows from their means and variances with no approximation. Write the cost before
-averaging as {math}`X R-C_l+C_s S`, with {math}`X=qK+\lambda T+C_l`:
+Only schedulable cells compete. Trusted and on-trial cells form the pool when any
+exists; otherwise the cells nearest the best chance compete:
 
 ```{math}
-\begin{aligned}
-\mathrm{Var}(J)&=\mathbb{E}[X^2]\,\mathbb{E}[R^2]-\bigl(\mathbb{E}[X]\,\mathbb{E}[R]\bigr)^2
-                +C_s^2\,\mathrm{Var}(S),\\
-\mathbb{E}[X]&=C_{\mathrm{run}}+\lambda\,\mathbb{E}[T]+C_l,\\
-\mathbb{E}[X^2]&=q^2\,\mathrm{Var}(K)+\lambda^2\,\mathrm{Var}(T)+\mathbb{E}[X]^2,\\
-\mathrm{Var}(T)&=\mathbb{E}[T]^2\,\bigl(e^{s'^2}-1\bigr),\\
-\mathrm{sd}(c)&=\sqrt{\mathrm{Var}(J)}.
-\end{aligned}
+:label: pool
+
+\mathcal{P}=
+\begin{cases}
+\{c:\ \mathrm{credit\_ok}(c),\ c\ \text{trusted or on trial}\} & \text{when not empty},\\
+\{c:\ \mathrm{credit\_ok}(c),\ \pi(c)\ge\chi\max_{c'}\pi(c')\} & \text{otherwise},
+\end{cases}
 ```
 
-- {math}`X`: what one attempt costs, plus {math}`C_l`.
-- {math}`R=1+e^{u}`: the attempts until a run is not loud. {math}`\mathbb{E}[R]` and
-  {math}`\mathbb{E}[R^2]` are the averages of {math}`1+e^{x_j}` and of its square under
-  the belief {math}`b_j` of the loud rate on its grid.
-- {math}`\mathrm{Var}(S)`: the average of {math}`S^2` minus {math}`\mathbb{E}[S]^2`,
-  summed on the grid of the belief of {math}`S`.
-- {math}`\mathrm{Var}(K)`: the variance of the credit of one run (section 7), and
-  {math}`q` the cost per credit, or 0 when worker money is excluded.
-- {math}`s'`: the spread of the active-time belief after its counted runs (section 1).
-- {math}`\mathrm{sd}(c)`: the spread of the cell's cost, the receipt's `cost_sd`.
+where {math}`\mathrm{credit\_ok}(c)` is the check {eq}`credit-check` and the maximum
+runs over the schedulable cells. Selection is refused only when no cell is schedulable.
+For example, three schedulable cells with {math}`\pi` of 0.12, 0.08
+and 0.05 and none admitted give the bar {math}`0.5\times0.12=0.06`, so the first two
+form the pool. Trusted and on-trial cells compete as equals, and nothing limits how
+often an on-trial cell is chosen.
 
-In plain words, the cost is a product of what one attempt costs and how many attempts
-are needed, plus the price of accepted defects, and the variance of a product of
-independent quantities is exact in their first two moments.
-
-Example, continuing the example of section 1 with {math}`q=1`,
-{math}`\mathrm{sd}(K)=1`, {math}`s'=0.6`, {math}`\mathbb{E}[R^2]=1.60` and
-{math}`\mathrm{sd}(S)=0.03`: {math}`\mathrm{Var}(T)=0.25\,(e^{0.36}-1)=0.1083`,
-{math}`\mathbb{E}[X]=64.5` and
-{math}`\mathbb{E}[X^2]=1+625\times0.1083+4{,}160.25=4{,}228.96`. Then
-{math}`\mathrm{Var}(J)=4{,}228.96\times1.60-80.625^2+900=1{,}165.94` and
-{math}`\mathrm{sd}(c)=34.15`.
-
-A wider stated range on active time or on a token kind raises the spread of that cell's
-cost. It does not move the cell's {math}`J`, because a belief averages to its prediction
-however wide it is, and it changes no number of another cell.
-
-### Who competes
+A cell of the pool {eq}`pool` competes when its cost overlaps the lowest cost within
+their spreads {eq}`cost-spread`:
 
 ```{math}
-\begin{aligned}
-\mathcal{P}&=\{c:\ \mathrm{credit\_ok}(c)\ \text{and}\ c\ \text{is trusted or on trial}\}
-  &&\text{when not empty},\\
-\mathcal{P}&=\{c:\ \mathrm{credit\_ok}(c)\ \text{and}\ \pi(c)\ge f\cdot\max_{c'}\pi(c')\}
-  &&\text{otherwise},\\
-c^{*}&=\arg\min_{c\in\mathcal{P}}J(c),\\
-\mathrm{eligible}(c)&\iff c\in\mathcal{P}\ \text{and}\
-  J(c)-J(c^{*})\le u\,\bigl(\mathrm{sd}(c^{*})+\mathrm{sd}(c)\bigr),\\
-\text{chosen}&=\arg\min_{c\ \mathrm{eligible}}\tilde J(c).
-\end{aligned}
+:label: eligible
+
+c^{*}=\arg\min_{c\in\mathcal{P}}J(c),\qquad
+\text{eligible}(c)\iff c\in\mathcal{P}\ \text{and}\ J(c)-J(c^{*})\le M\bigl(\operatorname{sd}(J(c^{*}))+\operatorname{sd}(J(c))\bigr).
 ```
 
-- {math}`\mathcal{P}`: the pool of cells that compete.
-- {math}`\mathrm{credit\_ok}(c)`: the cell has enough credit; the maximum in the
-  second line runs over the cells {math}`c'` that have enough credit.
-- {math}`f`: `all_excluded_factor`, 0.5.
-- {math}`J(c)`, {math}`\mathrm{sd}(c)`: the cell's cost averaged over its beliefs
-  (section 1) and the exact spread of that cost (above).
-- {math}`c^{*}`: the pool cell with the lowest {math}`J`.
-- {math}`u`: `uncertainty_multiplier`, 1. A risk class's `explore_within` additionally
-  caps the gap at that fraction of {math}`|J(c^{*})|`.
-- {math}`\tilde J(c)`: the cell's cost under the seed's draw (below).
-
-Example of eligibility: {math}`c^{*}` has {math}`J` 70.6 and spread 34.2. A cell with
-{math}`J` 110 and spread 20 is eligible, because the gap of 39.4 is at most 54.2. A cell
-with {math}`J` 140 and spread 10 is not, because 69.4 exceeds 44.2.
-
-In plain words, trusted and on-trial cells compete as equals, and nothing limits how
-often an on-trial cell is chosen. A cell must still be close enough to the cheapest
-pool cell for their cost distributions to overlap; by default a small point-forecast
-difference cannot lock in a favoured cell and starve an unseen cheaper one of
-evidence. When no trusted or on-trial cell has enough credit, the cells nearest the
-best chance compete instead, so a sample is always drawn. Selection is refused only
-when no cell has enough credit.
-
-Example of the second pool: three cells with enough credit have {math}`\pi` 0.12, 0.08
-and 0.05. The bar is {math}`0.5\times0.12=0.06`, so the first two form the pool and the
-third is left out.
+A risk class's `explore_within` additionally caps the gap at that fraction of
+{math}`\lvert J(c^{*})\rvert`. A small difference in expected cost therefore cannot lock
+in one cell and starve a cheaper, less known one of evidence. In the running example the
+pool is B and C, {math}`c^{*}` is C, and B's gap of 77.02 is within
+{math}`76.18+148.12=224.30`, so both are eligible.
 
 ### The draw
 
-Each forecast cell draws one value of everything it is uncertain about, and the lowest
-sampled cost among the eligible cells wins (Thompson sampling).
+Each forecast cell draws one value of everything it is uncertain about, and the cell
+with the lowest sampled cost among the eligible cells of {eq}`eligible` is chosen:
 
 ```{math}
+:label: draw
+
 \begin{aligned}
-\tilde S&=\operatorname{logistic}(x_j),
-  &&j=\text{the first grid point where the running total of the belief of }S\text{ reaches }U_S,\\
-\tilde R&=1+e^{x_j},
-  &&j=\text{the same on the belief of the loud rate, with }U_u,\\
-\tilde T&=\exp\bigl(m'+s'\,z(U_T)\bigr)/3600,\\
-\tilde n_a&=\exp\bigl(m_a+s_a\,z(U_K)\bigr)&&\text{for every token kind }a,\\
-\tilde J&=\bigl(q\tilde K+\lambda\tilde T\bigr)\,\tilde R+C_l\,(\tilde R-1)+C_s\,\tilde S.
+\tilde S&=\operatorname{logistic}(x_j)\ \text{at the first }j\text{ where the running total of the belief of }S\text{ reaches }U_S,\\
+\tilde R&=1+e^{x_j}\ \text{at the first }j\text{ where the running total of the belief of }\theta_l\text{ reaches }U_u,\\
+\tilde T&=\exp\bigl(m'_{\mathrm{time}}+s'_{\mathrm{time}}\,\Phi^{-1}(U_T)\bigr)/3600,\qquad
+\tilde A_\kappa=\exp\bigl(m'_\kappa+s'_\kappa\,\Phi^{-1}(U_K)\bigr),\\
+\tilde J&=\bigl(\psi\tilde K+\lambda\tilde T\bigr)\tilde R+C_l(\tilde R-1)+C_s\tilde S,
 \end{aligned}
 ```
 
-- {math}`U_S`, {math}`U_u`, {math}`U_T`, {math}`U_K`: four uniform numbers strictly
-  between 0 and 1, drawn in this order for every forecast cell.
-- {math}`x_j`: a point of the grid of log-odds. It is the last point when rounding
-  keeps the running total below {math}`U`.
-- {math}`z(U)`: the standard normal value with probability {math}`U` below it.
-- {math}`m'`, {math}`s'`: the centre and spread of the active-time belief, in log
-  seconds; {math}`\tilde T` is in hours.
-- {math}`m_a`, {math}`s_a`: the centre and spread of the belief of token kind
-  {math}`a`, and {math}`\tilde n_a` its sampled count. One {math}`U_K` serves every
-  kind, because the kinds are taken to move together (section 7).
-- {math}`\tilde K`: the credit of the counts {math}`\tilde n_a` at the candidate's
-  rates.
-- {math}`\tilde J`: the sampled cost.
+where {math}`m'` and {math}`s'` are the centres and spreads of {eq}`amount-update` and
+{math}`\tilde K` prices the sampled counts {math}`\tilde A_\kappa` as {eq}`credit`
+prices their averages. The four uniform numbers come in this order from a
+generator seeded with the decision's stored seed, and every forecast cell draws them, in
+a stored order and whether or not it is eligible, so a stored decision replays its draw
+exactly. One {math}`U_K` serves every token kind, matching the joint movement assumed in
+{eq}`credit`. Ties go to the lower {math}`J`. A wide belief sometimes draws a low cost,
+so its cell is tried, and the trial's outcome then narrows the belief. No expert is
+drawn: each value of a cell is one belief merged over the experts, and experts that
+disagree have already widened it.
 
-In plain words, a wide belief sometimes draws a low cost, so its cell is tried, and the
-trial's outcome then narrows the belief. No predictive expert is drawn: every value of
-a cell is one belief merged over the experts, and experts that disagree have already
-widened it.
+With seed 42 in the running example, C draws {math}`\tilde S=0.0180`,
+{math}`\tilde R=1.0106`, {math}`\tilde T=1.7763` hours and {math}`\tilde K=9.122`, so
+{math}`\tilde J=(9.122+25\times1.7763)\times1.0106+50\times0.0106+1{,}000\times0.0180=72.6`.
+B draws a high loud rate, {math}`\tilde R=3.075`, with {math}`\tilde S=0.0058`,
+{math}`\tilde T=0.6156` hours and {math}`\tilde K=1.606`, so
+{math}`\tilde J=(1.606+25\times0.6156)\times3.075+50\times2.075+1{,}000\times0.0058=161.8`.
+C is chosen.
 
-Example: {math}`\tilde S=0.02`, {math}`\tilde R=1.25`, {math}`\tilde T=0.4` and
-{math}`q\tilde K=1.50` give {math}`\tilde J=11.5\times1.25+12.5+20=46.875`.
+### The review flag and widening
 
-The numbers come from the PCG64 generator seeded with the decision's stored seed. Each
-is {math}`((r\gg12)+0.5)/2^{52}` from one raw 64-bit output {math}`r`, so replaying a
-decision does not depend on a library's distribution methods. Every forecast cell
-draws, in a stored order and whether or not it is eligible, so the stream of numbers
-does not depend on the pool. A stored decision is checked by replaying its draw from
-its seed.
-
-### The flag
+The decision carries a flag when the chosen cell is not trusted:
 
 ```{math}
-\begin{aligned}
-\texttt{cap\_met}&\iff \text{the chosen cell is trusted},\\
-\texttt{needs\_review}&\iff \text{not}\ \texttt{cap\_met}.
-\end{aligned}
+:label: flag
+
+\texttt{cap\_met}\iff\text{the chosen cell is trusted},\qquad
+\texttt{needs\_review}\iff\text{not}\ \texttt{cap\_met}.
 ```
 
-In plain words, the flag says that the chosen cell is not trusted. It is advice to the
-caller, and nothing is enforced or recorded for it.
+The flag on the cell chosen by {eq}`draw` advises the caller to have an on-trial or
+excluded choice reviewed independently; nothing enforces it. C is trusted, so
+`needs_review` is false. Had the draw chosen B, with {math}`\pi=0.702`, the decision
+would carry `needs_review`.
 
-Example: a chosen cell with {math}`\pi=0.702` is on trial, so `cap_met` is false and
-`needs_review` is true.
+When every forecast cell is excluded, the engine first asks for a forecast of the next
+stronger cell without one, one per round: the band cells beyond the core, then the
+cells above the band, in capability order, up to two rounds (`widening_rounds`) within
+the forecast budget. One trusted or on-trial forecast cell stops the widening. The
+{ref}`selection reference <cost-spread-and-draw>` gives the stored draw and the
+explanation of each cheaper alternative.
 
-When every forecast cell is excluded, the engine first forecasts the next stronger
-cell with no forecast, one per round, up to `widening_rounds` and within the forecast
-budget; one trusted or on-trial cell stops this widening. The
-{ref}`selection reference <admission-tiers>` defines the receipt fields, and the
-[capability filter](capability.md) defines widening.
+## 12 Refined constants
 
-### Refined constants
+The half-life {math}`h`, the three discounts, {math}`N_{\mathrm{rung}}`, the three task
+worths, the miss {math}`D` with no record, the scatter share {math}`\beta` and
+{math}`N_{\mathrm{caught}}` are estimated constants. Their defaults work on an empty
+record. Once the record holds 200 scored runs, each is re-estimated from it after an
+observation or a flush, never during a decision, and with no tuning by the user. A
+constant set in the configuration file keeps that value.
 
-The half-life, the three discounts, the rung worth, the three task worths, the miss
-{math}`D`, the scatter share and the caught-share worth are estimated constants. Their
-defaults work on an empty record; once the store's own record is large enough, each is
-re-estimated from it, outside the decision path and with no tuning by the user. A
-decision only reads the cached result.
-
-A scored run is a finished routed run with a v11 receipt. Its beliefs are rebuilt with a
-value tried, from the receipt (the candidates with their similarity, days, weight,
-cell, agent and ticket; the forecasts; the host) and from the rows and amendments
-observed before its decision. The rebuilt ladders leave out only the candidates the
-receipt stores, so when the decision's prototypes matched more than `comparison_cap`
-runs, the extra matched runs count as history there although the decision itself left
-them out. The score is the log probability those beliefs gave to what happened:
+A *scored run* is a finished routed run whose receipt has the current format. Its
+beliefs are rebuilt with a tried value from what its receipt stores and from the runs and
+amendments observed before its decision, and it is scored by the log probability those
+beliefs gave to what happened:
 
 ```{math}
+:label: scores
+
 \begin{aligned}
-\text{outcome}_i&=\begin{cases}
-\ln E[\theta_l] & \text{loud}\\
-\ln(1-E[\theta_l])+\ln E[S] & \text{silent}\\
-\ln(1-E[\theta_l])+\ln(1-E[S]) & \text{clean}
+\text{outcome}_i&=
+\begin{cases}
+\ln\mathbb{E}[\theta_l] & \text{loud},\\
+\ln(1-\mathbb{E}[\theta_l])+\ln\mathbb{E}[S] & \text{silent},\\
+\ln(1-\mathbb{E}[\theta_l])+\ln(1-\mathbb{E}[S]) & \text{clean},
 \end{cases}\\
-\text{time}_i&=\ln \phi\bigl(y_i;\ m',\ s'^2+\tau^2\bigr),\qquad
-\text{caught}_i=\begin{cases}\ln d & \text{loud}\\ \ln(1-d) & \text{silent}\end{cases}
+\text{time}_i&=\ln\mathcal{N}\bigl(y_i;\,m',\,s'^2+\tau^2\bigr),\qquad
+\text{caught}_i=
+\begin{cases}
+\ln d & \text{loud},\\
+\ln(1-d) & \text{silent},
+\end{cases}
 \end{aligned}
 ```
 
-- {math}`E[\theta_l]`, {math}`E[S]`: the averages of the run's cell's two outcome
-  beliefs, rebuilt with the value tried.
-- {math}`y_i`: the log of the run's recorded active time; {math}`m'`, {math}`s'`: the
-  centre and spread of the cell's active-time belief; {math}`\tau=D\sqrt{\text{scatter share}}`
-  the run-to-run scatter; {math}`\phi(y;\mu,v)` the normal density with mean
-  {math}`\mu` and variance {math}`v`.
-- {math}`d`: the host's caught share before the decision.
-
-The constants are tried one at a time, in a fixed order, each with the earlier ones at
-their refined values:
+where {math}`y_i` is the logarithm of the run's active seconds, {math}`m'` and
+{math}`s'` belong to its cell's active-time belief, and {math}`d` is its host's caught
+share before the decision. The half-life, the discounts, {math}`N_{\mathrm{rung}}` and
+the two rate worths are judged by the outcome score, the worth for {math}`S` on accepted
+runs only; {math}`D`, {math}`\beta` and the amount worth by the time score; and
+{math}`N_{\mathrm{caught}}` by the caught score. At most the 2,000 most recent scored
+runs are used. The constants are tried one at a time in a fixed order, each with the
+earlier ones at their refined values, and a value replaces the current one only when
+the scores {eq}`scores` of the runs satisfy
 
 ```{math}
-\begin{aligned}
-d_i&=\text{score}_i(\text{tried})-\text{score}_i(\text{current}),\qquad
-\text{gain}=\bar d,\qquad \text{se}=\frac{\operatorname{sd}(d)}{\sqrt n},\\
-\text{move}&\iff n\ge 200\ \text{and}\ \text{gain}>2\,\text{se}.
-\end{aligned}
+:label: rule
+
+\Delta_i=\text{score}_i(\text{tried})-\text{score}_i(\text{current}),\qquad
+\text{gain}=\frac{1}{n}\sum_i\Delta_i,\qquad
+\text{se}=\frac{\operatorname{sd}(\Delta)}{\sqrt n},\qquad
+n\ge200\ \text{and}\ \text{gain}>2\,\text{se}.
 ```
 
-- {math}`n`: the scored runs of the constant's score: finished, accepted, timed or
-  failed runs. At most the 2,000 most recent are scored.
-- {math}`\operatorname{sd}(d)`: the sample standard deviation of the differences.
+The best passing value wins, and a tie keeps the one nearer the default. For example,
+400 runs whose differences average 0.012 with a standard deviation of 0.10 give
+{math}`\text{se}=0.005`, so the constant moves; an average of 0.008 does not. {math}`D`
+and {math}`\beta` also try the values the record measures: {math}`D` is the root mean
+square of the timed runs' misses {math}`e_i`, and the scatter
+{math}`\tau=\sqrt{\operatorname{mean}\bigl((y_{i'}-y_i)^2\bigr)/2}` comes from the
+differences between consecutive timed runs of one cell on one ticket, once 30 such pairs
+exist, giving {math}`\beta=\min(1,\tau^2/D^2)`. The
+{ref}`refined-constants reference <refined-constants>` and the
+{ref}`configuration guide <refined-constants-configuration>` list the values tried and
+the cached result.
 
-In plain words, a constant leaves its default only when the record is large enough and
-the gain is more than twice its noise; the best passing value wins and a tie keeps the
-one nearer the default. {math}`D` and the scatter share also try the values the record
-measures, {math}`D=\sqrt{\overline{e^2}}` from the timed runs' misses
-{math}`e_i=\ln(T_i/\text{prediction}_i)` and {math}`\tau=\sqrt{\overline{p^2}/2}` from
-the differences {math}`p_j` between consecutive runs of one cell on one ticket, once 30
-pairs exist.
+## 13 Retrospective defect attribution
 
-Example: 400 runs whose differences average 0.012 with a standard deviation of 0.10
-give {math}`\text{se}=0.005`, so the constant moves; an average of 0.008 does not.
-
-A constant set in the configuration file is never tried. A refined value enters the
-receipt's policy blocks like any other value, and the
-{ref}`reference <refined-constants>` defines the cached file and when it is written.
-
-## 6 Retrospective defect attribution
-
-Delayed feedback matters because a task that passes today's checks can contain
-a defect discovered later. During a bug fix or requested audit, the companion
-`attribute-failure` skill can investigate that earlier acceptance:
+A task that passes today's checks can contain a defect found later. During a bug fix or
+a requested audit, the companion `attribute-failure` skill investigates whether the
+defect escaped an earlier accepted task:
 
 1. Reproduce the defect or obtain other concrete evidence of the failure.
-2. Trace the behavior through the original task, pre-fix history and execution
-   provenance; use bisection when helpful. Last-touch blame alone is insufficient.
-3. When attribution is supported, append an amendment to the original execution's
-   outcome and replay its frozen forecasts against the effective corrected result.
-4. Update written lessons through the existing learning protocol. Record the fixing
+2. Trace the behaviour through the original task, the history before the fix and the
+   execution's provenance, using bisection when it helps. The last change to a line
+   alone does not establish the cause.
+3. When the attribution is supported, append an amendment to the original execution's
+   outcome and replay its frozen forecasts against the corrected outcome.
+4. Update written lessons through the ordinary learning step, and record the fixing
    execution's own outcome separately.
 
-The amendment replaces the earlier predictive score; it does not create another
-independent execution or a new forecast exposure. Original identity, context and
-measurements remain attached. Uncertain attribution stays unscored, and finding
-an escaped defect does not itself make the fixing worker fail.
+The amendment replaces the run's earlier score; it creates neither another execution
+nor a new forecast exposure, and the run keeps its identity, context and measurements.
+An uncertain attribution stays unscored, and finding an escaped defect does not by
+itself make the fixing worker fail.
 
-This is an investigation workflow invoked during later work. Installing the skill
-adds neither continuous bug monitoring nor automatic historical attribution.
-See the {ref}`escaped-defect attribution contract <escaped-defect-attribution>`
-for the evidence and provenance requirements.
+In the running example, suppose such an investigation amends C's run to silent on the
+day of the run, and the same host then routes a similar task with the same three cells
+and the same stored forecasts. The amended run changes the decision in three places. It
+is now a failed routed run that the host did not catch, so the host's caught share
+{eq}`caught-share` falls from 0.889 to 0.757, which tightens the band edges
+{eq}`band-edges` to {math}`P_{\mathrm{lo}}=0.686` and {math}`G=0.0229`. It is a
+candidate run with a similarity of 0.8, so it lowers every cell's
+{math}`P_{\mathrm{clear}}` (A 0.33, B 0.57, C 0.73); the band holds C alone, and A and
+B, whose families are still unproven, take the two reserved slots. Finally it counts in
+the outcome beliefs: in full, at weight 0.8, for C, whose {math}`\pi` falls to 0.66 and
+whose {math}`J` rises to 152.9, and at the discount {math}`\delta_{\mathrm{model}}=0.25`
+for B, a cell of another family under the same unnamed agent, whose {math}`\pi` falls to
+0.60 and whose {math}`J` rises to 168.7. B and C are now both on trial with overlapping
+costs, and with seed 42 the draw picks B, so the decision carries `needs_review` by
+{eq}`flag`. The {ref}`attribution contract <escaped-defect-attribution>` states the
+evidence and provenance requirements.
 
-## 7 Credit accounting and operational boundaries
+## 14 Operational boundaries
 
-Money comparisons require known host charges on a comparable basis. API list
-prices cannot stand in for unknown subscription credits or native host charges.
-If evaluated candidates are unpriced or money bases are incompatible, worker
-money is excluded uniformly and the decision identifies the partial risk/time
-comparison. Unknown usage and cost remain unknown.
+The host executes the chosen model and effort. An installed plugin does not by itself
+enforce routing at every worker launch, and the feedback must identify the invocation
+that actually ran. Money comparisons need known charges on a comparable basis: list
+prices stand in for neither subscription credit nor native host charges, and unknown
+usage and cost stay unknown. Usage collectors read only artifacts they are explicitly
+given. Every decision stores a receipt that freezes its inputs, retrieved evidence,
+memory versions, forecasts, capability state and selection, and loading a receipt
+recomputes every derived number from what it stores. The stored seed reproduces a
+selection given its frozen forecasts, while a fresh call to a language model can answer
+differently. Git worktrees of one project share its store and capture their own
+checkout. The [model and storage contracts](reference.md), the [host skills](skills.md)
+and the [concurrency contract](concurrency.md) define these boundaries.
 
-The credit one run needs is uncertain because its token counts are. Let
-{math}`a` and {math}`b` index token kinds, {math}`\mathrm{price}_a` be the candidate's
-rate for kind {math}`a` per million tokens, and {math}`\mathbb{E}[\mathrm{tokens}_a]`
-and {math}`s_a` the average and spread of that kind's belief after its runs:
+## 15 Evaluating savings and learning
 
-```{math}
-c_a=\frac{\mathrm{price}_a\,\mathbb{E}[\mathrm{tokens}_a]}{10^6},\qquad
-\mathbb{E}[K]=\sum_a c_a,\qquad
-\mathrm{Var}(K)=\sum_a\sum_b c_a c_b\left(e^{\rho_{ab}s_a s_b}-1\right).
-```
-
-{math}`K` is the credit of one run. {math}`\rho_{ab}` says how kinds {math}`a` and
-{math}`b` move together; it is 1, because no run records how the kinds co-vary, so the
-spread is not understated by assuming independence. A log-normal with the same
-average and variance has spread {math}`\sigma_K` and 80% point {math}`K_{80}`:
-
-```{math}
-\sigma_K^2=\ln\!\left(1+\frac{\mathrm{Var}(K)}{\mathbb{E}[K]^2}\right),\qquad
-K_{80}=\mathbb{E}[K]\,\exp\!\left(0.8416\,\sigma_K-\frac{\sigma_K^2}{2}\right),
-```
-
-where 0.8416 is the 80% point of the standard normal. With input at 2 and output at
-10 dollars per million tokens, an input forecast of 1,000,000 tokens with no range
-(spread 1.007) and an output forecast of 100,000 tokens with a range of 10,000 to
-1,000,000 (spread 1.175): {math}`c=2.00` and {math}`1.00`, {math}`\mathbb{E}[K]=3.00`,
-{math}`\mathrm{Var}(K)=19.06`, {math}`\sigma_K=1.066` and {math}`K_{80}=4.17`.
-
-Optional candidate credit budgets add a scheduling constraint, separate from the
-admission tiers. They require uniform pricing and can represent remaining session and
-weekly windows. A candidate is schedulable when
-{math}`\max(\mathbb{E}[K],K_{80})` is at most its available credit: a run must fit
-the remaining credit four times out of five, not only on average. The larger of the
-two is taken because a belief with {math}`\sigma_K` above 1.68 has its 80% point below
-its average, and the check must not get easier as a belief gets wider. In the example,
-4.00 of available credit fails although the average fits, and 5.00 passes. Selection
-refuses routing when none of the evaluated candidates is schedulable. This check does
-not reserve the full uncertain cost of future retries or prevent concurrent external
-spending.
-
-Receipts freeze the inputs, retrieved evidence, memory versions, forecasts,
-capability state and selection details, under the
-{ref}`frozen formats <frozen-formats>` of decision v11. Older receipts keep loading
-and replaying under their own rules. They store no host and no agent labels, and an
-operator can {ref}`import names <imported-names>` for their runs once, without
-rewriting a receipt. A recorded seed reproduces selection
-given those frozen forecasts; fresh LLM inference can vary. Git worktrees share
-the project evidence store while capturing their own current checkout context.
-
-The host executes the chosen model and effort. Plugin discovery alone does not
-enforce routing at every worker launch. Execution feedback must identify the
-invocation that actually ran, and usage collectors operate on explicitly owned
-artifacts. These boundaries are defined in [model and storage contracts](reference.md),
-[host skills](skills.md) and [concurrency](concurrency.md).
-
-## 8 Evaluating savings and learning
-
-Net savings require evidence from genuine project work that includes the cost
-of choosing and learning. The evaluation protocol compares a stateless LLM,
-plain experience retrieval, writable memory with fixed weights, and memory with
-learned predictive weights. Freeze candidate inventories, prices, worker tools,
-acceptance gates and review budgets before outcomes are available.
-
-Assess three different questions:
+Only genuine project work, with the cost of choosing and of learning included, can show
+net savings. The evaluation compares four arms: a stateless language
+model, plain retrieval of earlier executions, writable memory with fixed weights, and
+memory with learned predictive weights. Candidate inventories, prices, worker tools,
+acceptance gates and review budgets are frozen before any outcome is known. Three
+questions are assessed separately:
 
 | Question | Evidence to report |
 | --- | --- |
 | Do forecasts improve? | Log loss and Brier score on matched observed actions; reliability with counts and uncertainty |
-| Does the routing policy save money or credits? | Comparable worker charges plus routing and amortized writer costs; retries, latency, review and rework |
+| Does the routing policy save money or credit? | Comparable worker charges plus routing and amortized writer costs; retries, latency, review and rework |
 | Does delayed learning help? | Prospective forecasts on later related tasks, amendments after supported attribution, and follow-up coverage |
 
-Configured failure penalties and priced time belong to policy loss. Report
-measured review/rework separately so they are not counted twice through those
-penalties. A policy's chosen-action logs cannot reveal what an unrun alternative
-would have done. Comparative policy claims need actual alternative executions
-or a prospective randomized trial; a reproducible random seed is not an action
-assignment probability.
+The configured failure penalties and the priced time belong to the policy's loss, so
+measured review and rework are reported separately and not counted twice. The chosen
+actions of a policy cannot reveal what an unrun alternative would have done, so
+comparative claims need actual alternative executions or a prospective randomized
+trial; a reproducible seed is not an assignment probability. The evaluation runs in
+chronological order with only the information available at each decision. Delayed
+feedback is released when it became known, related tasks and retries stay grouped, and
+failed decisions and inconvenient outcomes stay in. Accepted work is followed up after
+7 and 30 days, and missing follow-up is not evidence that a result was clean. The first
+feasibility study of 12 tasks checks measurement and replay; it cannot establish general
+superiority or a small silent-failure rate. Implementation tests verify behaviour and
+retrieval diagnostics measure one component; neither establishes savings for deployed
+routing. Field evidence must justify the additional cost of routing and learning against
+simpler comparators. The [real-project evaluation guide](evaluation.md) gives the
+procedure.
 
-Evaluate chronologically using only information available at decision time.
-Release delayed feedback when it became known, group related tasks and retries,
-and retain failed decisions and inconvenient outcomes. The protocol follows
-accepted work after 7 and 30 days. Missing follow-up is not evidence that a result
-was clean. The initial 12-task feasibility study checks measurement and replay;
-it cannot establish general superiority or a small silent-failure rate.
+## 16 Statistical interpretation
 
-Implementation tests verify behavior. Retrieval diagnostics measure a component.
-Neither establishes net savings for deployed routing. Field evidence must justify
-the additional routing and learning cost against simpler comparators. The
-[real-project evaluation guide](evaluation.md) provides the study procedure.
+Taken together, the method combines language-model priors, Bayesian capability
+learning, evidence-weighted semantic memory and retrospective defect attribution, and
+each component has its own statistical meaning and assumptions.
 
-## 9 Statistical interpretation
+The independent language-model judgments are cold-start priors for each task's order
+and outcomes, and their quality needs empirical validation. The corrected prediction
+removes a forecaster's typical level, measured on its record; the method makes no
+assumption that the baseline is unbiased or calibrated.
 
-The method is best described as **LLM priors, Bayesian capability learning,
-evidence-weighted semantic memory and retrospective defect attribution**.
-The components have distinct statistical meanings:
+The capability threshold is a generalized Bayesian update (Bissiri, Holmes and Walker,
+2016): likelihoods from related tasks are raised to fractional weights. It assumes that
+one scalar order describes the demands of the task, which different tasks can violate,
+and that a stronger cell does at least as well, which a higher effort does not
+guarantee. The similarity weights are heuristic transfer strengths without a calibrated
+probabilistic meaning. The order search is a constrained local search that can miss the
+highest-posterior order. A cell that has never run is placed by the prior, and the
+inference about it is conditional on that placement.
 
-| Component | Interpretation | Main assumption or limit |
-| --- | --- | --- |
-| Independent LLM judgments | Cold-start task-specific prototype orders and forecasts | LLM judgment needs empirical validation |
-| Capability threshold | Generalized Bayesian update with weighted noisy likelihoods | Scalar order and heuristic transfer from related tasks |
-| Evidence weights | Task similarity, a half-life (14 days by default, refined from the record) and at most one run's weight per ticket, over the runs of matched prototypes | Similarity is a heuristic transfer strength; the 256-run cap is fixed, and the half-life moves only on a clear gain over 200 or more scored runs |
-| Cross-model ordering | Constrained local posterior/MAP search | Approximate search over rankings |
-| Memory support | Tempered, recency-weighted predictive evidence | Forecast support does not establish truth or causality |
-| Outcome beliefs | Two independent per-cell beliefs on a fixed log-odds grid, for the loud rate and the accepted-defect share: a bell-curve start worth `N_start` runs, reshaped by the cell's weighted counts | The two rates are treated as independent; `model_worth` (5) is fixed, and the task worths (32 and 16), the discounts and the half-life are defaults refined from the record |
-| Active time and token beliefs | Per-cell log-normal belief with a conjugate update from same-cell runs | The miss `D`, scatter share and amount worth are defaults refined from the record; token kinds are taken to move together |
-| Credit check | 80% point of a log-normal matched to the average and variance of run credit | A moment match, not the exact distribution of a sum |
-| Admission tiers | Share of the accepted-defect belief within epsilon, cut at 0.80 and 0.20 | No calibrated coverage guarantee; the two lines are policy choices |
-| Cost and its spread | The cost to an accepted result averaged over four independent per-cell beliefs, with the exact variance of that cost | Credit, active time, the loud rate and the accepted-defect share are treated as independent; same-cell retries are taken to be stationary |
-| Selection sampling | Thompson sampling within cost overlap, among trusted and on-trial cells: one draw of both rates, active time and token counts per cell | Overlap within one spread on each side is a rule, not a test; token kinds are drawn together |
-| Outcome amendments | Correction and replay of an earlier execution | Requires supported attribution and preserved provenance |
+The evidence weights combine similarity, a half-life of 14 days by default and a
+per-ticket limit. The limit treats the retries of one ticket as one run's worth of
+evidence. The cap of 256 scored candidates and the model worth {math}`N_{\mathrm{model}}`
+are fixed. The half-life, the discounts, the rung worth, the task worths, the default
+miss, the scatter share and the caught-share worth start at defaults and move only on a
+clear gain over at least 200 scored runs. A run rescored for refinement is rebuilt with
+the extra matched runs beyond the cap as history, which its decision did not have.
 
-Together, these mechanisms give routing access to both immediate outcomes and
-mistakes discovered later. The practical question is whether that information
-reduces total cost on future work enough to pay for acquiring and using it.
+Expert support is tempered, recency-weighted predictive evidence, similar in form to
+exponentially weighted forecasters (Cesa-Bianchi and Lugosi, 2006). It measures how well
+an expert predicted. Whether a lesson is true, and why an outcome happened, lie outside
+what it measures, and it is a heuristic weighting with no exact joint posterior over
+memories, orders and outcomes behind it.
+
+The corrected prediction is a partial-pooling estimate (Gelman et al., 2013) whose worth
+at each rung is set rather than estimated within the decision. The outcome beliefs are
+logistic-normal (Aitchison and Shen, 1980) on a fixed grid. They treat the loud rate and
+the accepted-defect share as independent, treat the counted runs as exchangeable, and
+keep the forecast at the worth of {math}`N_{\mathrm{start}}` runs however many runs are
+counted. Their ranges and the admission tiers are Bayesian under these assumptions and
+carry no calibrated coverage guarantee. The limit {math}`\varepsilon` is a selection
+rule that makes no promise about the future defect rate, and the tier lines 0.80 and
+0.20 are policy choices.
+
+The amount beliefs are log-normal with a conjugate update from the cell's own runs. The
+credit check matches a log-normal to the mean and variance of run credit (Fenton, 1960),
+which approximates the distribution of a sum, and it assumes that the token kinds move
+together because no run records how they co-vary. The check covers one run: it reserves
+nothing for the uncertain cost of later retries and does not see spending by other
+clients.
+
+The cost averages over four per-cell beliefs that it treats as independent: credit,
+active time, the loud rate and the accepted-defect share. Retries are assumed to stay on
+the same cell with a stationary loud rate, so the number of attempts is geometric; real
+retries can be correlated or change the task, and a failed attempt may in practice move
+to another cell. The penalties {math}`C_l` and {math}`C_s` express policy, and actual
+charges and rework remain separately measured evidence.
+
+Selection is Thompson sampling (Thompson, 1933; Russo et al., 2018) restricted to cells
+whose costs overlap within one spread on each side. The overlap rule is a heuristic
+with no test behind it, and the draw uses one shared number for all token kinds.
+
+An amendment corrects an earlier outcome and replays its forecasts. It requires a
+supported attribution and preserved provenance, and an unattributed defect leaves the
+record as it was.
+
+Together these mechanisms give routing access to both immediate outcomes and mistakes
+discovered later. Whether that information reduces total cost on future work enough to
+pay for acquiring it is the question the evaluation in section 15 asks.
+
+## References
+
+- Aggarwal, P., Madaan, A., Anand, A., Potharaju, S. P., Mishra, S., Zhou, P., Gupta, A.,
+  Rajagopal, D., Kappaganthu, K., Yang, Y., Upadhyay, S., Faruqui, M. and Mausam (2024).
+  AutoMix: Automatically mixing language models. *Advances in Neural Information
+  Processing Systems 37 (NeurIPS 2024)*. <https://arxiv.org/abs/2310.12963>
+- Aitchison, J. and Shen, S. M. (1980). Logistic-normal distributions: Some properties
+  and uses. *Biometrika* 67(2), 261–272. <https://doi.org/10.1093/biomet/67.2.261>
+- Ayer, M., Brunk, H. D., Ewing, G. M., Reid, W. T. and Silverman, E. (1955). An
+  empirical distribution function for sampling with incomplete information. *The Annals
+  of Mathematical Statistics* 26(4), 641–647. <https://doi.org/10.1214/aoms/1177728423>
+- Bissiri, P. G., Holmes, C. C. and Walker, S. G. (2016). A general framework for
+  updating belief distributions. *Journal of the Royal Statistical Society, Series B*
+  78(5), 1103–1130. <https://doi.org/10.1111/rssb.12158>
+- Cesa-Bianchi, N. and Lugosi, G. (2006). *Prediction, Learning, and Games*. Cambridge
+  University Press. <https://doi.org/10.1017/CBO9780511546921>
+- Chen, L., Zaharia, M. and Zou, J. (2024). FrugalGPT: How to use large language models
+  while reducing cost and improving performance. *Transactions on Machine Learning
+  Research*. <https://arxiv.org/abs/2305.05176>
+- Ding, D., Mallick, A., Wang, C., Sim, R., Mukherjee, S., Rühle, V., Lakshmanan, L. V. S.
+  and Awadallah, A. H. (2024). Hybrid LLM: Cost-efficient and quality-aware query
+  routing. *International Conference on Learning Representations (ICLR 2024)*.
+  <https://arxiv.org/abs/2404.14618>
+- Ding, D., Mallick, A., Zhang, S., Wang, C., Madrigal, D., Hipolito Garcia, M. D. C.,
+  Xia, M., Lakshmanan, L. V. S., Wu, Q. and Rühle, V. (2025). BEST-Route: Adaptive LLM
+  routing with test-time optimal compute. *International Conference on Machine Learning
+  (ICML 2025)*. <https://arxiv.org/abs/2506.22716>
+- Fenton, L. (1960). The sum of log-normal probability distributions in scatter
+  transmission systems. *IRE Transactions on Communications Systems* 8(1), 57–67.
+  <https://doi.org/10.1109/TCOM.1960.1097606>
+- Gelman, A., Carlin, J. B., Stern, H. S., Dunson, D. B., Vehtari, A. and Rubin, D. B.
+  (2013). *Bayesian Data Analysis*, third edition. Chapman and Hall/CRC.
+  <https://doi.org/10.1201/b16018>
+- Gneiting, T. and Raftery, A. E. (2007). Strictly proper scoring rules, prediction, and
+  estimation. *Journal of the American Statistical Association* 102(477), 359–378.
+  <https://doi.org/10.1198/016214506000001437>
+- Ong, I., Almahairi, A., Wu, V., Chiang, W.-L., Wu, T., Gonzalez, J. E., Kadous, M. W.
+  and Stoica, I. (2025). RouteLLM: Learning to route LLMs from preference data.
+  *International Conference on Learning Representations (ICLR 2025)*.
+  <https://arxiv.org/abs/2406.18665>
+- Russo, D. J., Van Roy, B., Kazerouni, A., Osband, I. and Wen, Z. (2018). A tutorial on
+  Thompson sampling. *Foundations and Trends in Machine Learning* 11(1), 1–96.
+  <https://arxiv.org/abs/1707.02038>
+- Thompson, W. R. (1933). On the likelihood that one unknown probability exceeds another
+  in view of the evidence of two samples. *Biometrika* 25(3–4), 285–294.
+  <https://doi.org/10.2307/2332286>
+- Wang, X., Liu, Y., Cheng, W., Zhao, X., Chen, Z., Yu, W., Fu, Y. and Chen, H. (2025).
+  MixLLM: Dynamic routing in mixed large language models. *Proceedings of the 2025
+  Conference of the Nations of the Americas Chapter of the Association for
+  Computational Linguistics (NAACL 2025)*, 10912–10922.
+  <https://doi.org/10.18653/v1/2025.naacl-long.545>
