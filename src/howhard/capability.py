@@ -8,7 +8,6 @@ import numpy as np
 
 from .context import DECISION_FORMAT, LEGACY_DECISION_V7, LEGACY_DECISION_V8, LEGACY_DECISION_V9, LEGACY_DECISION_V10, digest
 from .llm import LLMError, SETTINGS
-from .storage import effective_active_seconds
 from .validation import HowHardError, keys, number, text
 
 FORMAT = "howhard-capability-v6"
@@ -147,26 +146,6 @@ def prior_cdf(value, policy, *, linear_prefix=False, linear_tail=False):
     return dict(zip(value["order"], before+fit+after))
 
 
-def evidence_scores(engine, payload):
-    from .retrieval import records, task_text
-    evidence = payload["evidence"][:SETTINGS["evidence_limit"]]
-    if not evidence:
-        return {}
-    scores = {r["key"]: r["score"] for item in payload["retrieval"]
-              if item["request"]["tool"] == "experience.search" for r in item["result"].get("selected", [])}
-    missing = [r for r in evidence if scores.get("evidence:" + r["id"]) is None]
-    if missing:
-        # Small retrieval corpora skip reranking for display; the learned reader needs
-        # absolute relevance even for one precedent. Reuse the configured reranker.
-        docs = records(rows=missing)
-        values = engine.retrieval.reranker.score(task_text(payload["task_type"], payload["context"]), [r["text"] for r in docs])
-        values = list(values)
-        if len(values) != len(missing) or any(not math.isfinite(float(v)) for v in values):
-            raise HowHardError("capability similarity: invalid reranker scores")
-        scores.update({"evidence:"+r["id"]: float(v) for r, v in zip(missing, values)})
-    return scores
-
-
 def _decision_forecast_seconds(engine, row):
     from .decisions import load, exists
     from .semantic import panel_lookup
@@ -183,106 +162,38 @@ def _decision_forecast_seconds(engine, row):
     return float(sum(e["weight"] * panels[e["key"]][pair]["seconds"] for e in receipt["semantic"]["beliefs"]["experts"]))
 
 
-def observations(engine, payload, *, scores=None, proto_state=None):
-    """Retrieve bounded actual observations with absolute, non-normalized relevance."""
-    from . import prototypes
-    from .retrieval import records, task_text
+def _strength(row, policy):
+    """How strongly a run's outcome bears on the capability threshold, given its recorded cause."""
+    if row["outcome"] == "clean":
+        return 1.
+    strength = policy[row["outcome"]+"_weight"]
+    if row.get("cause") != "capability":
+        strength *= policy["unknown_cause_weight"]
+        if re.search(r'\bcapability_caused\s*[:=]\s*false\b', row.get("note", ""), re.I):
+            strength = 0.
+    return strength
 
-    scored_rows = [r for r in engine.rows if r["outcome"] != "interrupted"]
-    if not scored_rows:
-        return []
+
+def observations(engine, payload, candidates):
+    """The scored candidates whose cell is in the inventory: ``m * sim * strength * a``, limited per ticket."""
+    from . import evidence
     known = {cell_key(c) for c in payload["cells"]}
-    eligible_all = [r for r in scored_rows if cell_key(r) in known]
-    if not eligible_all:
-        return []
-
-    recency_order = {r["id"]: age for age, r in enumerate(reversed(scored_rows))}
+    rows = {r["id"]: r for r in engine.rows}
     policy = payload["filter_policy"]
-    limit = SETTINGS["evidence_limit"]
-
-    # Fast prototype member lookup on standard pipelines avoids re-scanning large journals.
-    proto_scores = (
-        prototypes.matched_member_scores(engine, proto_state)
-        if proto_state and prototypes._is_standard_pipeline(engine.retrieval)
-        else None
-    )
-    top_evidence = payload["evidence"][:limit]
-    top_ids = {r["id"] for r in top_evidence}
-
-    selected_rows = []
-    row_scores = {}
-    if proto_scores is not None:
-        base_scores = evidence_scores(engine, payload) if scores is None and top_evidence else (scores or {})
-        by_cell = {}
-        for r in reversed(eligible_all):
-            eid = r["id"]
-            sc = base_scores.get("evidence:" + eid, proto_scores.get(eid))
-            if sc is None or float(sc) <= 0.0:
-                continue
-            bucket = by_cell.setdefault(cell_key(r), [])
-            if len(bucket) < limit:
-                bucket.append(r)
-                row_scores[eid] = float(sc)
-        keep_ids = {r["id"] for bucket in by_cell.values() for r in bucket}
-        selected_rows = [r for r in eligible_all if r["id"] in keep_ids]
-    elif {r["id"] for r in eligible_all} <= top_ids:
-        base_scores = evidence_scores(engine, payload) if scores is None else scores
-        for r in top_evidence:
-            if r["outcome"] == "interrupted" or cell_key(r) not in known:
-                continue
-            sc = float(base_scores["evidence:" + r["id"]])
-            selected_rows.append(r)
-            row_scores[r["id"]] = sc
-    else:
-        base_scores = dict(evidence_scores(engine, payload) if scores is None else scores)
-        query = task_text(payload["task_type"], payload["context"])
-        by_cell = {}
-        for r in eligible_all:
-            by_cell.setdefault(cell_key(r), []).append(r)
-        keep_ids = set()
-        for k in sorted(by_cell):
-            history = by_cell[k]
-            retrieved = engine.retrieval.search(records(rows=history), query, limit=limit)
-            chosen = retrieved["records"]
-            trace_sc = {item["key"]: item["score"] for item in retrieved["trace"]["selected"]}
-            missing = [
-                d for d in chosen
-                if trace_sc.get(d["key"]) is None and base_scores.get(d["key"]) is None
-            ]
-            if missing:
-                vals = list(engine.retrieval.reranker.score(query, [d["text"] for d in missing]))
-                if len(vals) != len(missing) or any(not math.isfinite(float(v)) for v in vals):
-                    raise HowHardError("capability similarity: invalid reranker scores")
-                trace_sc.update({d["key"]: float(v) for d, v in zip(missing, vals)})
-            for d in chosen:
-                r = d["value"]
-                sc = trace_sc.get(d["key"])
-                if sc is None:
-                    sc = base_scores.get(d["key"])
-                keep_ids.add(r["id"])
-                row_scores[r["id"]] = float(sc)
-        selected_rows = [r for r in eligible_all if r["id"] in keep_ids]
-
-    result = []
-    for row in selected_rows:
-        age = recency_order.get(row["id"], 0)
-        key = cell_key(row)
-        score = float(row_scores[row["id"]])
-        similarity = 1 / (1 + math.exp(-max(-60, min(60, score))))
-        strength = 1.
-        if row["outcome"] != "clean":
-            strength = policy[row["outcome"]+"_weight"]
-            cause = row.get("cause")
-            if cause != "capability":
-                strength *= policy["unknown_cause_weight"]
-                if re.search(r'\bcapability_caused\s*[:=]\s*false\b', row.get("note", ""), re.I):
-                    strength = 0.
-        result.append({"id": row["id"], "key": key, "outcome": row["outcome"], "cause": row.get("cause"),
-                       "active_seconds": effective_active_seconds(row),
-                       "forecast_active_seconds": _decision_forecast_seconds(engine, row),
-                       "score": score, "similarity": similarity,
-                       "weight": row["weight"] * similarity * strength * SETTINGS["belief"]["recency"] ** age})
-    return result
+    counted = []
+    for item in candidates["candidates"]:
+        row = rows[item["id"]]
+        if cell_key(row) not in known:
+            continue
+        strength = _strength(row, policy)
+        counted.append((item, row, strength, evidence.weight(item, strength)))
+    # The reader has no relatedness discount; its per-ticket limit runs over its own runs.
+    shares = evidence.ticket_shares([(item["ticket"], value) for item, _, _, value in counted])
+    return [{"id": row["id"], "key": cell_key(row), "outcome": row["outcome"], "cause": row.get("cause"),
+             "active_seconds": item["active_seconds"],
+             "forecast_active_seconds": _decision_forecast_seconds(engine, row),
+             "strength": strength, "ticket_share": share, "weight": value * share}
+            for (item, row, strength, value), share in zip(counted, shares)]
 
 
 def _unanchored_reference_seconds(constants, policy):
@@ -444,7 +355,7 @@ def _pav_along(order, raw_cdf):
     return {k: p for group, p in blocks for k in group}
 
 
-def aggregate(engine, payload, response, *, observed=None, covered_priors=None, agents=None):
+def aggregate(engine, payload, response, *, observed, covered_priors=None, agents=None):
     from .semantic import normalize_support
     policy = payload["filter_policy"]
     baseline = response["filter"]
@@ -489,7 +400,7 @@ def aggregate(engine, payload, response, *, observed=None, covered_priors=None, 
             b, a = blocks.pop(), blocks.pop()
             blocks.append((a[0]+b[0], (len(a[0])*a[1]+len(b[0])*b[1])/(len(a[0])+len(b[0]))))
     cdf = {k: p for group, p in blocks for k in group}
-    obs = observations(engine, payload) if observed is None else deepcopy(observed)
+    obs = deepcopy(observed)
     learned_order = _learn_order(order, cdf, obs, payload["cells"], policy) if obs else order
     cdf = dict(zip(learned_order, [cdf[k] for k in order]))
     probabilities, _ = _posterior(learned_order, cdf, obs, policy)
@@ -644,8 +555,12 @@ def validate_receipt(state, inventory, semantic, chosen, *, decision_format=DECI
         number(e["log_score"], "capability expert log score")
     if seen != set(filters) or abs(weights-1) > 1e-6:
         raise HowHardError("decision.capability: expert weights must cover priors and sum to one")
+    # v6 observations are the request's scored candidates; older formats keep their packaged bound.
+    has_candidates = state["format"] == FORMAT
     max_evidence = (
-        max(SETTINGS["evidence_limit"], len(cells) * SETTINGS["evidence_limit"])
+        len(semantic["evidence_candidates"]["candidates"])
+        if has_candidates
+        else max(SETTINGS["evidence_limit"], len(cells) * SETTINGS["evidence_limit"])
         if has_prototype_priors
         else SETTINGS["evidence_limit"]
     )
@@ -654,12 +569,14 @@ def validate_receipt(state, inventory, semantic, chosen, *, decision_format=DECI
     evidence_fields = ["id", "key", "outcome", "cause", "score", "similarity", "weight"]
     if has_timely:
         evidence_fields = ["id", "key", "outcome", "cause", "active_seconds", "forecast_active_seconds", "timely_strength", "score", "similarity", "weight"]
+    if has_candidates:
+        evidence_fields = ["id", "key", "outcome", "cause", "active_seconds", "forecast_active_seconds", "timely_strength", "strength", "ticket_share", "weight"]
     for item in state["evidence"]:
         keys(item, evidence_fields, where="capability evidence")
         text(item["id"], "capability evidence id")
         if item["key"] not in known or item["outcome"] not in ("clean", "loud", "silent"):
             raise HowHardError("decision.capability: invalid observed cell/outcome")
-        for field in ("score", "similarity", "weight"):
+        for field in ("strength", "ticket_share", "weight") if has_candidates else ("score", "similarity", "weight"):
             number(item[field], "capability evidence "+field, nonnegative=field != "score")
         if has_timely:
             for field in ("active_seconds", "forecast_active_seconds"):
@@ -668,6 +585,30 @@ def validate_receipt(state, inventory, semantic, chosen, *, decision_format=DECI
             strength = number(item["timely_strength"], "capability evidence timely_strength", nonnegative=True)
             if strength > 1:
                 raise HowHardError("decision.capability: timely_strength must be in [0, 1]")
+    if has_candidates:
+        # Recompute each observation's ticket share and weight from its scored candidate.
+        from . import evidence as scoring
+        scored = {c["id"]: c for c in semantic["evidence_candidates"]["candidates"]}
+        cells_by_key = {c["key"]: c for c in state["cells"]}
+        counted, seen_ids = [], set()
+        for item in state["evidence"]:
+            candidate, cell = scored.get(item["id"]), cells_by_key[item["key"]]
+            if candidate is None or item["id"] in seen_ids:
+                raise HowHardError("decision.capability: observation is not one scored candidate")
+            seen_ids.add(item["id"])
+            if ((candidate["family"], candidate["effort"], candidate["outcome"], candidate["active_seconds"])
+                    != (cell["family"], cell["effort"], item["outcome"], item["active_seconds"])):
+                raise HowHardError("decision.capability: observation does not match its scored candidate")
+            strengths = [_strength({"outcome": item["outcome"], "cause": item["cause"]}, state["policy"])]
+            if item["outcome"] != "clean" and item["cause"] != "capability":
+                strengths.append(0.)  # A capability_caused=false note; the note itself is not stored.
+            if not any(scoring.close(item["strength"], value) for value in strengths):
+                raise HowHardError("decision.capability: strength does not match the outcome and cause")
+            counted.append((item, scoring.weight(candidate, item["strength"])))
+        shares = scoring.ticket_shares([(scored[item["id"]]["ticket"], value) for item, value in counted])
+        for (item, value), share in zip(counted, shares):
+            if not scoring.close(item["ticket_share"], share) or not scoring.close(item["weight"], value * share):
+                raise HowHardError("decision.capability: evidence weight does not match its scored candidate")
     if has_timely:
         fallback_sec = _unanchored_reference_seconds(constants, state["policy"])
         expected_strengths = _timely_strengths(state["order"], state["evidence"], fallback_seconds=fallback_sec)

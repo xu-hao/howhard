@@ -394,7 +394,8 @@ def test_incremental_observe_interrupted_exclusion_and_amendment_reversibility(t
     after_int_pick = engine.pick("task", "Repair rollback", native_candidates=candidates, seed=1)
     _, cells_int, _ = _db_prototypes(engine)
     assert json.loads(cells_int[0]["stats_json"]) == stats_before
-    assert after_int_pick["cells"][0]["J"] == pytest.approx(baseline_pick["cells"][0]["J"])
+    # Each pick measures the runs' age to its own prepare time, moments apart.
+    assert after_int_pick["cells"][0]["J"] == pytest.approx(baseline_pick["cells"][0]["J"], rel=1e-4)
 
     # Amending run-2 clean -> silent -> clean restores exact cell stats!
     engine.observe("task", "fixture-model", "high", "silent", cause="capability", amends="run-2", id="amend-silent")
@@ -411,7 +412,7 @@ def test_incremental_observe_interrupted_exclusion_and_amendment_reversibility(t
     assert stats_restored["run_count"] == stats_before["run_count"]
     assert stats_restored["counts"] == pytest.approx(stats_before["counts"])
     assert stats_restored["duration_mean_log"] == pytest.approx(stats_before["duration_mean_log"])
-    assert restored_pick["cells"][0]["J"] == pytest.approx(baseline_pick["cells"][0]["J"])
+    assert restored_pick["cells"][0]["J"] == pytest.approx(baseline_pick["cells"][0]["J"], rel=1e-4)
 
     # Attaching complete category token usage updates token_usage_shares for category-v1 candidates.
     manifest = artifact(tmp_path, codex_events(), execution_id="run-1")

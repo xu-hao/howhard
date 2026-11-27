@@ -32,6 +32,8 @@ SPLIT_DURATION_MIN_RUNS = 6
 SPLIT_OUTCOME_MIX_RATIO = 0.25
 SPLIT_OUTCOME_MIN_RUNS = 8
 SPLIT_COSINE_DISTANCE = 0.18
+# Per-observation decay of a prototype cell's stored outcome counts.
+STATS_OUTCOME_DECAY = 0.95
 
 _MATCH_CACHE = {}
 
@@ -39,11 +41,6 @@ _MATCH_CACHE = {}
 def _sigmoid(x):
     x = max(-60.0, min(60.0, float(x)))
     return 1.0 / (1.0 + math.exp(-x))
-
-
-def _logit(p):
-    p = max(1e-6, min(1.0 - 1e-6, float(p)))
-    return math.log(p / (1.0 - p))
 
 
 def canonical_task_text(task_type, raw_text):
@@ -235,7 +232,7 @@ def _apply_member_to_stats(stats, row, member_weight, config, prior=None):
     """Apply one non-interrupted member observation using exact exponential-decay recurrences."""
     if row["outcome"] == "interrupted" or row["outcome"] not in OUTCOMES:
         return stats
-    out_recency = config.data["sampling"]["outcome_recency"]
+    out_recency = STATS_OUTCOME_DECAY
     cap_recency = SETTINGS["belief"]["recency"]
     cap_policy = config.data["capability"]
 
@@ -331,16 +328,6 @@ def _retrieval_signature(retrieval):
             getattr(retrieval.reranker, "identity", type(retrieval.reranker).__qualname__),
         )
     return ("custom", f"{type(retrieval).__module__}.{type(retrieval).__qualname__}", id(retrieval))
-
-
-def _is_standard_pipeline(retrieval):
-    from .retrieval import BM25Index, HNSWIndex, RetrievalPipeline
-
-    return (
-        isinstance(retrieval, RetrievalPipeline)
-        and isinstance(retrieval.lexical, BM25Index)
-        and isinstance(retrieval.dense, HNSWIndex)
-    )
 
 
 def _search_prototypes(retrieval, candidates, canonical_task):
@@ -1681,44 +1668,27 @@ def record_stage2_baseline(engine, bundle, new_rows):
             db.close()
 
 
-def matched_member_scores(engine, proto_state):
-    """Return {evidence_id: score} from matched active prototypes when available."""
+def matched_members(engine, proto_state):
+    """The IDs of the recorded runs in at least one matched prototype: the evidence candidates.
+
+    Prototypes only choose the candidates. Their scores and membership weights are not read.
+    """
     from .payload_store import _connect
 
     if not proto_state or not proto_state.get("matches"):
-        return None
-    matches = proto_state["matches"]
-    pids = [m["prototype_id"] for m in matches]
+        return set()
+    pids = [m["prototype_id"] for m in proto_state["matches"]]
     db = _connect(engine.config, write=False)
     if db is None:
-        return None
+        return set()
     try:
         if not _has_tables(db):
-            return None
+            return set()
         placeholders = ",".join("?" for _ in pids)
         rows = db.execute(
-            f"SELECT evidence_id, prototype_id, weight FROM prototype_members "
-            f"WHERE prototype_id IN ({placeholders})",
+            f"SELECT DISTINCT evidence_id FROM prototype_members WHERE prototype_id IN ({placeholders})",
             pids,
         ).fetchall()
     finally:
         db.close()
-
-    proto_by_id = {m["prototype_id"]: m for m in matches}
-    sim_by_eid = {}
-    w_by_eid = {}
-    for eid, pid, mem_w in rows:
-        pm = proto_by_id[pid]
-        pw = float(pm["weight"])
-        psim = _sigmoid(pm["score"])
-        msim = max(0.5001, min(1.0 - 1e-6, float(mem_w)))
-        eff_sim = min(psim, msim) if psim < 0.999 else msim
-        sim_by_eid[eid] = sim_by_eid.get(eid, 0.0) + pw * eff_sim
-        w_by_eid[eid] = w_by_eid.get(eid, 0.0) + pw
-
-    result = {}
-    for eid, sim_sum in sim_by_eid.items():
-        sim = sim_sum / max(1e-9, w_by_eid[eid])
-        if sim > 0.5:
-            result[eid] = _logit(sim)
-    return result
+    return {row[0] for row in rows}

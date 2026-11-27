@@ -162,9 +162,10 @@ weight still apply; an amendment does not create a new forecast exposure.
 
 Selection samples the LLM and memory experts and retains the cost objective. Each
 expert's forecast row is a bounded Dirichlet prior for its cell (at most
-`prior_strength` pseudo-observations), updated by that cell's own recency-weighted
-`outcome_observations` (up to `outcome_evidence_limit = 24` task-similar executions
-retrieved independently per forecasted `(family, effort)` cell). Forecasters may attach
+`prior_strength` pseudo-observations), updated by that cell's own
+`outcome_observations`: the cell's runs among the decision's
+{ref}`evidence candidates <evidence-candidates>`, each weighted by its task similarity
+and age and limited per ticket. Forecasters may attach
 `silent_ci` and/or `loud_ci` 95% credible intervals to a row; wider intervals weaken the
 prior so real outcomes dominate sooner, while a narrow interval cannot strengthen it
 beyond `prior_strength`. Rows without intervals remain valid. A row may also state
@@ -300,12 +301,13 @@ Their frozen binary clean/non-clean predictions are log-scored against the fine
 independent forecast coarsened to the same binary outcome. Stage 2 retains ternary
 outcome and measured resource scores. The same temperature, recency, prior weights
 and evidence-count machinery serves both, normalized over each reader's participants.
-The threshold posterior applies the retrieved censored likelihood to the weighted
+The threshold posterior applies the censored likelihood of the decision's
+{ref}`evidence candidates <evidence-candidates>` to the weighted
 stage-1 prior; it has no independent observation store or feedback path.
 
 Fine selection charges expected same-cell retries to an accepted result and calibrates
 active duration from expert `seconds` forecasts plus shrunk `effective_active_seconds`
-log-residuals on similar retrieved executions, pricing the log-normal right-tail
+log-residuals of the cell's own evidence candidates, pricing the log-normal right-tail
 expectation `exp(mu + sigma^2 / 2)`. Its silent cap uses each expert's joint
 accepted-result posterior `Beta(alpha_silent, alpha_clean)` at the admission quantile.
 Sampling draws from the sampled expert's per-cell Dirichlet posterior alongside

@@ -1,10 +1,13 @@
 """Per-cell Dirichlet outcome posteriors, credible intervals and overlap-gated Thompson sampling (#103)."""
 
 from copy import deepcopy
+from datetime import datetime, timedelta, timezone
+import json
 
 import numpy as np
 import pytest
 
+from conftest import row
 from howhard import Engine
 from howhard.context import canonical, digest
 from howhard.decisions import load
@@ -20,6 +23,13 @@ FIELDS = ("P_clean", "P_loud", "P_silent", "P_silent_accepted")
 
 class RecentDouble:
     """Absolute-relevance fixture that retrieves the most recent executions first."""
+    @property
+    def reranker(self):
+        return self
+
+    def score(self, query, documents):
+        return [12] * len(documents)
+
     def search(self, records, query, limit=8, **kwargs):
         evidence = [r for r in records if r["kind"] == "evidence"]
         # Input order is journal chronology; string IDs would put run-10 before run-2.
@@ -218,31 +228,39 @@ def test_q80_admission_and_posterior_overlap_break_lock_in_but_reject_high_silen
         Engine(bad / "howhard.toml")
 
 
-def test_recency_decay_detects_regression_and_recovers_before_undecayed_counts(tmp_path):
-    def admission(directory, outcomes, settings=""):
+def test_time_decay_detects_regression_and_recovers_before_undecayed_counts(tmp_path):
+    worker = [{"model": "claude-opus-5-5", "effort": "high", "usd_per_mtok": 1.0}]
+
+    def admission(directory, history, settings=""):
+        """``history`` lists (outcome, days before the request) for each recorded run."""
+        (directory / ".howhard").mkdir(parents=True)
         config = directory / "howhard.toml"
-        directory.mkdir()
         config.write_text('on_cap_unmet = "flag-review"\n[task_types]\ntask = "standard"\n' + settings)
-        engine = Engine(config, retrieval=RecentDouble())
-        observe(engine, "fixture/worker", outcomes, "run")
-        result = decide(engine, WORKER, {"fixture/worker": spec(.94, .05, .01)})
+        now = datetime.now(timezone.utc)
+        (directory / ".howhard" / "outcomes.jsonl").write_text("".join(json.dumps(row(
+            i, task="task", task_text="Repair rollback", outcome=outcome,
+            cause=None if outcome == "clean" else "depth",
+            observed_at=(now - timedelta(days=days)).isoformat())) + "\n" for i, (outcome, days) in enumerate(history)))
+        result = decide(Engine(config, retrieval=RecentDouble()), worker, {"claude-opus-5-5": spec(.94, .05, .01)})
         return result["cells"][0], result
 
-    healthy, _ = admission(tmp_path / "healthy", ["clean"] * 5)
+    healthy, _ = admission(tmp_path / "healthy", [("clean", 0)] * 5)
     assert healthy["admissible"]
-    regressed, result = admission(tmp_path / "regressed", ["clean"] * 5 + ["silent"] * 3)
+    regressed, result = admission(tmp_path / "regressed", [("clean", 28)] * 5 + [("silent", 0)] * 3)
     assert not regressed["admissible"] and regressed["P_silent"]["mean"] > .15
-    ages = {o["id"]: (o["age"], o["weight"]) for o in result["semantic"]["outcome_observations"]}
-    assert ages["run-7"][0] == 0 and ages["run-0"][0] == 7
-    assert ages["run-0"][1] == pytest.approx(ages["run-7"][1] * .95 ** 7)
+    scored = {c["id"]: c for c in result["semantic"]["evidence_candidates"]["candidates"]}
+    weights = {o["id"]: o["weight"] for o in result["semantic"]["outcome_observations"]}
+    assert scored["run-7"]["days"] == pytest.approx(0, abs=1e-3) and scored["run-0"]["days"] == pytest.approx(28, abs=1e-3)
+    # Two half-lives of 14 days: a quarter of the weight of a run recorded now.
+    assert weights["run-0"] == pytest.approx(weights["run-7"] * .25, rel=1e-3)
 
-    recovering = ["clean"] * 3 + ["silent"] * 2 + ["clean"] * 19
+    recovering = [("clean", 60)] * 3 + [("silent", 45)] * 2 + [("clean", 18 - i) for i in range(19)]
     recovered, recovered_result = admission(tmp_path / "recovered", recovering)
-    undecayed, _ = admission(tmp_path / "undecayed", recovering, "[sampling]\noutcome_recency = 1.0\n")
-    assert len(recovered_result["semantic"]["outcome_observations"]) == 24
+    undecayed, undecayed_result = admission(tmp_path / "undecayed", recovering, "[sampling]\nhalf_life_days = 1000000\n")
     assert {o["id"] for o in recovered_result["semantic"]["outcome_observations"]} == {f"run-{i}" for i in range(24)}
-    rec_ages = {o["id"]: o["age"] for o in recovered_result["semantic"]["outcome_observations"]}
-    assert rec_ages["run-23"] == 0 and rec_ages["run-9"] == 14 and rec_ages["run-0"] == 23
+    silent = lambda r: sum(o["weight"] for o in r["semantic"]["outcome_observations"] if o["outcome"] == "silent")
+    assert silent(recovered_result) == pytest.approx(2 * .5 ** (45 / 14), rel=1e-2)
+    assert silent(undecayed_result) == pytest.approx(2, rel=1e-2)
     assert recovered["admissible"] and not undecayed["admissible"]
     assert recovered["admission_risk"] < undecayed["admission_risk"]
 

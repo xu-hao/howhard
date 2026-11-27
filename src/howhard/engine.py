@@ -229,7 +229,7 @@ class Engine:
         payload, snapshot = semantic.request(reader, prepared)
         payload["weights_policy"] = "snapshot"
         self.last_retrieval_usage = reader.last_retrieval_usage
-        from .capability import evidence_scores, observations, request
+        from .capability import request
         # The host's name travels with the request to the receipt; it never enters a payload.
         bundle = {"format": REQUEST_FORMAT, "host": host, "evidence_key": reader.evidence_key,
                   "payload": request(payload, self.config.data["capability"]), "snapshot": snapshot,
@@ -238,14 +238,7 @@ class Engine:
         bundle["read_state"] = read_state
         bundle["dependencies"] = {"configuration": configuration(reader.config), "memories": {}, "evidence": {}}
         prototypes.prepare_stage1(reader, bundle)
-        proto_state = bundle.get("prototype_state")
-        scores = evidence_scores(reader, bundle["payload"])
-        bundle["learned_state"] = {
-            "weights_policy": "snapshot",
-            "capability_observations": observations(reader, bundle["payload"], scores=scores, proto_state=proto_state),
-            "duration_observations": semantic.duration_observations(reader, payload, scores=scores, proto_state=proto_state),
-            "outcome_observations": [],
-        }
+        self._score_evidence(reader, bundle)
         bundle["inventory_source"] = inventory
         bundle["native_candidates"] = candidates
         bundle["project_root"] = str(self.config.project_root)
@@ -264,6 +257,17 @@ class Engine:
         if "decision_id" in pending:
             self._decision_event(pending, task_type, started)
         return pending
+
+    def _score_evidence(self, reader, bundle):
+        """Choose and score the request's evidence candidates once, on captured rows and outside every lock.
+
+        All three readers weigh this one set; the capability reader's observations are fixed here.
+        """
+        from . import capability, evidence
+        candidates = evidence.collect(reader, bundle["forecast_template"], bundle.get("prototype_state"))
+        observed = capability.observations(reader, bundle["payload"], candidates) if bundle["stage"] == "filter" else []
+        bundle["learned_state"] = {"weights_policy": "snapshot", "evidence_candidates": candidates,
+                                   "capability_observations": observed}
 
     def _save_request(self, bundle, *, validate=True):
         from .request_state import extend
@@ -378,14 +382,6 @@ class Engine:
         bundle["payload"] = deepcopy(bundle["forecast_template"])
         bundle["payload"]["cells"] = [c for c in bundle["payload"]["cells"] if cell_key(c) in requested]
         reader = view(self, bundle["read_state"]) if "read_state" in bundle else self
-        if "learned_state" in bundle:
-            seen_ids = {obs["id"] for obs in bundle["learned_state"]["outcome_observations"]}
-            bundle["learned_state"]["outcome_observations"].extend(
-                obs for obs in semantic.outcome_observations(
-                    reader, bundle["payload"], proto_state=bundle.get("prototype_state")
-                )
-                if obs["id"] not in seen_ids
-            )
         all_keys = requested | (set(cell_key(c) for c in bundle["forecast_state"]["cells"]) if bundle["forecast_state"] else set())
         inventory = [c for c in bundle["native_candidates"] if cell_key(c) in all_keys]
         p = bundle["payload"]
@@ -399,7 +395,10 @@ class Engine:
         from . import capability, prototypes
         payload, snapshot = bundle["payload"], bundle["snapshot"]
         source_payload = initial_payload if initial_payload is not None else payload
-        from .request_state import extend
+        from .request_state import extend, view
+        if "learned_state" not in bundle:
+            # A request stored without its scored candidates has them scored once, here.
+            self._score_evidence(view(self, bundle["read_state"]) if "read_state" in bundle else self, bundle)
         extend(self, bundle)
         response = semantic.validate_response(response, payload, snapshot)
         if usage is None:
@@ -416,7 +415,7 @@ class Engine:
             )
             from .native import agents
             state = capability.aggregate(self, payload, response,
-                observed=bundle.get("learned_state", {}).get("capability_observations"),
+                observed=bundle["learned_state"]["capability_observations"],
                 covered_priors=covered_priors, agents=agents(bundle["native_candidates"]))
             bundle["coarse_usage"] = semantic.combine_usage(bundle["coarse_usage"], usage)
             state["reader_usage"] = {k: deepcopy(bundle["coarse_usage"][k]) for k in ("backend", "seconds", "cost_usd", "calls")}
@@ -461,8 +460,7 @@ class Engine:
         prepared[0]["native_candidates"] = deepcopy(bundle["native_candidates"])
         prepared[0]["host"] = bundle["host"]
         prepared = semantic.augment(self, prepared, combined, combined_payload, snapshot, usage,
-                                    duration_obs=bundle.get("learned_state", {}).get("duration_observations"),
-                                    outcome_obs=bundle.get("learned_state", {}).get("outcome_observations"))
+                                    candidates=bundle["learned_state"]["evidence_candidates"])
         state = deepcopy(bundle["capability"])
         state["disagreements"] = capability.disagreements(state, prepared)
         admissible = any(c["admissible"] for c in prepared[0]["cells"])

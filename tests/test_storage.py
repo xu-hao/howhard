@@ -183,4 +183,5 @@ def test_explicit_new_model_inventory_reuses_known_family_evidence(project):
     before = engine.summary("X", native_candidates=[{"model": "claude-opus-5-5", "effort": "high"}])
     after = engine.summary("X", native_candidates=[{"model": "new-opus", "effort": "high"}])
     assert after["cells"][0]["model"] == "new-opus"
-    assert after["cells"][0]["P_loud"] == before["cells"][0]["P_loud"]
+    # The run's age is measured to each request's own prepare time, a moment apart.
+    assert after["cells"][0]["P_loud"] == pytest.approx(before["cells"][0]["P_loud"], rel=1e-4)

@@ -159,44 +159,56 @@ def test_interrupted_excluded_from_capability_threshold_and_duration_calibration
 
     # Baseline engine with one clean observation (active_seconds=1800).
     base_engine = Engine(directory=tmp_path / "base", retrieval=SimilarityDouble())
-    base_engine.observe("task", "fixture/weak", "high", "clean", native=True, id="clean-1", active_seconds=1800.0)
+    base_engine.observe("task", "fixture/weak", "high", "clean", native=True, id="clean-1", active_seconds=1800.0,
+                        task_text="Repair rollback")
     base_decision = run_decision(base_engine)
 
     # Engine with the same clean observation PLUS multiple interrupted usage-limit runs with truncated 2s duration.
     int_engine = Engine(directory=tmp_path / "interrupted", retrieval=SimilarityDouble())
-    int_engine.observe("task", "fixture/weak", "high", "clean", native=True, id="clean-1", active_seconds=1800.0)
+    int_engine.observe("task", "fixture/weak", "high", "clean", native=True, id="clean-1", active_seconds=1800.0,
+                       task_text="Repair rollback")
     for idx in range(3):
         int_engine.observe(
             "task", "fixture/weak", "high", "interrupted", cause="usage_limit", native=True,
             id=f"limit-{idx}", active_seconds=2.0, note="5h usage limit hit immediately",
+            task_text="Repair rollback",
         )
     int_decision = run_decision(int_engine)
 
     # Receipt loads and validates cleanly even with interrupted runs in evidence/memories.
+    # The two stores recorded and prepared at slightly different instants, so ages agree approximately.
     receipt = load(int_engine.config, int_decision["decision_id"])
-    assert receipt["capability"]["evidence"] == base_decision["capability"]["evidence"]
-    assert receipt["semantic"]["duration_observations"] == base_decision["semantic"]["duration_observations"]
-    assert receipt["semantic"]["outcome_observations"] == base_decision["semantic"]["outcome_observations"]
+    assert [c["id"] for c in receipt["semantic"]["evidence_candidates"]["candidates"]] == ["clean-1"]
+    for name, rows in (("capability", receipt["capability"]["evidence"]),
+                       ("duration", receipt["semantic"]["duration_observations"]),
+                       ("outcome", receipt["semantic"]["outcome_observations"])):
+        base_rows = (base_decision["capability"]["evidence"] if name == "capability"
+                     else base_decision["semantic"][name + "_observations"])
+        assert [r["id"] for r in rows] == [r["id"] for r in base_rows] == ["clean-1"], name
+        assert rows[0]["weight"] == pytest.approx(base_rows[0]["weight"], rel=1e-4) and rows[0]["weight"] > .9
 
     # Capability P_clear, P_timely, band, and calibrated T/J are completely invariant to interrupted runs.
     base_cap = {c["model"]: c for c in base_decision["capability"]["cells"]}
     int_cap = {c["model"]: c for c in int_decision["capability"]["cells"]}
     for model in ("fixture/weak", "fixture/strong"):
-        assert int_cap[model]["P_clear"] == pytest.approx(base_cap[model]["P_clear"])
-        assert int_cap[model]["P_timely"] == pytest.approx(base_cap[model]["P_timely"])
+        assert int_cap[model]["P_clear"] == pytest.approx(base_cap[model]["P_clear"], rel=1e-4)
+        assert int_cap[model]["P_timely"] == pytest.approx(base_cap[model]["P_timely"], rel=1e-4)
         assert int_cap[model]["classification"] == base_cap[model]["classification"]
     base_cells = {c["model"]: c for c in base_decision["cells"]}
     int_cells = {c["model"]: c for c in int_decision["cells"]}
-    assert int_cells["fixture/weak"]["T"] == pytest.approx(base_cells["fixture/weak"]["T"])
-    assert int_cells["fixture/weak"]["J"] == pytest.approx(base_cells["fixture/weak"]["J"])
+    assert int_cells["fixture/weak"]["T"] == pytest.approx(base_cells["fixture/weak"]["T"], rel=1e-4)
+    assert int_cells["fixture/weak"]["J"] == pytest.approx(base_cells["fixture/weak"]["J"], rel=1e-4)
 
     # Contrast: recording the same failures as loud DOES enter capability evidence and lowers P_clear.
     loud_engine = Engine(directory=tmp_path / "loud", retrieval=SimilarityDouble())
-    loud_engine.observe("task", "fixture/weak", "high", "clean", native=True, id="clean-1", active_seconds=1800.0)
+    loud_engine.observe("task", "fixture/weak", "high", "clean", native=True, id="clean-1", active_seconds=1800.0,
+                        task_text="Repair rollback")
     for idx in range(3):
+        # No recorded cause: each failure counts at loud_weight * unknown_cause_weight, which
+        # lowers P_clear without pushing every cell below the capability floor.
         loud_engine.observe(
-            "task", "fixture/weak", "high", "loud", cause="capability", native=True,
-            id=f"loud-{idx}", active_seconds=2.0,
+            "task", "fixture/weak", "high", "loud", native=True,
+            id=f"loud-{idx}", active_seconds=2.0, task_text="Repair rollback",
         )
     loud_decision = run_decision(loud_engine)
     loud_cap = {c["model"]: c for c in loud_decision["capability"]["cells"]}

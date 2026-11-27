@@ -1,7 +1,8 @@
 """Derive authentic frozen legacy receipts from a current receipt's base structure.
 
 ``to_v10`` is the base of every older builder: it removes what v11 added (the host's name,
-agent labels, and ranges on active time and token kinds) and restores the v10 format names.
+agent labels, ranges on active time and token kinds, and the scored evidence candidates) and
+restores the v10 format names, evidence rows and sampling policy.
 """
 
 from copy import deepcopy
@@ -62,6 +63,22 @@ def to_v10(receipt):
         for row in panel:
             row.pop("seconds_ci", None)
             row.pop("token_usage_ci", None)
+    # v10 rows carried their own score and similarity, and outcomes a count-based age.
+    scored = {c["id"]: c for c in sem.pop("evidence_candidates")["candidates"]}
+    ages = {}
+    for obs in sem["outcome_observations"]:
+        pair = obs["family"], obs["effort"]
+        del obs["discount"], obs["ticket_share"]
+        obs.update(score=scored[obs["id"]]["score"], similarity=scored[obs["id"]]["similarity"], age=ages.get(pair, 0))
+        ages[pair] = ages.get(pair, 0) + 1
+    for obs in sem["duration_observations"]:
+        obs.update(score=scored[obs["id"]]["score"], similarity=scored[obs["id"]]["similarity"])
+    for item in cap["evidence"]:
+        del item["strength"], item["ticket_share"]
+        item.update(score=scored[item["id"]]["score"], similarity=scored[item["id"]]["similarity"])
+    for policy in (sem["sampling"]["policy"], receipt["selection"]["sampling_policy"]):
+        del policy["half_life_days"], policy["comparison_cap"]
+        policy["outcome_recency"] = .95
     return receipt
 
 

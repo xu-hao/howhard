@@ -72,17 +72,35 @@ below c and `noise` above it. Loud/silent outcomes reverse that likelihood. Each
 likelihood is raised to a fractional evidence weight:
 
 ```text
-row weight × sigmoid(relevance score) × severity/cause strength × recency discount
+w_i = m_i * sim_i * strength_i * a_i
+W_t = sum of w_i over this reader's runs of ticket t
+w_i <- w_i / max(1, W_t)
 ```
 
-Use task-only prototype matching (`score > 0`) and per-cell precedent retrieval so
-unrelated tasks receive zero weight and heavily executed cells never crowd out rarer
-cells behind a global top-eight slice. The
-configured cross-encoder supplies the absolute relevance score. Small retrieval
-corpora normally skip reranking for display; the threshold reader scores those
-selected precedents too. Sigmoid scores are heuristic relevance strengths, not
-calibrated probabilities of task equivalence. A lone weak match is not normalized to
-unit weight. The receipt freezes the raw score, similarity and effective weight.
+- `i`: a run this reader counts.
+- `m_i`: the run's weight on record, the `weight` configured for its model (1 unless set).
+- `sim_i`: `1 / (1 + exp(-r_i))`, where `r_i` is the reranker's score for the new task's
+  text against the run's own task text.
+- `strength_i`: the factor for the run's outcome and its cause, defined below.
+- `a_i`: the age factor `0.5^(days_i / half_life_days)`, half as much for every 14 days
+  between the run and the request.
+- `t`, `W_t`: a ticket and the total weight of its runs in this reader. A run with no
+  ticket is not limited.
+
+The runs are the decision's {ref}`evidence candidates <evidence-candidates>` whose
+executed cell is in the inventory: recorded runs that belong to a prototype the new
+task matches. A task that matches no prototype gives this reader no observation, so
+unrelated tasks receive no weight. The reader has no relatedness discount: every
+counted run informs the shared threshold from the position of the cell that ran it.
+All runs of one ticket together count for at most one run, because retries follow
+failures. Similarities are heuristic relevance strengths, not calibrated probabilities
+of task equivalence. A lone weak match is not normalized to unit weight, and a run with
+a negative score still counts, at a small weight.
+
+For example, a loud run with no recorded cause, `sim = 0.8` and `a = 0.7071` weighs
+`0.8 * 0.75 * 0.5 * 0.7071 = 0.2121`. The receipt stores each observation's `strength`,
+`ticket_share` and `weight`; the run's score, similarity and age factor are stored once
+with the scored candidate.
 
 Clean outcomes have strength 1. Loud and silent strengths default to 0.75 and 1.
 An explicit `cause=capability` retains that strength; depth/unrecorded failures get
@@ -187,8 +205,9 @@ Decision v11 receipts freeze the full filter, expert priors, task-specific order
 clearing and timely-clearing probabilities, band, widening, disagreements, fine
 forecasts, and accepted-result selection. Newly aggregated capability blocks use
 `howhard-capability-v6`, supporting materialized prototype priors, mixed seen/unseen
-`prior_sources` PAV projection, geometric prior mass outside both cuts, per-cell
-precedent lists, and a band checked against the frozen probabilities. Each of its cells
+`prior_sources` PAV projection, geometric prior mass outside both cuts, observations
+drawn from the receipt's scored evidence candidates with weights that are recomputed on
+load, and a band checked against the frozen probabilities. Each of its cells
 also stores the candidate's {ref}`agent label <host-and-agent-names>` (`null` when
 unnamed), which must match the receipt's inventory and does not affect the order, the
 probabilities or the band. Persisted decision v10 receipts use

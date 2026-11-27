@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from importlib.resources import files
 from pathlib import Path, PurePosixPath
 import re
+import sys
 import tomllib
 
 from .validation import HowHardError, keys, number, table, text
@@ -23,6 +24,11 @@ def merge(base, changes):
 
 def packaged(name):
     return files("howhard").joinpath("data", name).read_bytes()
+
+
+def notice(message):
+    """One line on standard error about an accepted setting that is no longer read."""
+    print(f"howhard: notice: {message}", file=sys.stderr)
 
 
 def parse_toml(data, where):
@@ -112,8 +118,13 @@ def load_config(path=None, *, directory=None, state_directory=None):
     keys(data, ["project", "on_cap_unmet", "journal", "logs", "classes", "models"],
          ["task_types", "retrieval", "inventories", "capability", "sampling"], "config")
     from .success import DEFAULTS as SAMPLING, validate_policy as validate_sampling
-    table(data.get("sampling", {}), "config.sampling")
-    data["sampling"] = validate_sampling(merge(SAMPLING, data.get("sampling", {})))
+    sampling = dict(table(data.get("sampling", {}), "config.sampling"))
+    if "outcome_recency" in sampling:
+        # Evidence ages by time, so the former per-observation decay is accepted and ignored.
+        del sampling["outcome_recency"]
+        notice("sampling.outcome_recency is accepted and ignored; evidence halves in weight every "
+               "sampling.half_life_days")
+    data["sampling"] = validate_sampling(merge(SAMPLING, sampling))
     from .capability import DEFAULTS, validate_policy
     table(data.get("capability", {}), "config.capability")
     data["capability"] = validate_policy(merge(DEFAULTS, data.get("capability", {})))

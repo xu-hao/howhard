@@ -614,163 +614,41 @@ def complete(engine, payload, snapshot):
     raise LLMError("LLM did not return forecasts")
 
 
-def duration_observations(engine, payload, *, scores=None, proto_state=None):
-    from . import prototypes
-    from .capability import evidence_scores
-    from .retrieval import records, task_text
-
-    scored_rows = [r for r in engine.rows if r["outcome"] != "interrupted"]
-    if not scored_rows:
-        return []
-    pairs = {(c["family"], c["effort"]) for c in payload["cells"]}
-    eligible_all = [
-        r for r in scored_rows
-        if (r["family"], r["resolved_effort"]) in pairs and effective_active_seconds(r) is not None
-    ]
-    if not eligible_all:
-        return []
-
-    recency_order = {r["id"]: age for age, r in enumerate(reversed(scored_rows))}
-    limit = SETTINGS["outcome_evidence_limit"]
-    proto_scores = (
-        prototypes.matched_member_scores(engine, proto_state)
-        if proto_state and prototypes._is_standard_pipeline(engine.retrieval)
-        else None
-    )
-    top_evidence = payload["evidence"][:SETTINGS["evidence_limit"]]
-    top_ids = {r["id"] for r in top_evidence}
-
-    selected_rows = []
-    row_scores = {}
-    if proto_scores is not None:
-        base_scores = evidence_scores(engine, payload) if scores is None and top_evidence else (scores or {})
-        by_pair = {}
-        for r in reversed(eligible_all):
-            eid = r["id"]
-            sc = base_scores.get("evidence:" + eid, proto_scores.get(eid))
-            if sc is None or float(sc) <= 0.0:
-                continue
-            bucket = by_pair.setdefault((r["family"], r["resolved_effort"]), [])
-            if len(bucket) < limit:
-                bucket.append(r)
-                row_scores[eid] = float(sc)
-        keep_ids = {r["id"] for bucket in by_pair.values() for r in bucket}
-        selected_rows = [r for r in eligible_all if r["id"] in keep_ids]
-    elif {r["id"] for r in eligible_all} <= top_ids:
-        base_scores = evidence_scores(engine, payload) if scores is None else scores
-        for r in top_evidence:
-            if (
-                r["outcome"] == "interrupted"
-                or (r["family"], r["resolved_effort"]) not in pairs
-                or effective_active_seconds(r) is None
-            ):
-                continue
-            sc = float(base_scores["evidence:" + r["id"]])
-            selected_rows.append(r)
-            row_scores[r["id"]] = sc
-    else:
-        base_scores = dict(evidence_scores(engine, payload) if scores is None else scores)
-        query = task_text(payload["task_type"], payload["context"])
-        by_pair = {}
-        for r in eligible_all:
-            by_pair.setdefault((r["family"], r["resolved_effort"]), []).append(r)
-        keep_ids = set()
-        for pair in sorted(by_pair):
-            retrieved = engine.retrieval.search(records(rows=by_pair[pair]), query, limit=limit)
-            chosen = retrieved["records"]
-            trace_sc = {item["key"]: item["score"] for item in retrieved["trace"]["selected"]}
-            missing = [
-                d for d in chosen
-                if trace_sc.get(d["key"]) is None and base_scores.get(d["key"]) is None
-            ]
-            if missing:
-                vals = list(engine.retrieval.reranker.score(query, [d["text"] for d in missing]))
-                if len(vals) != len(missing) or any(not math.isfinite(float(v)) for v in vals):
-                    raise HowHardError("duration similarity: invalid reranker scores")
-                trace_sc.update({d["key"]: float(v) for d, v in zip(missing, vals)})
-            for d in chosen:
-                r = d["value"]
-                sc = trace_sc.get(d["key"])
-                if sc is None:
-                    sc = base_scores.get(d["key"])
-                keep_ids.add(r["id"])
-                row_scores[r["id"]] = float(sc)
-        selected_rows = [r for r in eligible_all if r["id"] in keep_ids]
-
-    result = []
-    for row in selected_rows:
-        active = effective_active_seconds(row)
-        age = recency_order.get(row["id"], 0)
-        score = float(row_scores[row["id"]])
-        similarity = 1 / (1 + math.exp(-max(-60, min(60, score))))
-        result.append({"id": row["id"], "family": row["family"], "effort": row["resolved_effort"],
-                       "active_seconds": float(active), "score": score, "similarity": similarity,
-                       "weight": row["weight"] * similarity * SETTINGS["belief"]["recency"] ** age})
-    return result
-
-
-def outcome_observations(engine, payload, *, scores=None, proto_state=None):
-    """Retrieve bounded task-similar outcomes independently for each forecast cell."""
-    from . import prototypes
-    from .retrieval import records, task_text
-    query = task_text(payload["task_type"], payload["context"])
-    limit = SETTINGS["outcome_evidence_limit"]
-    pairs = {(c["family"], c["effort"]) for c in payload["cells"]}
-    histories = {pair: [] for pair in pairs}
-    for row in engine.rows:
-        pair = row["family"], row["resolved_effort"]
-        if pair in histories and row.get("outcome") in OUTCOMES:
-            histories[pair].append(row)
-    recency = engine.config.data["sampling"]["outcome_recency"]
-    proto_scores = (
-        prototypes.matched_member_scores(engine, proto_state)
-        if proto_state and prototypes._is_standard_pipeline(engine.retrieval)
-        else None
-    )
+def outcome_observations(candidates, pairs):
+    """Each forecast cell's counted runs: ``m * sim * delta * a``, then the per-ticket limit."""
+    from . import evidence
     result = []
     for pair in sorted(pairs):
-        history = histories[pair]
-        if not history:
-            continue
-        ages = {row["id"]: age for age, row in enumerate(reversed(history))}
-        if proto_scores is not None:
-            matched_rows = [
-                (r, float(proto_scores[r["id"]]))
-                for r in reversed(history)
-                if r["id"] in proto_scores and float(proto_scores[r["id"]]) > 0.0
-            ][:limit]
-            for row, score in matched_rows:
-                similarity = 1 / (1 + math.exp(-max(-60, min(60, score))))
-                age = ages[row["id"]]
-                result.append({"id": row["id"], "family": row["family"], "effort": row["resolved_effort"],
-                               "outcome": row["outcome"], "score": score, "similarity": similarity, "age": age,
-                               "weight": row["weight"] * similarity * recency ** age})
-            continue
-        retrieved = engine.retrieval.search(records(rows=history), query, limit=limit)
-        selected = retrieved["records"]
-        trace_scores = {item["key"]: item["score"] for item in retrieved["trace"]["selected"]}
-        missing = [doc for doc in selected if trace_scores.get(doc["key"]) is None]
-        if missing:
-            values = list(engine.retrieval.reranker.score(query, [doc["text"] for doc in missing]))
-            if len(values) != len(missing) or any(not math.isfinite(float(value)) for value in values):
-                raise HowHardError("outcome similarity: invalid reranker scores")
-            trace_scores.update({doc["key"]: float(value) for doc, value in zip(missing, values)})
-        for doc in selected:
-            row = doc["value"]
-            score = float(trace_scores[doc["key"]])
-            similarity = 1 / (1 + math.exp(-max(-60, min(60, score))))
-            age = ages[row["id"]]
-            result.append({"id": row["id"], "family": row["family"], "effort": row["resolved_effort"],
-                           "outcome": row["outcome"], "score": score, "similarity": similarity, "age": age,
-                           "weight": row["weight"] * similarity * recency ** age})
+        counted = []
+        for item in candidates["candidates"]:
+            delta = evidence.discount((item["family"], item["effort"]), pair)
+            if delta > 0:
+                counted.append((item, delta, evidence.weight(item, delta)))
+        shares = evidence.ticket_shares([(item["ticket"], value) for item, _, value in counted])
+        for (item, delta, value), share in zip(counted, shares):
+            result.append({"id": item["id"], "family": pair[0], "effort": pair[1], "outcome": item["outcome"],
+                           "discount": delta, "ticket_share": share, "weight": value * share})
     return result
 
 
-def augment(engine, prepared, response, payload, snapshot, usage, *, duration_obs=None, outcome_obs=None):
+def duration_observations(candidates, outcome_obs):
+    """Runs of the judged cell itself that record an active time, at the outcome reader's weight."""
+    scored = {item["id"]: item for item in candidates["candidates"]}
+    result = []
+    for obs in outcome_obs:
+        item = scored[obs["id"]]
+        if (item["family"], item["effort"]) == (obs["family"], obs["effort"]) and item["active_seconds"] is not None:
+            result.append({"id": obs["id"], "family": obs["family"], "effort": obs["effort"],
+                           "active_seconds": float(item["active_seconds"]), "weight": obs["weight"]})
+    return result
+
+
+def augment(engine, prepared, response, payload, snapshot, usage, *, candidates):
     from .success import calibrate_duration, cost, denominator, posterior_intervals
     result, cells = deepcopy(prepared[0]), prepared[1]
-    duration_obs = duration_observations(engine, payload) if duration_obs is None else deepcopy(duration_obs)
-    outcome_obs = outcome_observations(engine, payload) if outcome_obs is None else deepcopy(outcome_obs)
+    # The readers only weigh the request's scored candidates; nothing is compared again here.
+    outcome_obs = outcome_observations(candidates, {(row["family"], row["effort"]) for row in result["cells"]})
+    duration_obs = duration_observations(candidates, outcome_obs)
     policy = engine.config.data["sampling"]
     baseline = deepcopy(response["forecasts"])
     worlds = {"llm": baseline}
@@ -823,8 +701,8 @@ def augment(engine, prepared, response, payload, snapshot, usage, *, duration_ob
     result["semantic"] = {"format": FORMAT, "prompt_version": SETTINGS["prompt_version"], "backend": usage["backend"],
                           "memory_revision": snapshot["revision"], "memories": deepcopy(snapshot["memories"]),
                           "worlds": worlds, "exposures": exposures, "beliefs": state, "reason": response["reason"], "retrieval": payload["retrieval"],
-                          "evidence": deepcopy(payload["evidence"]), "duration_observations": duration_obs,
-                          "outcome_observations": outcome_obs,
+                          "evidence": deepcopy(payload["evidence"]), "evidence_candidates": deepcopy(candidates),
+                          "duration_observations": duration_obs, "outcome_observations": outcome_obs,
                           "reader_usage": {k: usage[k] for k in ("backend", "seconds", "cost_usd", "calls")}, "interval_kind": INTERVAL_KIND}
     result["sampling_policy"] = deepcopy(policy)
     result["backend"] = {"mode": "semantic", "name": usage["backend"], "inference_cached": usage["cached"]}
@@ -889,14 +767,17 @@ def sample(prepared, seed):
 def validate_receipt(state, *, decision_format=DECISION_FORMAT):
     """Validate portable frozen semantic inputs before they affect feedback weights."""
     legacy = decision_format in (LEGACY_DECISION_V7, LEGACY_DECISION_V8)
-    # v10 opened per-cell evidence bounds; v11 adds ranges on active time and token kinds.
+    # v10 opened per-cell evidence bounds; v11 adds ranges on active time and token kinds
+    # and counts one scored candidate set in place of those bounds.
     per_cell_evidence = decision_format in (DECISION_FORMAT, LEGACY_DECISION_V10)
-    ranges = decision_format == DECISION_FORMAT
+    ranges = scored = decision_format == DECISION_FORMAT
     required = ["format", "prompt_version", "backend", "memory_revision", "memories", "worlds", "exposures", "beliefs", "reason", "retrieval", "evidence", "reader_usage", "interval_kind", "sampling"]
     if decision_format != LEGACY_DECISION_V7:
         required.append("duration_observations")
     if not legacy:
         required.append("outcome_observations")
+    if scored:
+        required.append("evidence_candidates")
     keys(state, required, ["sampled_expert"], "decision.semantic")
     if decision_format not in RECEIPT_SEMANTICS or (state["format"], state["prompt_version"]) != RECEIPT_SEMANTICS[decision_format]:
         raise HowHardError("decision.semantic: unsupported forecast format or prompt version")
@@ -961,7 +842,15 @@ def validate_receipt(state, *, decision_format=DECISION_FORMAT):
     if not {"llm"} <= seen or abs(mass - 1) > 1e-6 or set(state["worlds"]) - seen:
         raise HowHardError("decision.semantic.beliefs: expert weights must cover forecasts and sum to one")
     from .success import EMPIRICAL_FLOOR, POSTERIOR_FIELDS, calibrate_duration, outcome_posterior, validate_policy as validate_sampling
-    if decision_format != LEGACY_DECISION_V7:
+    if scored:
+        # Recompute what each reader counted from the stored candidates; the counts follow below.
+        from . import evidence
+        candidates = evidence.validate(state["evidence_candidates"])
+        expected = outcome_observations(candidates, allowed)
+        evidence.same(state["outcome_observations"], expected, "decision.semantic.outcome_observations")
+        evidence.same(state["duration_observations"], duration_observations(candidates, expected),
+                      "decision.semantic.duration_observations")
+    elif decision_format != LEGACY_DECISION_V7:
         duration_obs = state["duration_observations"]
         max_duration = (
             max(SETTINGS["evidence_limit"], max(1, len(allowed)) * SETTINGS["outcome_evidence_limit"])
@@ -978,7 +867,7 @@ def validate_receipt(state, *, decision_format=DECISION_FORMAT):
             number(obs["score"], "duration_observation.score")
             for field in ("similarity", "weight"):
                 number(obs[field], "duration_observation." + field, nonnegative=True)
-    if not legacy:
+    if not legacy and not scored:
         outcome_obs = state["outcome_observations"]
         if not isinstance(outcome_obs, list) or len(outcome_obs) > len(allowed) * SETTINGS["outcome_evidence_limit"]:
             raise HowHardError("decision.semantic.outcome_observations: invalid array")
@@ -1001,7 +890,11 @@ def validate_receipt(state, *, decision_format=DECISION_FORMAT):
                 raise HowHardError("decision.semantic.outcome_observation: cell limit exceeded")
     sampling = state["sampling"]
     keys(sampling, ["enabled", "reason", "policy", "cells"], where="decision.semantic.sampling")
-    validate_sampling(sampling["policy"], legacy=legacy)
+    validate_sampling(sampling["policy"], legacy=legacy,
+                      count_aged=decision_format in (LEGACY_DECISION_V9, LEGACY_DECISION_V10))
+    if scored and (candidates["half_life_days"], candidates["comparison_cap"]) != (
+            sampling["policy"]["half_life_days"], sampling["policy"]["comparison_cap"]):
+        raise HowHardError("decision.semantic.evidence_candidates: constants differ from the sampling policy")
     if type(sampling["enabled"]) is not bool or not isinstance(sampling["cells"], list):
         raise HowHardError("decision.semantic.sampling: invalid calibration")
     if sampling["enabled"]:

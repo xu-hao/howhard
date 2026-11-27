@@ -33,48 +33,48 @@ CELLS = {
     ("fixture/large", "high"): (None, .97, .025, .005, 900., 5.0),
 }
 PRICE = {"fixture/small": 1., "fixture/medium": 3., "fixture/large": 9.}
-# The selection of ``scenario`` on the commit before this contract, by seed. The first seed
-# chooses the cell with the lowest mean cost; the second chooses another cell by its sampled cost.
+# The selection of ``scenario``, by seed, under the evidence rules for recorded runs (direct
+# similarity, age by time, one run's weight per ticket). The first seed chooses the cell with the
+# lowest mean cost; the second chooses another cell by its sampled cost. A host name, agent labels
+# and stated ranges must all reproduce it.
 GOLDEN = json.loads("""
-{"20261126": {"cap_met": true, "cells": [{"J": 37.34038920061391, "P_clean": 0.7092799607891431, "P_loud":
-0.28033712370828545, "P_silent": 0.010382915502571432, "P_silent_accepted": 0.014427471312779968, "T":
-0.09587880823920712, "admissible": true, "admission_risk": 0.0009664343431817757, "credit_ok": true, "effort":
-"low", "expected_attempts": 1.3895395093224887, "model": "fixture/medium", "needed_credit_usd": 0.07575,
-"sampled_J": 73.28032178401034, "session_cost_usd": 0.07575}, {"J": 41.78299625468165, "P_clean": 0.86, "P_loud":
-0.11, "P_silent": 0.03, "P_silent_accepted": 0.033707865168539325, "T": 0.06666666666666667, "admissible": true,
-"admission_risk": 0.05139379746836233, "credit_ok": true, "effort": "high", "expected_attempts": 1.1235955056179776,
-"model": "fixture/small", "needed_credit_usd": 0.0202, "sampled_J": 185.4925833351196, "session_cost_usd": 0.0202},
-{"J": 381.4543223821359, "P_clean": 0.47501686912455693, "P_loud": 0.25502892266972904, "P_silent":
-0.26995420820571403, "P_silent_accepted": 0.3623687099009807, "T": 0.058166326324308244, "admissible": false,
-"admission_risk": 0.594808463590276, "credit_ok": true, "effort": "low", "expected_attempts": 1.3423339917888732,
-"model": "fixture/small", "needed_credit_usd": 0.012625, "sampled_J": 457.7411935458478, "session_cost_usd":
-0.012625}], "chosen": {"effort": "low", "family":
-"native-096766504d3bd86fa493766c00210ce6e8bf21c30f0e9c9e3872da33695be808", "model": "fixture/medium"},
-"exploration": {"eligible_cells": [{"effort": "high", "family":
+{"20261126": {"cap_met": true, "cells": [{"J": 35.5774262094975, "P_clean": 0.7200002437932107, "P_loud":
+0.26999970993207834, "P_silent": 0.010000046274710878, "P_silent_accepted": 0.01369868808378205, "T":
+0.09582998725953851, "admissible": true, "admission_risk": 0.0009079031017286353, "credit_ok": true, "effort": "low",
+"expected_attempts": 1.3698624693792336, "model": "fixture/medium", "needed_credit_usd": 0.07575, "sampled_J":
+68.84686732284035, "session_cost_usd": 0.07575}, {"J": 41.78299625468165, "P_clean": 0.86, "P_loud": 0.11, "P_silent":
+0.03, "P_silent_accepted": 0.033707865168539325, "T": 0.06666666666666667, "admissible": true, "admission_risk":
+0.05139379746836233, "credit_ok": true, "effort": "high", "expected_attempts": 1.1235955056179776, "model":
+"fixture/small", "needed_credit_usd": 0.0202, "sampled_J": 185.4925833351196, "session_cost_usd": 0.0202}, {"J":
+134.52317370656766, "P_clean": 0.7224242424469671, "P_loud": 0.17696969654427097, "P_silent": 0.10060606100876185,
+"P_silent_accepted": 0.12223858658221748, "T": 0.04997910566274901, "admissible": false, "admission_risk":
+0.21517533643877096, "credit_ok": true, "effort": "low", "expected_attempts": 1.2150220906827038, "model":
+"fixture/small", "needed_credit_usd": 0.012625, "sampled_J": 104.36121302982659, "session_cost_usd": 0.012625}],
+"chosen": {"effort": "low", "family": "native-096766504d3bd86fa493766c00210ce6e8bf21c30f0e9c9e3872da33695be808",
+"model": "fixture/medium"}, "exploration": {"eligible_cells": [{"effort": "high", "family":
 "native-269c62909b2bbad4d5089d46107f9e654e7e5e6b1c0e89ddd9e0b1e94dc6e4af", "model": "fixture/small"}, {"effort":
 "low", "family": "native-096766504d3bd86fa493766c00210ce6e8bf21c30f0e9c9e3872da33695be808", "model":
 "fixture/medium"}], "enabled": true, "mean_best": {"effort": "low", "family":
 "native-096766504d3bd86fa493766c00210ce6e8bf21c30f0e9c9e3872da33695be808", "model": "fixture/medium"}, "reason":
 "mean-best"}, "needs_review": false, "sampled_expert": "llm", "sampling":
-[["native-096766504d3bd86fa493766c00210ce6e8bf21c30f0e9c9e3872da33695be808", "low", 3.852482473741947,
-67.07237386615223, 5.837865098242199, 0.11093896517214492, 2.7324886179165495, 1.0799938558253979, 0.04],
+[["native-096766504d3bd86fa493766c00210ce6e8bf21c30f0e9c9e3872da33695be808", "low", 3.9999814902013027,
+63.90603758433072, 5.8374178067182685, 0.11037838693229358, 2.8799876481132682, 1.0799938420880342, 0.04],
 ["native-269c62909b2bbad4d5089d46107f9e654e7e5e6b1c0e89ddd9e0b1e94dc6e4af", "high", 8.0, 64.13025552650046,
-5.480638923341991, 0.0, 6.88, 0.88, 0.24],
-["native-269c62909b2bbad4d5089d46107f9e654e7e5e6b1c0e89ddd9e0b1e94dc6e4af", "low", 3.852482473741947,
-253.48415750772293, 5.291422535725192, 0.32501665045379347, 1.8299941630341279, 0.9824944548824215,
-1.0399938558253978]], "seed": 20261126}, "20261128": {"cap_met": true, "cells": [{"J": 37.34038920061391, "P_clean":
-0.7092799607891431, "P_loud": 0.28033712370828545, "P_silent": 0.010382915502571432, "P_silent_accepted":
-0.014427471312779968, "T": 0.09587880823920712, "admissible": true, "admission_risk": 0.0009664343431817757,
-"credit_ok": true, "effort": "low", "expected_attempts": 1.3895395093224887, "model": "fixture/medium",
-"needed_credit_usd": 0.07575, "sampled_J": 125.58872161299882, "session_cost_usd": 0.07575}, {"J":
-41.78299625468165, "P_clean": 0.86, "P_loud": 0.11, "P_silent": 0.03, "P_silent_accepted": 0.033707865168539325,
-"T": 0.06666666666666667, "admissible": true, "admission_risk": 0.05139379746836233, "credit_ok": true, "effort":
-"high", "expected_attempts": 1.1235955056179776, "model": "fixture/small", "needed_credit_usd": 0.0202, "sampled_J":
-27.00822459458156, "session_cost_usd": 0.0202}, {"J": 381.4543223821359, "P_clean": 0.47501686912455693, "P_loud":
-0.25502892266972904, "P_silent": 0.26995420820571403, "P_silent_accepted": 0.3623687099009807, "T":
-0.058166326324308244, "admissible": false, "admission_risk": 0.594808463590276, "credit_ok": true, "effort": "low",
-"expected_attempts": 1.3423339917888732, "model": "fixture/small", "needed_credit_usd": 0.012625, "sampled_J":
-368.9202929227869, "session_cost_usd": 0.012625}], "chosen": {"effort": "high", "family":
+5.480638923341991, 0.0, 6.88, 0.88, 0.24], ["native-269c62909b2bbad4d5089d46107f9e654e7e5e6b1c0e89ddd9e0b1e94dc6e4af",
+"low", 5.5, 142.07449834217593, 5.129370187284915, 0.3554396981803716, 3.9733333334583194, 0.9733333309934904,
+0.5533333355481902]], "seed": 20261126}, "20261128": {"cap_met": true, "cells": [{"J": 35.57742602590199, "P_clean":
+0.7200002447691897, "P_loud": 0.26999970901137066, "P_silent": 0.010000046219439727, "P_silent_accepted":
+0.0136986879907908, "T": 0.09582998726106512, "admissible": true, "admission_risk": 0.0009079030943361979,
+"credit_ok": true, "effort": "low", "expected_attempts": 1.3698624676515043, "model": "fixture/medium",
+"needed_credit_usd": 0.07575, "sampled_J": 117.84511357611854, "session_cost_usd": 0.07575}, {"J": 41.78299625468165,
+"P_clean": 0.86, "P_loud": 0.11, "P_silent": 0.03, "P_silent_accepted": 0.033707865168539325, "T":
+0.06666666666666667, "admissible": true, "admission_risk": 0.05139379746836233, "credit_ok": true, "effort": "high",
+"expected_attempts": 1.1235955056179776, "model": "fixture/small", "needed_credit_usd": 0.0202, "sampled_J":
+27.00822459458156, "session_cost_usd": 0.0202}, {"J": 134.5231737333546, "P_clean": 0.7224242424265346, "P_loud":
+0.17696969654231454, "P_silent": 0.10060606103115086, "P_silent_accepted": 0.12223858660913003, "T":
+0.04997910566348833, "admissible": false, "admission_risk": 0.21517533648444812, "credit_ok": true, "effort": "low",
+"expected_attempts": 1.2150220906798155, "model": "fixture/small", "needed_credit_usd": 0.012625, "sampled_J":
+512.5590760135832, "session_cost_usd": 0.012625}], "chosen": {"effort": "high", "family":
 "native-269c62909b2bbad4d5089d46107f9e654e7e5e6b1c0e89ddd9e0b1e94dc6e4af", "model": "fixture/small"}, "exploration":
 {"eligible_cells": [{"effort": "high", "family":
 "native-269c62909b2bbad4d5089d46107f9e654e7e5e6b1c0e89ddd9e0b1e94dc6e4af", "model": "fixture/small"}, {"effort":
@@ -82,13 +82,12 @@ GOLDEN = json.loads("""
 "fixture/medium"}], "enabled": true, "mean_best": {"effort": "low", "family":
 "native-096766504d3bd86fa493766c00210ce6e8bf21c30f0e9c9e3872da33695be808", "model": "fixture/medium"}, "reason":
 "sampled-within-posterior-overlap"}, "needs_review": false, "sampled_expert": "llm", "sampling":
-[["native-096766504d3bd86fa493766c00210ce6e8bf21c30f0e9c9e3872da33695be808", "low", 3.852482473741947,
-67.07237386615223, 5.837865098242199, 0.11093896517214492, 2.7324886179165495, 1.0799938558253979, 0.04],
+[["native-096766504d3bd86fa493766c00210ce6e8bf21c30f0e9c9e3872da33695be808", "low", 3.9999815123095583,
+63.90603719113812, 5.837417806752199, 0.11037838676922296, 2.8799876679351155, 1.079993844374443, 0.04],
 ["native-269c62909b2bbad4d5089d46107f9e654e7e5e6b1c0e89ddd9e0b1e94dc6e4af", "high", 8.0, 64.13025552650046,
-5.480638923341991, 0.0, 6.88, 0.88, 0.24],
-["native-269c62909b2bbad4d5089d46107f9e654e7e5e6b1c0e89ddd9e0b1e94dc6e4af", "low", 3.852482473741947,
-253.48415750772293, 5.291422535725192, 0.32501665045379347, 1.8299941630341279, 0.9824944548824215,
-1.0399938558253978]], "seed": 20261128}}
+5.480638923341991, 0.0, 6.88, 0.88, 0.24], ["native-269c62909b2bbad4d5089d46107f9e654e7e5e6b1c0e89ddd9e0b1e94dc6e4af",
+"low", 5.500000000000001, 142.0744983553764, 5.129370187295387, 0.35543969819252685, 3.9733333333459404,
+0.9733333309827301, 0.5533333356713298]], "seed": 20261128}}
 """)
 
 
@@ -149,13 +148,18 @@ class ContractLLM:
 
 
 def scenario(directory, *, host=None, agents=False, ranges=False, seed=20261126):
-    """One routed decision over six priced cells with earlier outcomes for two of them."""
+    """One routed decision over six priced cells with earlier outcomes for two of them.
+
+    The three runs of the first cell are retries of one ticket, so together they count for one run.
+    """
     directory.mkdir()
     engine = Engine(directory=directory, llm=ContractLLM(ranges=ranges), retrieval=SimilarityDouble())
     history = [("fixture/small", "low", "loud"), ("fixture/small", "low", "clean"), ("fixture/small", "low", "silent"),
                ("fixture/medium", "low", "clean"), ("fixture/medium", "low", "clean"), ("fixture/medium", "low", "loud")]
     for index, (model, effort, outcome) in enumerate(history):
         extra = {} if outcome == "clean" else {"cause": "capability"}
+        if model == "fixture/small":
+            extra["ticket"] = "T-1"
         engine.observe("task", model, effort, outcome, native=True, task_text=TASK, id=f"earlier-{index}",
                        active_seconds=200. + 40 * index, **extra)
     options = {} if host is None else {"host": host}
@@ -180,9 +184,13 @@ def selection(result):
 
 
 def close(actual, expected):
-    """Recursive equality with a tight relative tolerance for floating-point values."""
+    """Recursive equality with a relative tolerance for floating-point values.
+
+    A run's age is measured to the moment its request is prepared, so two runs of the scenario
+    differ by the seconds they took: far below this tolerance, far above rounding.
+    """
     if isinstance(expected, float) and not isinstance(actual, bool):
-        return actual == pytest.approx(expected, rel=1e-9, abs=1e-12)
+        return actual == pytest.approx(expected, rel=1e-3, abs=1e-12)
     if isinstance(expected, dict):
         return isinstance(actual, dict) and actual.keys() == expected.keys() and all(close(actual[k], v) for k, v in expected.items())
     if isinstance(expected, list):
@@ -489,7 +497,7 @@ def test_forecast_stored_without_a_host_or_ranges_reads_as_unnamed(tmp_path):
     {"ranges": True},
     {"host": "host-one", "agents": True, "ranges": True},
 ], ids=["plain", "host", "agents", "ranges", "all"])
-def test_selection_equals_the_selection_before_this_contract(tmp_path, options, seed, reason):
+def test_selection_equals_the_pinned_selection_whatever_the_new_inputs(tmp_path, options, seed, reason):
     _, result = scenario(tmp_path / "store", seed=seed, **options)
     actual = json.loads(json.dumps(selection(result)))
     expected = GOLDEN[str(seed)]
