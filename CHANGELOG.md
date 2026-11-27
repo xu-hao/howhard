@@ -209,8 +209,11 @@
   prototype, match weight, share, host and stored row, and each value's merged centre
   and spread); loading it recomputes the shares, the merge and the row, and refuses an
   altered one or a source stored under another host. `howhard.prototypes.stored_forecasts`
-  returns one entry per prototype, cell and host. No configuration key is added and an
-  existing store loads unchanged. v11 decisions stored by earlier unreleased builds no
+  returns one entry per prototype, cell and host. The inference cache of an explicit
+  backend is keyed by the host's name too, the unnamed host being a key of its own: an
+  answer cached for one host is never returned or stored for another, a second host's
+  identical request calls the backend again, and answers cached by earlier builds are
+  not read. No configuration key is added and an existing store loads unchanged. v11 decisions stored by earlier unreleased builds no
   longer load; `v7` to `v10` receipts keep loading, observing, replaying and reporting.
 
 ## 5.0.0 — 2026-11-24

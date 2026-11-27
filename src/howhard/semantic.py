@@ -452,7 +452,17 @@ def combine_usage(earlier, current):
     return result
 
 
-def _cache_read(path, expected_request, snapshot):
+def _cache_path(engine, identity, host, request_obj):
+    """Where one host's cached answer to one request lives.
+
+    The host's name is part of the key, and the unnamed host (``None``) is a key of its own:
+    an answer made for one host is never returned, and so never stored, for another.
+    """
+    key = digest({"format": FORMAT, "backend": identity, "settings": SETTINGS, "host": host, "request": request_obj})
+    return engine.config.state_root / "llm-cache" / f"{key}.json"
+
+
+def _cache_read(path, expected_request, snapshot, host):
     if not path.is_file():
         return None
     try:
@@ -460,7 +470,7 @@ def _cache_read(path, expected_request, snapshot):
         integrity = cached.pop("integrity")
         if digest(cached) != integrity:
             raise ValueError("cache integrity mismatch")
-        if cached["request"] == expected_request:
+        if cached["host"] == host and cached["request"] == expected_request:
             validate_response(cached["response"], cached["final_request"], snapshot)
             return (
                 cached["response"],
@@ -472,9 +482,9 @@ def _cache_read(path, expected_request, snapshot):
     return None
 
 
-def _cache_write(engine, path, request_obj, final_request, response, usage):
+def _cache_write(engine, path, request_obj, final_request, response, usage, host):
     from .storage import locked
-    cached = {"request": request_obj, "final_request": final_request, "response": response, "usage": usage}
+    cached = {"host": host, "request": request_obj, "final_request": final_request, "response": response, "usage": usage}
     cached["integrity"] = digest(cached)
     with locked(engine.config, operation="inference cache"):
         atomic_write(path, canonical(cached) + b"\n")
@@ -501,7 +511,8 @@ def _replay_signature(payload, snapshot):
     }
 
 
-def cached_exact_replay(engine, payload, snapshot):
+def cached_exact_replay(engine, payload, snapshot, *, host=None):
+    """The cached answer to this exact request made for ``host``, or ``None``."""
     llm = engine.llm
     if llm is None:
         import os
@@ -517,20 +528,17 @@ def cached_exact_replay(engine, payload, snapshot):
     else:
         identity = str(getattr(llm, "identity", type(llm).__name__))
     sig = {"replay": _replay_signature(payload, snapshot)}
-    ck = digest({"format": FORMAT, "backend": identity, "settings": SETTINGS, "request": sig})
-    path = engine.config.state_root / "llm-cache" / f"{ck}.json"
-    return _cache_read(path, sig, snapshot)
+    return _cache_read(_cache_path(engine, identity, host, sig), sig, snapshot, host)
 
 
-def complete(engine, payload, snapshot):
+def complete(engine, payload, snapshot, *, host=None):
+    """Answer a request with the backend, or with the answer cached for the same request and ``host``."""
     identity = str(getattr(engine.llm, "identity", type(engine.llm).__name__))
-    cache_dir = engine.config.state_root / "llm-cache"
 
     def cache_path(req_obj):
-        ck = digest({"format": FORMAT, "backend": identity, "settings": SETTINGS, "request": req_obj})
-        return cache_dir / f"{ck}.json"
+        return _cache_path(engine, identity, host, req_obj)
 
-    hit = _cache_read(cache_path(payload), payload, snapshot)
+    hit = _cache_read(cache_path(payload), payload, snapshot, host)
     if hit is not None:
         return hit
 
@@ -570,7 +578,7 @@ def complete(engine, payload, snapshot):
     else:
         current["phase"] = "memory"
         baseline_reason = "Materialized prototype baseline."
-        mem_hit = _cache_read(cache_path(visible_request(current)), visible_request(current), snapshot)
+        mem_hit = _cache_read(cache_path(visible_request(current)), visible_request(current), snapshot, host)
         if mem_hit is not None:
             return mem_hit
 
@@ -608,14 +616,14 @@ def complete(engine, payload, snapshot):
         cost_known = all(c["cost_usd"] is not None for c in calls)
         cost = sum(c["cost_usd"] for c in calls) if cost_known else None
         usage = {"seconds": seconds, "cost_usd": cost, "backend": identity, "calls": calls}
-        _cache_write(engine, cache_path(original), original, current, response, usage)
+        _cache_write(engine, cache_path(original), original, current, response, usage, host)
         replay_sig = {"replay": _replay_signature(original, snapshot)}
-        _cache_write(engine, cache_path(replay_sig), replay_sig, current, response, usage)
+        _cache_write(engine, cache_path(replay_sig), replay_sig, current, response, usage, host)
         if snapshot["memories"] and memory_calls:
             m_sec = sum(c["seconds"] for c in memory_calls)
             m_cost = sum(c["cost_usd"] for c in memory_calls) if all(c["cost_usd"] is not None for c in memory_calls) else None
             m_usage_summary = {"seconds": m_sec, "cost_usd": m_cost, "backend": identity, "calls": memory_calls}
-            _cache_write(engine, cache_path(memory_initial), memory_initial, current, response, m_usage_summary)
+            _cache_write(engine, cache_path(memory_initial), memory_initial, current, response, m_usage_summary, host)
         return response, current, {**usage, "cached": False, "call_seconds": seconds, "call_cost_usd": usage["cost_usd"]}
     raise LLMError("LLM did not return forecasts")
 

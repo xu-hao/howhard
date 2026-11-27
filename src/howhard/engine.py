@@ -179,7 +179,7 @@ class Engine:
                     for m in bundle["snapshot"]["memories"]
                 )
                 if not has_baseline and not has_memories:
-                    replay = semantic.cached_exact_replay(self, bundle["payload"], bundle["snapshot"])
+                    replay = semantic.cached_exact_replay(self, bundle["payload"], bundle["snapshot"], host=bundle["host"])
                     # A replayed forecast round must state the rows reused from store for this request.
                     if replay is not None and bundle["stage"] == "forecast" and (
                             replay[1].get("no_memory_forecasts") != bundle["payload"].get("no_memory_forecasts")):
@@ -195,7 +195,8 @@ class Engine:
                 else:
                     self._inference()
                     reader = view(self, bundle["read_state"]) if "read_state" in bundle else self
-                    response, payload, usage = semantic.complete(reader, bundle["payload"], bundle["snapshot"])
+                    response, payload, usage = semantic.complete(reader, bundle["payload"], bundle["snapshot"],
+                                                                 host=bundle["host"])
                     bundle["payload"] = payload
                 pending = self._advance(bundle, response, seed=seed, usage=usage, select=select,
                                         initial_payload=initial_payload)

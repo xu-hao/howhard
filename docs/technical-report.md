@@ -267,7 +267,9 @@ With a merged `S` of 10% the row is `clean = 0.749 * 0.9 = 0.674`, `loud = 0.251
 A cell with no usable stored forecast goes to the forecaster. No forecast, and no
 value of one, is built from a prototype's recorded runs: a record with runs and no
 stored forecast asks the forecaster once per cell and host, and the runs then count as
-evidence beside that forecast. The receipt lists each reused cell's sources (prototype,
+evidence beside that forecast. The inference cache of an explicit backend is keyed by
+the host's name as well, with the unnamed host as a key of its own, so the forecast
+stored under a host is always an answer made for that host. The receipt lists each reused cell's sources (prototype,
 match weight, share, host and stored row) and each value's merged centre and spread.
 Loading the receipt recomputes the shares, the merge and the row from those sources and
 refuses a source stored under another host. The [reference](reference.md) gives the

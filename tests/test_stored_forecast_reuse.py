@@ -326,6 +326,59 @@ def test_explicit_backend_is_asked_for_a_cell_with_runs_and_no_stored_forecast(t
     assert len(again["semantic"]["stored_forecasts"]) == 1
 
 
+class CountingLLM(SpyLLM):
+    """An explicit backend whose every Stage 2 baseline answer states a different active time."""
+
+    identity = "counting-forecaster-double"
+    answered = 0
+
+    def complete(self, request):
+        response = super().complete(request)
+        if request["kind"] == "predict" and request.get("phase") == "baseline":
+            self.answered += 1
+            for row in response["forecasts"]:
+                row["seconds"] = 100 * self.answered
+        return response
+
+    def baseline_calls(self):
+        return [c["kind"] for c in self.calls if c.get("phase") == "baseline"]
+
+
+def test_inference_cache_never_answers_one_host_with_a_forecast_made_for_another(tmp_path):
+    backend = CountingLLM()
+    engine = Engine(directory=tmp_path, llm=backend, retrieval=TopicSimilarityDouble())
+    request = dict(task_text="Repair rollback", native_candidates=WORKER, seed=3)
+    seconds = lambda: {f["host"]: f["forecast"]["seconds"] for f in stored_forecasts(engine.config)}
+
+    engine.pick("task", host="host-one", **request)
+    assert backend.baseline_calls() == ["filter", "predict"] and seconds() == {"host-one": 100}
+
+    # The same request from a second host and from the unnamed host: each causes its own backend
+    # call and stores its own forecast. Stage 1 is shared, so only the Stage 2 forecast is asked.
+    for host, answer in (("host-two", 200), (None, 300)):
+        backend.calls.clear()
+        result = engine.pick("task", host=host, **request)
+        assert backend.baseline_calls() == ["predict"]
+        (row,) = result["semantic"]["worlds"]["llm"]
+        assert row["seconds"] == answer and result["semantic"]["stored_forecasts"] == []
+    assert seconds() == {"host-one": 100, "host-two": 200, None: 300}
+
+    # A cached answer is still reused under the host it was made for. With the stored forecasts
+    # removed, the same request finds each host's own cached answer and makes no backend call.
+    with sqlite3.connect(engine.config.state_root / "payloads.sqlite3") as db:
+        ((prior_json,),) = db.execute("SELECT prior_json FROM prototype_cells").fetchall()
+        prior = json.loads(prior_json)
+        del prior["forecasts"]
+        db.execute("UPDATE prototype_cells SET prior_json=?", (json.dumps(prior),))
+    assert seconds() == {}
+    backend.calls.clear()
+    for host, answer in (("host-two", 200), ("host-one", 100), (None, 300)):
+        result = engine.pick("task", host=host, **request)
+        (row,) = result["semantic"]["worlds"]["llm"]
+        assert row["seconds"] == answer
+    assert backend.calls == [] and seconds() == {"host-one": 100, "host-two": 200, None: 300}
+
+
 # --- 4. Token kinds -------------------------------------------------------------------------------
 
 def test_stored_forecast_without_the_six_token_kinds_is_not_reused_for_a_cell_priced_by_kind(tmp_path):

@@ -281,6 +281,9 @@ to the one unnamed host.
   of one, is built from a prototype's recorded runs, and no stand-in forecast exists. A
   record with runs and no stored forecast therefore asks the forecaster once per cell
   and host. The recorded runs still count as evidence beside the forecaster's row.
+- **Cached answers.** The {ref}`inference cache <inference-cache>` of an explicit
+  backend follows the same rule: its key includes the host's name, so the forecast
+  stored under a host is always an answer made for that host.
 
 Each value of the row is merged on its own scale:
 
@@ -1043,14 +1046,16 @@ decompression before unlinking each loose file, leaves unverified files untouche
 error, and removes drained legacy directories. External receipt files and
 `--save-decision PATH` continue to use ordinary JSON files.
 
+(inference-cache)=
 ## Inference cache and current interfaces
 
 Validated LLM responses may be cached by complete request, adapter identity, settings,
-evidence and memory revision. Corrupt caches are replaced. The cache does not read the
-host's name: an explicit backend adapter asked the same question for a second host
-returns its cached answer, which is stored under that second host like any new forecast.
-A cached forecast round is replayed only when it states the same memory-free rows that
-the request {ref}`reuses from store <stored-forecasts>`. Prepared requests bind the
+evidence, memory revision and the host's name. Corrupt caches are replaced. The unnamed
+host is a key of its own, so a cached answer is returned only to the host it was made
+for and is never returned, or stored as a forecast, for another: an explicit backend
+adapter is called again when a second host sends the same request. A cached forecast
+round is replayed only when it states the same memory-free rows that the request
+{ref}`reuses from store <stored-forecasts>`. Prepared requests bind the
 current worktree, native inventory and a consistent store snapshot. New requests validate
 only surfaced memory/evidence dependencies and configuration, with belief and capability
 weights frozen at preparation. Unrelated writes do not invalidate them. A real change

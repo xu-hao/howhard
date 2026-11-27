@@ -123,8 +123,10 @@ memories it has actually seen. This separation is necessary for meaningful compa
 
 The original semantic text, retrieved evidence, memory versions and forecasts are
 retained. The final numerical forecasts are decision outputs, not the sole stored
-representation of the task. Repeated identical requests can reuse a validated inference
-cache keyed by inputs, model/adapter identity, prompt/settings, evidence and memory state.
+representation of the task. Repeated identical requests of one host can reuse a validated
+inference cache keyed by inputs, model/adapter identity, prompt/settings, evidence, memory
+state and the host's name; the unnamed host is a key of its own, and an answer cached for
+one host is never returned for another.
 
 ## Feedback and approximate belief weights
 
