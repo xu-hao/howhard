@@ -651,9 +651,9 @@ Level and usual come down a ladder of five rungs, each leaning on the rung above
   both ladders equal the guess.
 - {math}`i`: a finished routed run at rung {math}`r`: its outcome is clean, loud or
   silent and its decision stored a forecast for the cell that ran. Its host and agent
-  are the names that decision stores. The decision's evidence candidates are left out,
-  because they count through their similarity to the new task; a run with no decision
-  enters no ladder.
+  are the names that decision stores. The evidence candidates of the new decision are
+  left out, because they count through their similarity to the new task; a run with no
+  decision enters no ladder.
 - {math}`a_i`: the age factor of section 3's evidence weights, halving every 14 days,
   divided by {math}`\max(1,A_t)` with {math}`A_t` the summed age factors of the runs of
   ticket {math}`t` in the ladder. A run with no ticket is not limited.

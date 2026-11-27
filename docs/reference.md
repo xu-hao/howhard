@@ -583,11 +583,11 @@ usual(r) = (sum_i a_i * g_i + kappa_r * usual(r+)) / (sum_i a_i + kappa_r)
   ladders equal the guess. A rung with no run passes the value above it through.
 - `i`: a finished routed run at rung `r`: a recorded run with outcome `clean`, `loud`
   or `silent` whose decision stored a forecast for the cell that ran. Its host and
-  agent are the {ref}`names <host-and-agent-names>` that decision stores. The decision's
-  {ref}`evidence candidates <evidence-candidates>` (every recorded run of a prototype
-  the new task matches) are left out: they count through their similarity instead. A
-  run with no decision, a run whose decision cannot be read, and an `interrupted` run
-  enter no ladder.
+  agent are the {ref}`names <host-and-agent-names>` that decision stores. The
+  {ref}`evidence candidates <evidence-candidates>` of the new decision (every recorded
+  run of a prototype the new task matches) are left out: they count through their
+  similarity instead. A run with no decision, a run whose decision cannot be read, and
+  an `interrupted` run enter no ladder.
 - `a_i`: the run's age factor `0.5^(days_i / half_life_days)`, divided by
   `max(1, A_t)`, where `A_t` is the summed age factors of the runs of ticket `t` in the
   same ladder. A row with no ticket is not limited.
