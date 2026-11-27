@@ -190,7 +190,8 @@ request, so amending one makes the request stale.
 ## Replace stages independently
 
 `RetrievalPipeline` is public and `Engine(retrieval=pipeline)` uses the supplied pipeline
-for initial routing context, memory search and evidence search. No agent protocol or
+for initial routing context, memory search and evidence search, and its
+`reranker.score(query, documents)` to score the evidence candidates. No agent protocol or
 canonical outcome record changes when replacing a stage.
 
 ```python
