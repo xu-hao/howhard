@@ -2,6 +2,44 @@
 
 ## Unreleased
 
+- Host-aware forecast band and reserved forecast slots (#131). Both edges of the fit
+  band's clearing interval now follow the share of its failures that the asking host
+  catches before acceptance. From the failed routed runs on record (finished `loud` or
+  `silent` runs whose decision receipt holds a forecast for the cell that ran, each
+  weighing `0.5^(days / half_life_days)`, with one ticket's failed runs counting as one
+  run at most) the filter computes `d_0 = (1 - 2 * epsilon) / (1 - epsilon)`,
+  `d(all) = (C_all + 12 * d_0) / (F_all + 12)` and
+  `d(host) = (C_host + 12 * d(all)) / (F_host + 12)`, where `F` sums the failed runs
+  and `C` the `loud` ones, for all hosts and for the host named with `--host`. A
+  receipt with no host name, or older than v11, counts under the one unnamed host. The
+  band starts at the first cell with
+  `P_clear >= e = max(min_clear_probability, 1 - epsilon / (1 - d + epsilon * d))` and
+  ends at the first reliable cell within
+  `g = min(overpowered_gain_margin, overpowered_gain_margin * epsilon / ((1 - epsilon) * (1 - d)))`
+  of the strongest cell. At `d >= d_0`, and so with no failed run on record, `e` and
+  `g` are the configured 0.5 and 0.05 and the band is unchanged; at `epsilon = 0.10` a
+  host that catches half of its failures gets 0.818 and 0.0111. When no cell reaches
+  `e`, the band starts at the first cell with the highest `P_clear` if that reaches
+  `min_clear_probability`. The timely interval keeps the configured values.
+  Two of the `max_forecast_cells` slots are reserved: the core is the band's first
+  `max_forecast_cells - 2` cells, and up to two further cells are forecast, first for
+  model families with no run among the evidence candidates (at `P_clear >= 0.2`), then
+  for proven families whose `agent` has no core cell (at `P_clear >= e`), each at the
+  family's cell nearest to the core. A slot that no family takes goes back to the
+  band, so with no family to reserve for the forecast cells are the band as before. A
+  forecast request can therefore include a cell classified `underpowered` or
+  `overpowered`. Widening takes the next stronger cell with no forecast: band cells
+  beyond the core, then overpowered cells, skipping reserved cells. New optional
+  `[capability]` settings: `caught_share_worth = 12`, `reserved_forecast_cells = 2`
+  (an integer below `max_forecast_cells`; 0 turns the rule off) and
+  `unproven_clear_probability = 0.2`. A v11 receipt's capability block stores
+  `caught_share` (`host`, `F_all`, `C_all`, `F_host`, `C_host`, `d_0`, `d_all`,
+  `d_host`, `e`, `g`), `core`, `proven_families` and `reserved` (each cell's `key`,
+  `reason` and `bar`); loading recomputes them and refuses a receipt whose band, core,
+  reserved cells or widening do not follow from its stored numbers. `report` lists
+  them per decision under `filter_quality.bands`. `v7` to `v10` receipts load, observe,
+  replay and report as before.
+
 - Forecast contract and `howhard-decision-v11` (#128). `pick`, `summary` and `context`
   accept an optional `--host NAME` (Python `host=`) for the agent that asks for the
   route, and each candidate or configured inventory entry accepts an optional `agent`

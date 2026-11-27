@@ -27,6 +27,9 @@ from test_outcome_posterior import by_model, calibration, decide, observe, spec
 
 EPSILON = .10  # The packaged limit of the standard risk class.
 TASK = '[task_types]\ntask = "standard"\n'
+# Widening is tested here over a band of one cell: with the reserved forecast slots off, the
+# forecast cells are the band and the widening cells alone.
+BAND_ONLY = "[capability]\nreserved_forecast_cells = 0\n"
 
 
 @pytest.fixture(autouse=True)
@@ -272,7 +275,7 @@ def test_widening_runs_only_while_every_forecast_cell_is_excluded(tmp_path):
     on_trial = lambda request: forecasts(request, silent=.05, clean=.5)
 
     # One on-trial cell stops widening, where format v10 kept widening until a cell was admissible.
-    engine = Engine(directory=tmp_path / "stops")
+    engine = configured(tmp_path / "stops", BAND_ONLY)
     pending = start(engine, inventory(6))
     pending = engine.decide(pending["request_id"], filtering(pending["baseline_request"], 1, 1))
     wider = engine.decide(pending["request_id"], excluded(pending["baseline_request"]))
@@ -287,7 +290,7 @@ def test_widening_runs_only_while_every_forecast_cell_is_excluded(tmp_path):
     assert load(engine.config, result["decision_id"])["capability"]["widening_stop"] == "pickable"
 
     # An on-trial cell in the band means no round at all.
-    direct = Engine(directory=tmp_path / "direct")
+    direct = configured(tmp_path / "direct", BAND_ONLY)
     pending = start(direct, inventory(6))
     pending = direct.decide(pending["request_id"], filtering(pending["baseline_request"], 1, 1))
     result = direct.decide(pending["request_id"], on_trial(pending["baseline_request"]), seed=3)
@@ -295,7 +298,7 @@ def test_widening_runs_only_while_every_forecast_cell_is_excluded(tmp_path):
     assert result["cells"][0]["tier"] == "on-trial" and not result["cells"][0]["admissible"]
 
     # Every cell excluded: one stronger cell per round, up to widening_rounds, then a flagged draw.
-    bounded = Engine(directory=tmp_path / "bounded")
+    bounded = configured(tmp_path / "bounded", BAND_ONLY)
     pending = start(bounded, inventory(8))
     pending = bounded.decide(pending["request_id"], filtering(pending["baseline_request"], 1, 1))
     requested = []
@@ -313,7 +316,7 @@ def test_widening_runs_only_while_every_forecast_cell_is_excluded(tmp_path):
 
 
 def test_widening_reads_tiers_and_never_credit(tmp_path):
-    engine = Engine(directory=tmp_path)
+    engine = configured(tmp_path / "store", BAND_ONLY)
     cells = [{"model": f"fixture/model-{i:03d}", "effort": "high", "usd_per_mtok": 1.0,
               "credit_budget": budget(.0001 if i == 1 else 1.)} for i in range(5)]
     pending = start(engine, cells)
@@ -468,7 +471,7 @@ def test_a_stored_decision_revalidates_and_changed_tier_fields_are_refused(tmp_p
             pytest.fail(f"{name}: accepted")
 
     # A widened decision freezes the trigger of each round.
-    wide = Engine(directory=tmp_path / "wide")
+    wide = configured(tmp_path / "wide", BAND_ONLY)
     pending = start(wide, inventory(6))
     pending = wide.decide(pending["request_id"], filtering(pending["baseline_request"], 1, 1))
     while "decision_id" not in pending:
@@ -484,7 +487,8 @@ def test_a_stored_decision_revalidates_and_changed_tier_fields_are_refused(tmp_p
 
 @pytest.mark.parametrize("on_cap_unmet", ["flag-review", "lowest-bound"])
 def test_v7_to_v10_receipts_with_a_met_or_unmet_cap_load_observe_replay_and_report(tmp_path, on_cap_unmet):
-    engine = Engine(directory=tmp_path, retrieval=SimilarityDouble())
+    # An older receipt forecasts exactly its band and its widening cells.
+    engine = configured(tmp_path / "store", BAND_ONLY, retrieval=SimilarityDouble())
 
     def widened(label, excluded_rounds, seed):
         """Forecast one band cell, then each widening cell: excluded for the first rounds, trusted after."""

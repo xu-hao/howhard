@@ -2,9 +2,11 @@
 
 ``to_v10`` is the base of every older builder: it removes what v11 added (the host's name,
 agent labels, ranges on active time and token kinds, the scored evidence candidates, admission
-tiers, and the beliefs and credit spread) and restores the v10 format names, evidence rows,
-sampling policy, meaning of the silent cap, per-expert active-time calibration, forecast
-pricing and credit check.
+tiers, the beliefs and credit spread, and the host-aware band with its core and reserved cells)
+and restores the v10 format names, evidence rows, policies, meaning of the silent cap,
+per-expert active-time calibration, forecast pricing and credit check. A v10 receipt forecasts
+exactly its band and its widening cells, so the current receipt it is derived from must have no
+reserved cell.
 """
 
 from copy import deepcopy
@@ -27,6 +29,15 @@ from howhard.success import (
     outcome_posterior,
     posterior_intervals,
 )
+
+def without_reserved_slots(directory):
+    """Configure the store in ``directory`` to forecast exactly its band, as older receipts did.
+
+    Call it before creating the engine that mints the receipts an older one is derived from.
+    """
+    (directory / "howhard.toml").write_text(
+        '[capability]\nreserved_forecast_cells = 0\n[task_types]\ntask = "standard"\n')
+
 
 LEGACY_SAMPLING = {"min_concentration": 8., "max_concentration": 1000000., "prior_strength": 8.,
                    "explore_within": .1, "uncertainty_multiplier": 1.}
@@ -147,6 +158,11 @@ def to_v10(receipt, on_cap_unmet="flag-review"):
         item["trigger"] = "silent-cap-unmet"
     if cap["widening_stop"] == "pickable":
         cap["widening_stop"] = "cap-met"
+    assert not cap["reserved"], "derive older receipts from a decision that reserved no forecast cell"
+    for field in ("caught_share", "core", "proven_families", "reserved"):
+        del cap[field]
+    for setting in ("caught_share_worth", "reserved_forecast_cells", "unproven_clear_probability"):
+        del cap["policy"][setting]
     sem = receipt["semantic"]
     sem["format"] = "howhard-semantic-v7"
     sem["prompt_version"] = "semantic-reader-v7"

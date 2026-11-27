@@ -22,7 +22,10 @@ the host's actual tools execute the task.
    for the route, makes the forecast and accepts the result), and put an `agent` label
    on each candidate naming the agent product that would run it; use the names your
    routing layer already uses. Both are short labels stored unverified, and both are
-   optional: omit one you cannot establish instead of guessing. Unknown identities receive separate identity labels automatically;
+   optional: omit one you cannot establish instead of guessing. Use the same host name
+   every time: the backend tightens the fit band for a host that catches a smaller
+   share of its failures before acceptance, and it reads that share from the failed
+   runs recorded under the name. Unknown identities receive separate identity labels automatically;
    no model assumptions or statistical settings are required. Read [portable accounting](references/accounting.md) for explicit rate cards and
    category forecasts when rates are known. Candidate `usd_per_mtok` and `rate_card`
    values represent raw list-price quota credit; optional `cost_per_credit` converts that
@@ -75,6 +78,9 @@ the host's actual tools execute the task.
    omitting it or narrowing it to look confident. Cold-start priors decay continuously to zero weight once a cell reaches
    `W_emp >= 2.0` on a prototype. Handle one explicit re-filter and stronger-only
    widening requests; never truncate an inventory/band or forecast excluded cells.
+   The forecast request can hold up to two cells outside the fit band, reserved for a
+   model family with no run on this kind of task or for an agent the band leaves out:
+   forecast every requested cell honestly, including one classified `underpowered`.
    The backend learns the order and threshold from actual similar executions, with
    prior-only placement labels for unseen cells. Placement is task-specific; there is
    no universal model ranking. If genuine independence is unavailable when a non-null

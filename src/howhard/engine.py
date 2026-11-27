@@ -43,6 +43,7 @@ class Engine:
         self.backend = {"mode": "explicit", "backend": str(getattr(llm, "identity", type(llm).__name__))} if llm is not None else {"mode": "calling-agent"}
         self.last_memory_update = {"status": "not-requested"}
         self._summaries = {}
+        self.receipt_hosts = {}
         self.refresh()
         from .retrieval import RetrievalPipeline
         self.retrieval = retrieval if retrieval is not None else RetrievalPipeline.from_config(self.config)
@@ -265,9 +266,12 @@ class Engine:
         """
         from . import capability, evidence
         candidates = evidence.collect(reader, bundle["forecast_template"], bundle.get("prototype_state"))
-        observed = capability.observations(reader, bundle["payload"], candidates) if bundle["stage"] == "filter" else []
+        filtering = bundle["stage"] == "filter"
+        observed = capability.observations(reader, bundle["payload"], candidates) if filtering else []
+        # The failed runs behind the asking host's caught share are read once, on the same captured rows.
+        caught = capability.caught_record(reader, bundle["host"], candidates) if filtering else None
         bundle["learned_state"] = {"weights_policy": "snapshot", "evidence_candidates": candidates,
-                                   "capability_observations": observed}
+                                   "capability_observations": observed, "caught_record": caught}
 
     def _save_request(self, bundle, *, validate=True):
         from .request_state import extend
@@ -414,9 +418,16 @@ class Engine:
                 else None
             )
             from .native import agents
+            learned = bundle["learned_state"]
+            if learned.get("caught_record") is None:
+                # A request stored without its failed-run record has it read once, here.
+                learned["caught_record"] = capability.caught_record(
+                    view(self, bundle["read_state"]) if "read_state" in bundle else self,
+                    bundle["host"], learned["evidence_candidates"])
             state = capability.aggregate(self, payload, response,
-                observed=bundle["learned_state"]["capability_observations"],
-                covered_priors=covered_priors, agents=agents(bundle["native_candidates"]))
+                observed=learned["capability_observations"],
+                covered_priors=covered_priors, agents=agents(bundle["native_candidates"]),
+                caught=learned["caught_record"], candidates=learned["evidence_candidates"])
             bundle["coarse_usage"] = semantic.combine_usage(bundle["coarse_usage"], usage)
             state["reader_usage"] = {k: deepcopy(bundle["coarse_usage"][k]) for k in ("backend", "seconds", "cost_usd", "calls")}
             state["refilter_rounds"] = bundle["refilter_round"]
@@ -431,7 +442,8 @@ class Engine:
             if "no_memory_filter" not in source_payload:
                 prototypes.record_stage1_baseline(self, bundle, response["filter"])
             bundle["capability"] = state
-            return self._forecast_request(bundle, set(state["band"]))
+            # The core, the reserved cells and the band cells that took unfilled slots get the first forecasts.
+            return self._forecast_request(bundle, set(capability.forecast_cells(state)))
         if "no_memory_forecasts" not in source_payload:
             unseen_pairs = {(c["family"], c["effort"]) for c in source_payload.get("unseen_cells", source_payload["cells"])}
             new_rows = [r for r in response["forecasts"] if (r["family"], r["effort"]) in unseen_pairs]
@@ -466,7 +478,7 @@ class Engine:
         # Widening reads tiers only, never credit: it stops once a forecast cell is trusted or on trial.
         pickable = any(c["tier"] != "excluded" for c in prepared[0]["cells"])
         forecasted = {capability.cell_key(c) for c in prepared[0]["cells"]}
-        stronger = [c["key"] for c in state["cells"] if c["classification"] == "overpowered" and c["key"] not in forecasted]
+        stronger = capability.widening_order(state, forecasted)
         if (not pickable and stronger and len(state["widening"]) < state["policy"]["widening_rounds"]
                 and len(forecasted) < state["policy"]["max_forecast_cells"]):
             next_cell = stronger[0]

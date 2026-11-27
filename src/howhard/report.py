@@ -1,6 +1,7 @@
 """Descriptive scores for observed real runs; no counterfactual quality claims."""
 
 from collections import Counter
+from copy import deepcopy
 import json
 import math
 
@@ -178,12 +179,19 @@ def filter_quality(engine, decisions=None):
                                "key": cell_key(item["value"]), "similarity_score": scores[item["key"]]})
     n = len(decisions)
     widened = sum(bool(d["capability"]["widening"]) for d in decisions.values())
+    # Each decision's host-aware band: the asking host's caught share, both edges, the core and
+    # the reserved cells. Receipts from before these fields have no entry.
+    bands = [{"decision_id": decision_id,
+              **{field: deepcopy(decision["capability"][field])
+                 for field in ("caught_share", "core", "proven_families", "reserved")}}
+             for decision_id, decision in decisions.items() if "caught_share" in decision["capability"]]
     total_fit = sum(fit.values())
     return {"decisions": n, "executions": executions,
             "fit_failures": {"executed": total_fit, "loud": fit["loud"], "silent": fit["silent"],
                              "interrupted": fit_interrupted,
                              "failure_rate": (fit["loud"]+fit["silent"])/total_fit if total_fit else None},
             "widening": {"decisions": widened, "rate": widened/n if n else None},
+            "bands": bands,
             "underpowered_later_clean": strict,
             "disagreements": {"count": sum(len(d["capability"]["disagreements"]) for d in decisions.values()),
                               "resolved": len(comparisons), "closer": dict(Counter(c["closer"] for c in comparisons)),

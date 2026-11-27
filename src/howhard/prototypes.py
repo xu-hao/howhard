@@ -1198,6 +1198,8 @@ def _synthesize_stage1_filter(cells, covered_info, policy):
     if max(clear.values()) < minimum:
         return {"order": order, "lower": order[-1], "upper": order[-1]}
 
+    # A synthesized filter stands in for the reader's prior, so it keeps the configured edges;
+    # the host's caught share moves the edges when the filter is aggregated.
     band = _forecast_band(order, clear, timely, policy)
     lo_key = band[0]
     hi_key = band[min(len(band), policy["max_forecast_cells"]) - 1]

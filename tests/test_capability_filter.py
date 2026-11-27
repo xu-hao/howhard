@@ -96,12 +96,14 @@ def test_unbounded_inventory_runs_both_stages_and_validates_receipt(tmp_path, co
     assert not {"memories", "beliefs", "evidence", "retrieval"} & pending["baseline_request"].keys()
     next_request = engine.decide(pending["request_id"], filtering(pending["baseline_request"], 3, 6))
     assert next_request["request_id"] != pending["request_id"]
-    assert len(next_request["baseline_request"]["cells"]) == 4
+    # The four band cells and, in the two reserved slots, the unproven neighbours on either side.
+    assert len(next_request["capability"]["band"]) == 4 and len(next_request["capability"]["reserved"]) == 2
+    assert len(next_request["baseline_request"]["cells"]) == 6
     result = finish(engine, next_request)
     receipt = load(engine.config, result["decision_id"])
     assert len(receipt["native_candidates"]) == count
     assert len(receipt["capability"]["cells"]) == count
-    assert len(receipt["semantic"]["worlds"]["llm"]) == 4
+    assert len(receipt["semantic"]["worlds"]["llm"]) == 6
     assert receipt["format"] == "howhard-decision-v11"
 
 
@@ -134,23 +136,25 @@ def test_oversized_band_gets_one_refilter_then_fails_without_truncation(tmp_path
     assert len(retry["baseline_request"]["cells"]) == 33
     with pytest.raises(HowHardError, match="max_forecast_cells.*tighter"):
         engine.decide(retry["request_id"], response)
-    # A valid re-filter keeps its entire requested band.
+    # A valid re-filter keeps its entire requested band, beside the two reserved cells.
     result = finish(engine, engine.decide(retry["request_id"], filtering(retry["baseline_request"], 9, 11)))
-    assert len(result["cells"]) == 3
+    assert len(result["capability"]["band"]) == 3 and len(result["cells"]) == 5
 
 
 def test_widening_requests_only_next_stronger_cells_and_selects_forecasted_one(tmp_path):
     engine = Engine(directory=tmp_path)
-    pending = start(engine, inventory(6))
-    pending = engine.decide(pending["request_id"], filtering(pending["baseline_request"], 1, 2))
+    pending = start(engine, inventory(7))
+    pending = engine.decide(pending["request_id"], filtering(pending["baseline_request"], 2, 3))
     initial = {c["model"] for c in pending["baseline_request"]["cells"]}
+    # The band and its two reserved neighbours: the next stronger cell and the next weaker one.
+    assert initial == {f"fixture/model-{i:03d}" for i in (1, 2, 3, 4)}
     wider = engine.decide(pending["request_id"], forecasts(pending["baseline_request"], silent=.8))
     assert wider["stage"] == "forecast"
-    assert [c["model"] for c in wider["baseline_request"]["cells"]] == ["fixture/model-003"]
+    assert [c["model"] for c in wider["baseline_request"]["cells"]] == ["fixture/model-005"]
     result = engine.decide(wider["request_id"], forecasts(wider["baseline_request"]), seed=42)
-    assert result["chosen"]["model"] == "fixture/model-003" and result["cap_met"]
+    assert result["chosen"]["model"] == "fixture/model-005" and result["cap_met"]
     assert len(result["capability"]["widening"]) == 1
-    assert {c["model"] for c in result["cells"]} == initial | {"fixture/model-003"}
+    assert {c["model"] for c in result["cells"]} == initial | {"fixture/model-005"}
     assert "fixture/model-000" not in {c["model"] for c in result["cells"]}
     load(engine.config, result["decision_id"])
 
@@ -163,17 +167,19 @@ def test_widening_is_bounded_before_existing_cap_unmet_policy(tmp_path):
         pending = engine.decide(pending["request_id"], forecasts(pending["baseline_request"], silent=.8), seed=1)
     assert len(pending["capability"]["widening"]) == 2
     assert not pending["cap_met"] and pending["needs_review"]
-    assert len(pending["cells"]) == 3
+    # One band cell, two reserved cells and one cell for each of the two widening rounds.
+    assert len(pending["cells"]) == 5
 
 
-def test_pick_drives_both_stages_and_only_forecasts_the_band(tmp_path):
+def test_pick_drives_both_stages_and_only_forecasts_the_band_and_its_reserved_cells(tmp_path):
     provider = ProtocolDouble(3, 5)
     engine = Engine(directory=tmp_path, llm=provider)
     result = engine.pick("task", "Repair rollback", native_candidates=inventory(200), seed=42)
     assert [r["kind"] for r in provider.calls] == ["filter", "predict"]
     assert len(provider.calls[0]["cells"]) == 200
-    assert len(provider.calls[1]["cells"]) == 3
-    assert len(result["cells"]) == 3
+    assert len(result["capability"]["band"]) == 3 and len(result["capability"]["reserved"]) == 2
+    assert len(provider.calls[1]["cells"]) == 5
+    assert len(result["cells"]) == 5
 
 
 @pytest.mark.parametrize("outcome", ["loud", "silent"])
@@ -379,11 +385,14 @@ def test_unreliable_inventory_cuts_band_at_best_attained_probability_not_invento
     hi = next(i for i in range(lo, len(p)) if max(p) - p[i] < policy["overpowered_gain_margin"])
     assert hi < len(p) - 1
     assert state["band"] == state["order"][lo:hi+1]
-    assert len(band["baseline_request"]["cells"]) == len(state["band"]) <= policy["max_forecast_cells"]
+    reserved = {item["key"] for item in state["reserved"]}
+    assert len(band["baseline_request"]["cells"]) == len(state["band"]) + len(reserved) <= policy["max_forecast_cells"]
     assert [c["classification"] for c in state["cells"][hi+1:]] == ["overpowered"] * (len(p) - hi - 1)
-    # Stronger cells remain reachable, one at a time, through stronger-only widening.
+    # Stronger cells remain reachable, one at a time, through stronger-only widening,
+    # which passes over a cell that a reserved slot already forecast.
     wider = engine.decide(band["request_id"], forecasts(band["baseline_request"], silent=.8))
-    assert [c["model"] for c in wider["baseline_request"]["cells"]] == [state["cells"][hi+1]["model"]]
+    following = next(c["model"] for c in state["cells"][hi+1:] if c["key"] not in reserved)
+    assert [c["model"] for c in wider["baseline_request"]["cells"]] == [following]
     result = engine.decide(wider["request_id"], forecasts(wider["baseline_request"]), seed=42)
     assert result["cap_met"] and len(result["capability"]["widening"]) == 1
     load(engine.config, result["decision_id"])
@@ -467,7 +476,8 @@ def test_large_learned_band_accepts_a_tight_refilter(tmp_path, monkeypatch, case
     assert state["order"] == order
     assert len(receipt["native_candidates"]) == len(state["cells"]) == 56
     forecasted = {capability.cell_key(c) for c in band["baseline_request"]["cells"]}
-    assert forecasted == set(state["band"])
+    reserved = [item["key"] for item in state["reserved"]]
+    assert forecasted == set(state["band"]) | set(reserved) and len(reserved) == 2
     assert len(receipt["semantic"]["worlds"]["llm"]) == len(forecasted) <= state["policy"]["max_forecast_cells"]
     if case == "underpowered-prefix":
         assert state["cells"][0]["P_clear"] < .01
@@ -480,9 +490,11 @@ def test_large_learned_band_accepts_a_tight_refilter(tmp_path, monkeypatch, case
         assert order[40] not in forecasted
         assert state["cells"][40]["classification"] == "intermediate"
 
-        # Widen beyond the stronger interval, and leave the intermediate gap out.
+        # Widen beyond the stronger interval, and leave the intermediate gap out. The cell just
+        # above the band already has a forecast from a reserved slot, so widening takes the next.
+        assert order[48] in reserved
         wider = engine.decide(band["request_id"], forecasts(band["baseline_request"], silent=.8))
-        assert [capability.cell_key(c) for c in wider["baseline_request"]["cells"]] == [order[48]]
+        assert [capability.cell_key(c) for c in wider["baseline_request"]["cells"]] == [order[49]]
         widened = finish(engine, wider)
         assert widened["cap_met"]
         load(engine.config, widened["decision_id"])
@@ -513,8 +525,9 @@ def _rewrite_stored_receipt(engine, decision_id, mutator):
 
 def test_frozen_capability_receipts_validate_replay_and_observe(tmp_path, monkeypatch, capsys):
     from howhard.cli import main
-    from legacy_receipts import legacy_capability_prior, to_v7, with_capability_v3
+    from legacy_receipts import legacy_capability_prior, to_v7, with_capability_v3, without_reserved_slots
     monkeypatch.chdir(tmp_path)
+    without_reserved_slots(tmp_path)
     cells = inventory(8)  # lower=1, upper=3 -> after_count = 4 >= 3
     candidates_file = tmp_path / "candidates.json"
     candidates_file.write_text(json.dumps(cells))

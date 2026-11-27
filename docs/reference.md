@@ -50,7 +50,11 @@ digits, `_` and `-`, at most 64 characters; `howhard` stores them and never veri
   capability cell). The label is not part of a cell's identity: two candidates with the
   same `model` and `effort` are duplicates whatever their labels.
 
-Neither name changes which cell is chosen. `report` lists both under `routing`.
+Selection among the forecast cells reads neither name. The capability filter reads
+both: the host's name picks whose failed runs set the two edges of the fit band, and
+the agent labels decide which agents the reserved forecast slots count as missing (see
+{ref}`the host's caught share <host-aware-band>` and
+{ref}`reserved forecast slots <reserved-slots>`). `report` lists both under `routing`.
 No-effort, null and `model_default` controls are refused. Unknown identities receive distinct
 opaque family labels for protocol bookkeeping, without model assumptions or effects.
 Configured identities retain their declared labels and evidence weights. Historical
@@ -724,9 +728,18 @@ root is refused. Prepared calling-agent requests bind the worktree and reject si
 retrieve/decide. Requests use `howhard-agent-request-v7` and new receipts use
 `howhard-decision-v11` (`howhard-semantic-v8` / `semantic-reader-v8`) with required
 `host`, capability and accepted-result selection state. Newly aggregated capability state uses
-`howhard-capability-v6`, whose cells each carry their `agent` label. Its `band` is an ordered list of forecast cells that can omit
-`intermediate` cells between its `lower` and `upper` endpoints. See
-[capability filtering](capability.md) for the band and widening rules.
+`howhard-capability-v6`, whose cells each carry their `agent` label. Its `band` is an ordered list of fit cells that can omit
+`intermediate` cells between its `lower` and `upper` endpoints. It also stores
+`caught_share` (`host`, `F_all`, `C_all`, `F_host`, `C_host`, `d_0`, `d_all`, `d_host`
+and the two band edges `e` and `g`), the `core` (the band's first
+`max_forecast_cells - reserved_forecast_cells` cells), `proven_families` (the families
+with a run among the evidence candidates) and `reserved` (each reserved cell's `key`,
+its `reason`, `unproven-family` or `missing-agent`, and its `bar`). The cells that
+carry forecasts are the core, the reserved cells, the band cells that took unfilled
+slots and the widening cells. Loading recomputes the caught shares, the edges, the
+band, the core, the reserved cells and the widening order from the stored numbers and
+refuses a receipt that does not follow from them. See
+[capability filtering](capability.md) for the band, reserved-slot and widening rules.
 `howhard-decision-v11` is open: its shape can still change before the release that
 freezes it, intermediate shapes are not kept readable, and requests prepared under
 `howhard-agent-request-v6` are refused, so prepare a new request. Persisted

@@ -352,6 +352,8 @@ def test_slow_clean_runs_do_not_prune_faster_stronger_cells_above_upper(tmp_path
 
 
 def test_frozen_v7_receipts_and_historical_journals_load_validate_observe_replay_and_report(tmp_path):
+    from legacy_receipts import without_reserved_slots
+    without_reserved_slots(tmp_path)
     engine = Engine(directory=tmp_path, retrieval=SimilarityDouble())
     cells = [{"model": f"fixture/model-{i:03d}", "effort": "high", "usd_per_mtok": 1.0} for i in range(4)]
 

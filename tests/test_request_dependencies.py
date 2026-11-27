@@ -220,7 +220,8 @@ def test_widening_preserves_snapshot_across_unrelated_writes(tmp_path):
     assert wider['stage'] == 'forecast' and len(wider['capability']['widening']) == 1
     write(tmp_path, 'unrelated', id='synthetic-after-widening')
     result = engine.decide(wider['request_id'], forecasts(wider['baseline_request']), seed=42)
-    assert result['cap_met'] and len(result['cells']) == 2
+    # The band cell, the two reserved cells above it and the cell widening added.
+    assert result['cap_met'] and len(result['cells']) == 4
     assert result['request_snapshot']['dependencies']['evidence'] == {}
 
 

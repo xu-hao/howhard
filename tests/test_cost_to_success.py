@@ -164,10 +164,13 @@ def test_accepted_risk_envelope_uses_each_experts_joint_probabilities(tmp_path):
 
 def test_forecasted_band_owns_worker_money_comparison(tmp_path):
     engine = Engine(directory=tmp_path)
+    # Two efforts of one model, so the unpriced cell outside the band takes no reserved forecast slot.
     cells = [{"model": "fixture/a", "effort": "high", "usd_per_mtok": 2.},
-             {"model": "fixture/b", "effort": "high"}]
+             {"model": "fixture/a", "effort": "low"}]
     first = engine.prepare("task", native_candidates=cells)
-    band = engine.decide(first["request_id"], filtering(first["baseline_request"], 0, 0))
+    keys = {c["effort"]: c["key"] for c in first["baseline_request"]["cells"]}
+    band = engine.decide(first["request_id"], filtering(first["baseline_request"], 1, 1, [keys["low"], keys["high"]]))
+    assert [c["effort"] for c in band["baseline_request"]["cells"]] == ["high"]
     row = band["baseline_request"]["cells"][0]
     response = {"forecasts": [{"family": row["family"], "effort": row["effort"], "clean": .99,
                                "loud": .009, "silent": .001, "tokens": 1000, "seconds": 10}],
