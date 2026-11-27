@@ -81,13 +81,14 @@ def fail(engine, decision_id, name, outcome, *, days=0., ticket=None):
     engine.refresh()
 
 
-def proven_inventory(engine):
-    """Seven cells of three agents; the families of cells 0, 4, 5 and 6 have a run among the candidate runs.
+def proven_inventory(engine, agents=("z", "a", "a", "a", "a", "q", "a"), proven=(0, 4, 5, 6)):
+    """Seven cells with the given agent labels; the families of the ``proven`` cells have a run
+    among the candidate runs.
 
     The runs do not move the capability threshold, so the reader's prior probabilities stand.
     """
-    cells = labelled(7, ["z", "a", "a", "a", "a", "q", "a"])
-    for index in (0, 4, 5, 6):
+    cells = labelled(len(agents), agents)
+    for index in proven:
         engine.observe("task", cells[index]["model"], "high", "silent", native=True, task_text="Repair rollback",
                        note="capability_caused=false; outage", id=f"proven-{index}")
     return cells
@@ -319,6 +320,54 @@ def test_the_first_slot_goes_to_an_unproven_family_and_the_second_to_a_missing_a
     assert state["reserved"] == [{"key": order[1], "reason": "unproven-family", "bar": .2},
                                  {"key": order[5], "reason": "missing-agent", "bar": .5}]
     assert asked(pending) == sorted(models(state, state["band"] + [order[1], order[5]]))
+    load(engine.config, decided(engine, pending)["decision_id"])
+
+
+def test_two_proven_families_of_one_missing_agent_share_one_slot_and_a_second_agent_takes_the_other(tmp_path):
+    engine = Engine(directory=tmp_path, retrieval=SimilarityDouble())
+    # Above a band of agent "a": two proven families of agent "q", then one of agent "r".
+    pending = filtered(engine, proven_inventory(engine, ("a", "a", "a", "q", "q", "r", "a"), (2, 3, 4, 5, 6)), 0, 1)
+    state = pending["capability"]
+    order = state["order"]
+    assert state["core"] == state["band"] and state["band"][0] == order[0] and order[3] not in state["band"]
+    # Cell 3 is the nearest qualifying cell of agent "q" and serves it; cell 4 takes no slot.
+    assert state["reserved"] == [{"key": order[3], "reason": "missing-agent", "bar": .5},
+                                 {"key": order[5], "reason": "missing-agent", "bar": .5}]
+    assert asked(pending) == sorted(models(state, state["band"] + [order[3], order[5]]))
+    receipt = load(engine.config, decided(engine, pending)["decision_id"])
+    # A receipt that gives both slots to one agent does not follow from its stored numbers.
+    receipt["capability"]["reserved"][1]["key"] = order[4]
+    with pytest.raises(HowHardError, match="reserved cells do not follow"):
+        load(engine.config, receipt)
+
+
+def test_an_agent_whose_unproven_family_took_a_slot_is_served_and_the_next_missing_agent_follows(tmp_path):
+    engine = Engine(directory=tmp_path, retrieval=SimilarityDouble())
+    # Agent "q" has an unproven family at cell 3 and a proven one at cell 4; agent "r" a proven one at cell 5.
+    pending = filtered(engine, proven_inventory(engine, ("a", "a", "a", "q", "q", "r", "a"), (2, 4, 5, 6)), 0, 1)
+    state = pending["capability"]
+    order = state["order"]
+    assert state["reserved"] == [{"key": order[3], "reason": "unproven-family", "bar": .2},
+                                 {"key": order[5], "reason": "missing-agent", "bar": .5}]
+    load(engine.config, decided(engine, pending)["decision_id"])
+
+
+def test_a_slot_no_other_missing_agent_takes_goes_back_to_the_band(tmp_path):
+    engine = configured(tmp_path, "max_forecast_cells = 4", retrieval=SimilarityDouble())
+    # One model at four efforts is the band, with a core of two; above it, two proven families of agent "q".
+    cells = [{"model": "fixture/base", "effort": e, "agent": "a"} for e in ("low", "medium", "high", "xhigh")]
+    cells += [{"model": f"fixture/other-{i}", "effort": "high", "agent": "q"} for i in range(2)]
+    for cell in cells[3:]:
+        engine.observe("task", cell["model"], cell["effort"], "silent", native=True, task_text="Repair rollback",
+                       note="capability_caused=false; outage", id="proven-" + cell["model"][-7:] + cell["effort"])
+    pending = filtered(engine, cells, 0, 3)
+    state = pending["capability"]
+    order = state["order"]
+    assert state["band"] == order[:4] and state["core"] == order[:2]
+    # Agent "q" takes one slot at its nearest cell; the other slot goes back to the band's third cell.
+    assert state["reserved"] == [{"key": order[4], "reason": "missing-agent", "bar": .5}]
+    assert {(c["model"], c["effort"]) for c in pending["request"]["cells"]} == {
+        ("fixture/base", "low"), ("fixture/base", "medium"), ("fixture/base", "high"), ("fixture/other-0", "high")}
     load(engine.config, decided(engine, pending)["decision_id"])
 
 

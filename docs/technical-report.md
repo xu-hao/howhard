@@ -373,8 +373,11 @@ reserved:
 Here {math}`f` is a family with no core cell and {math}`o_f` its cell nearest to the
 core in the order, the stronger one on a tie. The bar {math}`b_f` is 0.2 when no run
 of {math}`f` is among the decision's candidate runs, and {math}`e` otherwise. Slots go
-first to those unproven families and then to proven families whose agent has no core
-cell, nearest first. In plain words: a slot buys one forecast for a family or an agent
+first to those unproven families, each on its own and nearest first. The remaining
+slots go to agents with no core cell, at most one slot per agent: a proven family
+whose agent is missing takes the slot on that agent's behalf, at the agent's
+qualifying cell nearest to the core, and an agent whose unproven family already took a
+slot counts as served. In plain words: a slot buys one forecast for a family or an agent
 the band leaves out. For example, a band of 11 cells with {math}`B=12` has a core of
 ten. A family with no candidate run whose nearest cell has
 {math}`P_{\mathrm{clear}}=0.35` takes the first slot, and an agent with no core cell

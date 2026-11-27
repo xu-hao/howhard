@@ -24,8 +24,9 @@
   Two of the `max_forecast_cells` slots are reserved: the core is the band's first
   `max_forecast_cells - 2` cells, and up to two further cells are forecast, first for
   model families with no run among the evidence candidates (at `P_clear >= 0.2`), then
-  for proven families whose `agent` has no core cell (at `P_clear >= e`), each at the
-  family's cell nearest to the core. A slot that no family takes goes back to the
+  for agents with no core cell (at `P_clear >= e`): a proven family whose `agent` is
+  missing takes at most one slot for that agent, and an agent whose unproven family
+  already took a slot counts as served. Each slot goes to the nearest qualifying cell. A slot that no family takes goes back to the
   band, so with no family to reserve for the forecast cells are the band as before. A
   forecast request can therefore include a cell classified `underpowered` or
   `overpowered`. Widening takes the next stronger cell with no forecast: band cells

@@ -407,8 +407,11 @@ def _reserved(cells, core, share, proven, policy):
 
     A slot buys one forecast for a family the core leaves out, at its cell nearest to the
     core in the order (the stronger one on a tie). Unproven families, with no run among
-    the candidate runs, come first at the bar ``unproven_clear_probability``; then families
-    whose agent has no core cell, at the lower edge ``e``; nearest first within each.
+    the candidate runs, come first, each on its own, at the bar ``unproven_clear_probability``.
+    A proven family whose agent has no core cell takes a slot on behalf of that agent, at
+    the lower edge ``e``: at most one slot per missing agent, given to its qualifying cell
+    nearest to the core. An agent whose unproven family already took a slot is served.
+    Nearest first within each group.
     """
     slots, inside = policy["reserved_forecast_cells"], set(core)
     positions = [c["position"] for c in cells if c["key"] in inside]
@@ -430,9 +433,15 @@ def _reserved(cells, core, share, proven, policy):
         else:
             continue
         if c["P_clear"] >= bar:
-            groups[reason].append((rank, {"key": c["key"], "reason": reason, "bar": bar}))
-    ranked = [item for reason in RESERVED_REASONS for _, item in sorted(groups[reason], key=lambda pair: pair[0])]
-    return ranked[:slots]
+            groups[reason].append((rank, c["agent"], {"key": c["key"], "reason": reason, "bar": bar}))
+    taken, served = [], set()
+    for reason in RESERVED_REASONS:
+        for _, agent, item in sorted(groups[reason], key=lambda entry: entry[0]):
+            if len(taken) == slots or (reason == "missing-agent" and agent in served):
+                continue
+            taken.append(item)
+            served.add(agent)
+    return taken
 
 
 def forecast_cells(state):

@@ -167,7 +167,8 @@ run on record the edges are the configured 0.5 and 0.05. The default fine-foreca
 budget is 12, of which two slots are reserved: `capability.reserved` lists up to two
 cells outside the core of the band that are forecast anyway, first for a model family
 with no run on this kind of task (`unproven-family`, needs `P_clear >= 0.2`), then for
-an agent with no core cell (`missing-agent`, needs `P_clear >= e`). A reserved cell
+an agent with no core cell (`missing-agent`, needs `P_clear >= e`, at most one slot
+per agent). A reserved cell
 keeps its classification, so the forecast request can include an `underpowered` or
 `overpowered` cell. There is one explicit re-filter and up to two stronger-only
 widening rounds, each taking the next stronger cell with no forecast. Only

@@ -276,17 +276,24 @@ forecast = core + up to reserved_forecast_cells cells o_f with P_clear(o_f) >= b
   and the lower edge `e` otherwise.
 
 In plain words: a slot buys one forecast for a family or an agent that the band leaves
-out. Slots go first to unproven families, those with no candidate run, and then to
-proven families whose agent has no core cell; within each group the family nearest to
-the core comes first. A proven family whose agent already has a core cell takes no
-slot. An agent is the `agent` label of the family's nearest cell, and cells with no
-label share the one unnamed agent.
+out. Slots go first to unproven families, those with no candidate run. Each unproven
+family competes on its own, the one nearest to the core first. The remaining slots go
+to missing agents, those with no core cell. A proven family that qualifies only
+because its agent is missing takes a slot on behalf of that agent, so a missing agent
+gets at most one slot: it goes to the agent's qualifying cell nearest to the core, the
+stronger one on a tie, and the next slot goes to the next missing agent or back to the
+band. An agent whose unproven family already took a slot counts as served. A proven
+family whose agent has a core cell takes no slot. An agent is the `agent` label of the
+family's nearest cell, and cells with no label share the one unnamed agent.
 
 For example, with the default budget of 12 a band of 11 cells has a core of ten.
 Family X has no candidate run and its nearest cell has `P_clear = 0.35`, above 0.2: it
 takes the first slot. Agent Q has no core cell and the band's eleventh cell is its
 nearest: that cell takes the second slot. With neither X nor Q, the eleventh cell is
-forecast as an ordinary band cell.
+forecast as an ordinary band cell. With no unproven family, two proven families of
+agent Q above the band and one proven family of another missing agent R beyond them,
+Q's nearer cell takes the first slot and R's cell the second; Q's other family takes
+none.
 
 A slot that no family takes goes back to the band: the band's next cell beyond the
 core is forecast. With no family to reserve for, the forecast cells are the band's
