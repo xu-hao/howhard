@@ -12,21 +12,49 @@ there is no token/time regression, lexical outcome predictor or statistical risk
 (accepted-result-selection)=
 ## Selection
 
-For each supplied native model and effort/control cell, minimize
+For each supplied native model and effort/control cell, minimize the cost to an accepted
+result, averaged over the cell's beliefs:
 
 ```text
-J = (C_run + lambda_per_hour * T + C_loud * P_loud + C_silent * P_silent)
-    / max(probability_floor, 1 - P_loud)
+J(c)  = (C_run + lambda_per_hour * E[T]) * E[R] + C_loud * (E[R] - 1) + C_silent * E[S]
+R     = 1 / (1 - theta_l) = 1 + exp(u)
+C_run = q * E[K]
 ```
 
-`C_run` is the expected actual session money cost (`session_cost_usd`). The candidate's
-`rate_card` or `usd_per_mtok` gives raw public API list-price quota credit, reported as
-`needed_credit_usd`; `cost_per_credit` converts that credit amount to session cost and
-defaults to `1.0` for pay-as-you-go. A free tier can set it to `0.0`. `T` is the expected
-active hours of one run. `T` and `needed_credit_usd` are the averages of the cell's
-{ref}`beliefs for active time and tokens <amount-beliefs>`. Every belief starts from a
-{ref}`corrected prediction <corrected-prediction>`: the forecast, corrected from the
-record of the same host on other tasks.
+- `c`: a cell, one model family at one effort.
+- `theta_l`, `u`: the cell's loud rate and its log-odds.
+- `R`: the attempts until a run is not loud, so `R - 1` is the loud failures per accepted
+  result. `E[R]` is summed over the grid of the loud rate's
+  {ref}`belief <outcome-posterior>` and stored as `expected_attempts`.
+- `S`: the accepted-defect share, silent results divided by accepted results. `E[S]` is
+  summed over the grid of its belief.
+- `K`: the credit of one run, from the cell's
+  {ref}`token beliefs <amount-beliefs>`. `E[K]` is `needed_credit_usd`.
+- `q`: the cell's `cost_per_credit`, or 0 when the cost policy excludes worker money.
+  `C_run` is the expected session money cost of one run, `session_cost_usd`.
+- `T`: the active time of one run in hours. `E[T]` is the average of the cell's
+  {ref}`active-time belief <amount-beliefs>` after its counted runs, stored as `T`.
+- `lambda_per_hour`, `C_loud`, `C_silent`: the risk class's price of an hour, of a loud
+  failure and of an accepted defect.
+
+In plain words: every attempt costs its credit and its time, a loud run is retried, and
+each loud failure and each accepted defect has a price.
+
+The average is taken over the belief because the retry factor is curved. For example, a
+belief split evenly between loud rates of 0.2 and 0.6 averages 0.4. The cost at the
+average charges `1 / 0.6 = 1.67` attempts, and the average over the belief charges
+`(1.25 + 2.5) / 2 = 1.875`.
+
+Example, with the packaged `standard` class (`lambda_per_hour` 25, `C_loud` 50,
+`C_silent` 1,000): `C_run = 2`, `E[T] = 0.5`, `E[R] = 1.25` and `E[S] = 0.04` give
+`J = 14.5 * 1.25 + 50 * 0.25 + 1,000 * 0.04 = 70.625`.
+
+The candidate's `rate_card` or `usd_per_mtok` gives raw public API list-price quota
+credit, reported as `needed_credit_usd`; `cost_per_credit` converts that credit amount to
+session cost and defaults to `1.0` for pay-as-you-go. A free tier can set it to `0.0`.
+The {ref}`spread of the cost and the draw <cost-spread-and-draw>` follow from the same
+beliefs. Every belief starts from a {ref}`corrected prediction <corrected-prediction>`:
+the forecast, corrected from the record of the same host on other tasks.
 
 The caller supplies any nonempty number of distinct actual cells through `--candidates FILE` or Python
 `native_candidates`. External routers can explicitly select a saved list from
@@ -503,8 +531,8 @@ m'     = m + s'^2 * sum_i w_i * (y_i - m) / tau^2
 E[T]   = exp(m' + s'^2 / 2)
 ```
 
-- `i`, `w_i`, `W`: a same-cell run in `semantic.duration_observations`, its weight, and
-  the sum of the weights.
+- `i`, `w_i`, `W`: a same-cell run in `semantic.duration_observations` that records an
+  active time, its weight, and the sum of the weights.
 - `y_i`: the log of run i's active seconds.
 - `m'`, `s'`: the centre and spread after the runs.
 - `E[T]`: the belief's average. In hours it is `T` in the cost.
@@ -523,11 +551,18 @@ total `seconds` when no active time was recorded, so a total that includes waiti
 as active time. `interrupted` runs are excluded.
 
 **Token beliefs.** Each of the six token kinds gets a belief of the same form, with its
-own prediction, `D` and `N_start`, updated the same way and at the same weights from
-those same-cell runs whose `execution_usage` is `complete`. Each scored candidate, and each row
-of `duration_observations` counted from it, carries what its run recorded: `tokens` (the
-total, or null) and `token_usage` (the count of each kind over a complete usage envelope,
-or null). A run without complete usage leaves the kinds unchanged.
+own prediction, `D` and `N_start`, updated the same way and at the same weight for each
+run, `m_i * sim_i * a_i` after the limit over the cell's own runs, from the same-cell runs
+whose `execution_usage` is `complete`, whether or not the run records an active time. Each scored candidate, and each row of
+`duration_observations` counted from it, carries what its run recorded:
+`active_seconds` (or null), `tokens` (the total, or null) and `token_usage` (the count of
+each kind over a complete usage envelope, or null). A same-cell candidate has a row when
+it records an active time, complete usage or a total `tokens` count, and each belief
+reads only the rows that record its value. A run without complete usage leaves the
+kinds unchanged, and a run with complete usage and no active time moves the token
+beliefs and leaves the active-time belief unchanged. A run that records only a total
+`tokens` count, with neither an active time nor complete usage, moves the total-`tokens`
+belief alone: not the active-time belief, and no token-kind belief.
 
 - Zero: a kind that every expert forecasts at zero, with no non-zero upper end, is
   exactly zero and has no spread. No run moves it.
@@ -589,9 +624,10 @@ P_loud = E[theta_l]    P_silent = (1 - E[theta_l]) * E[S]    P_clean = (1 - E[th
 ```
 
 For example, `E[theta_l] = 0.20` and `E[S] = 0.10` give `P_loud = 0.20`,
-`P_silent = 0.08` and `P_clean = 0.72`. `J` is the cost formula above at `P_loud` and
-`P_silent`. There is no additional statistical risk floor, and a belief is a model
-assumption, not a calibrated coverage guarantee.
+`P_silent = 0.08` and `P_clean = 0.72`. The three means are reports: `J` is averaged
+over the two beliefs and is not the cost at these means. There is no additional
+statistical risk floor, and a belief is a model assumption, not a calibrated coverage
+guarantee.
 
 (corrected-prediction)=
 ### The corrected prediction
@@ -846,8 +882,9 @@ chosen = the eligible cell with the lowest sampled J
 - `credit_ok(c)`: the cell has enough credit (see the
   {ref}`credit budget <credit-budget>`).
 - `all_excluded_factor`: 0.5 by default.
-- `J`, `sd`, sampled `J`: the cell's mean cost, its `cost_sd` and its cost under the
-  seed's draw (`sampled_J`).
+- `J`, `sd`, sampled `J`: the cell's cost averaged over its beliefs, the exact spread of
+  that cost (`cost_sd`) and its cost under the seed's draw (`sampled_J`); see
+  {ref}`the spread of the cost and the draw <cost-spread-and-draw>`.
 - `uncertainty_multiplier`: 1 by default. A risk class's `explore_within` additionally
   caps the gap at `explore_within * |J(best)|`.
 
@@ -879,88 +916,156 @@ than the mean-best), `mean-best` or `disabled-no-supported-alternative` (one eli
 cell). The three constants are frozen with the rest of the policy in
 `selection.sampling_policy`.
 
-### The draw
+(cost-spread-and-draw)=
+### The spread of the cost and the draw
 
-A sample is drawn for every decision, so `semantic.sampling.enabled` is always true.
-`pick` samples one expert by its weight. Then each cell, in order, takes one uniform
-number for `theta_l` and one for `S`, each read at the first grid point whose running
-total of the belief reaches it, and then its active-time draw:
-
-```text
-sampled J = run / (1 - theta_l) + C_loud * theta_l / (1 - theta_l) + C_silent * S
-            + lambda_per_hour * hours / (1 - theta_l)
-```
-
-- `theta_l`, `S`: the sampled loud rate and accepted-defect share of the cell.
-- `run`: the cell's run cost, the average of its {ref}`belief <amount-beliefs>`.
-- `hours`: the sampled active time of the cell.
-- `C_loud`, `C_silent`, `lambda_per_hour`: the risk class's costs.
-
-For example, `run = 2`, one hour at 25 dollars, `C_loud = 50`, `C_silent = 1000`,
-`theta_l = 0.20` and `S = 0.10` give `2.5 + 12.5 + 100 + 31.25 = 146.25`.
-
-Forecasted `seconds` represents expected **active** execution duration excluding
-external queue wait. `T` and `C_run` in `J` are the averages of the cell's
-{ref}`beliefs <amount-beliefs>`. Every value of a cell, its two rates, its active time
-and its run cost, is one belief merged over the experts, so none depends on the sampled
-expert, and experts that disagree widen the beliefs themselves. `cost_sd` is the
-delta-method spread of the retry cost. Its part from the two rates is
+**The exact spread.** Credit, active time, the loud rate and the accepted-defect share
+are four independent beliefs of a cell, so the spread of its cost follows from their
+means and variances with no approximation.
 
 ```text
-Var_rates(J) = ((C_loud + J - C_silent * E[S]) / (1 - P_loud))^2 * Var(theta_l) + C_silent^2 * Var(S)
+X      = q * K + lambda_per_hour * T + C_loud        so that  J = X * R - C_loud + C_silent * S
+Var(J) = E[X^2] * E[R^2] - (E[X] * E[R])^2 + C_silent^2 * Var(S)
+E[X]   = C_run + lambda_per_hour * E[T] + C_loud
+E[X^2] = q^2 * Var(K) + lambda_per_hour^2 * Var(T) + E[X]^2
+Var(T) = E[T]^2 * (exp(s'^2) - 1)
+sd(c)  = sqrt(Var(J))
 ```
 
-- `J`: the cell's mean cost.
-- `Var(theta_l)`, `Var(S)`: the variances of the two beliefs on the grid. The beliefs
-  are independent, so their parts add.
+- `X`: what one attempt costs, plus `C_loud`.
+- `E[R]`, `E[R^2]`: the averages of `1 + exp(u)` and of `(1 + exp(u))^2`, summed on the
+  grid of the loud rate's belief.
+- `Var(S)`: the average of `S^2` minus `E[S]^2`, summed on the grid of its belief.
+- `Var(K)`: the variance of the credit of one run, `credit_variance`.
+- `s'`: the spread of the active-time belief after its counted runs, in log seconds.
+  `Var(T)` is in hours squared.
+- `sd(c)`: the spread of the cell's cost, stored as `cost_sd` on the cell's entry of
+  `semantic.sampling.cells`.
 
-For example, `J = 146.25`, `C_loud = 50`, `C_silent = 1000`, `P_loud = 0.20`,
-`E[S] = 0.10`, `Var(theta_l) = 0.0314` and `Var(S) = 0.0188` give
-`120.3^2 * 0.0314 + 1000^2 * 0.0188`, about 19,300: a spread of 139. The active-time
-term `(lambda_per_hour / (1 - P_loud))^2 * E[T]^2 * (exp(s'^2) - 1)` is added. Run cost
-is exact in `cost_sd` and in the draw: its spread enters the credit check only. Thompson sampling
-considers every cell of the pool whose posterior cost overlaps the pool's mean-best
-cell: `J - J_best <= uncertainty_multiplier * (sd_best + sd_cell)`. Only an explicit
-risk-class `explore_within` additionally caps that gap at `explore_within * |J_best|`.
-Thompson sampling draws each cell's active time from `ln T ~ Normal(m', s'^2)` in
-`parts["time"]`. Receipts retain the scored `evidence_candidates`, the
-`outcome_observations` and `duration_observations` read from them, each cell's
-`outcome_counts`, each sampled cell's
-`outcome_beliefs`, each cell's beliefs for active time and tokens, `pi`, `tier` and
-`admission_risk`, the seed and the reason for a sampled non-best choice.
+Example, continuing the cost example above with `q = 1`, `sd(K) = 1`, `s' = 0.6`,
+`E[R^2] = 1.60` and `sd(S) = 0.03`: `Var(T) = 0.25 * (exp(0.36) - 1) = 0.1083`,
+`E[X] = 64.5` and `E[X^2] = 1 + 625 * 0.1083 + 4,160.25 = 4,228.96`.
+`Var(J) = 4,228.96 * 1.60 - 80.625^2 + 900 = 1,165.94`, so `sd(c) = 34.15`.
+
+A wider stated range on active time or on a token kind raises that cell's `cost_sd`.
+It changes neither the cell's `J`, because a belief averages to its prediction however
+wide it is, nor any number of another cell.
+
+**Eligibility.** A cell of the pool competes when its cost and the best cost overlap
+within their spreads:
+
+```text
+eligible(c) <=> J(c) - J(c*) <= uncertainty_multiplier * (sd(c*) + sd(c))
+```
+
+- `c*`: the pool's cell with the lowest `J`.
+- `uncertainty_multiplier`: the `[sampling]` key, 1 by default. When the risk class sets
+  `explore_within`, the gap is also capped at `explore_within * |J(c*)|`.
+
+Example: `c*` has `J` 70.6 and spread 34.2. A cell with `J` 110 and spread 20 is
+eligible, because the gap of 39.4 is at most 54.2. A cell with `J` 140 and spread 10 is
+not, because 69.4 exceeds 44.2.
+
+**The draw.** A sample is drawn for every decision, so `semantic.sampling.enabled` is
+always true. Each forecast cell draws one value of everything it is uncertain about,
+and the lowest sampled cost among the eligible cells wins. No expert is drawn: every
+value of a cell is one belief merged over the experts, and experts that disagree widen
+the beliefs themselves.
+
+```text
+S_s = logistic(v_j)      j = the first point where the running total of the accepted-defect belief reaches U_S
+R_s = 1 + exp(u_j)       j = the same on the loud belief, with U_u
+T_s = exp(m' + s' * z(U_T)) / 3600
+n_a = exp(m_a + s_a * z(U_K))        for every token kind a
+J_s = (q * K_s + lambda_per_hour * T_s) * R_s + C_loud * (R_s - 1) + C_silent * S_s
+chosen = the eligible cell with the lowest J_s
+```
+
+- `U_S`, `U_u`, `U_T`, `U_K`: four uniform numbers strictly between 0 and 1, drawn in
+  this order for every forecast cell.
+- `j`, `v_j`, `u_j`: a grid point and its log-odds on the two beliefs. It is the last
+  point when rounding keeps the running total below `U`.
+- `z(U)`: the standard normal value with probability `U` below it.
+- `m'`, `s'`: the centre and spread of the active-time belief, in log seconds. `T_s` is
+  in hours.
+- `m_a`, `s_a`: the centre and spread of the belief of token kind `a`, and `n_a` its
+  sampled count. One `U_K` serves every kind, because the kinds move together. A kind
+  that is exactly zero stays zero.
+- `K_s`: the credit of the counts `n_a`, priced at the cell's rates as their averages
+  are.
+- `J_s`: the sampled cost, stored as `sampled_J`.
+
+In plain words: a wide belief sometimes draws a low cost, so its cell is tried.
+
+Example: `S_s = 0.02`, `R_s = 1.25`, `T_s = 0.4` and `q * K_s = 1.50` give
+`J_s = 11.5 * 1.25 + 12.5 + 20 = 46.875`.
+
+The numbers come from `numpy.random.PCG64` seeded with the stored `seed`. Each `U` is
+`((r >> 12) + 0.5) / 2^52` from one raw 64-bit output `r`, so a replay does not depend
+on a library's distribution methods. Cells draw in the order of
+`semantic.sampling.cells`, eligible or not, so the stream does not depend on the pool.
+Ties go to the lower `J`, then family and effort. The seed is `--seed` or 64 random
+bits. `summary` returns the same costs, ranges, beliefs and tiers and makes no draw.
+
+Each entry of `semantic.sampling.cells` stores `family`, `effort`, the cell's
+`outcome_beliefs`, `probabilities`, `cost_sd` and `sampled`:
+
+| Field of `sampled` | Content |
+| --- | --- |
+| `S` | `S_s`, the sampled accepted-defect share |
+| `u` | `u_j`, the sampled log-odds of the loud rate, so `R_s = 1 + exp(u)` |
+| `seconds` | `3600 * T_s`, the sampled active seconds |
+| `credit` | `K_s`, the sampled credit of one run; null for an unpriced cell |
+
 `outcome_beliefs.loud` and `outcome_beliefs.silent` each hold `prediction`,
 `stated_spread`, `n_start`, `spread`, `centre`, `counts` (`[n_yes, n_no]`), `mean`,
-`lower` and `upper`; `silent` adds `pi`, and `loud` adds `attempts` and `odds`, the two
-expectations above. `summary`
-returns the same means, ranges, beliefs and tiers without sampling a selection. A
-fixed seed reproduces selection given frozen forecasts and the request's scored evidence
-candidates; it does not make inference deterministic. A receipt records the time its
-request was prepared, because the age of every counted run is measured to that moment,
-so two decisions prepared at different times are different receipts even when nothing
-else differs. Loading a stored decision recomputes both beliefs of every forecast cell
-from its frozen forecasts, expert weights, outcome observations, agent labels and policy,
-and refuses a receipt in which a counted sum, a belief, a `P_*` field, `pi`, `tier`, `admissible`, `J`,
-`exploration.pool`, the chosen cell or a flag disagrees with them.
+`lower` and `upper`; `silent` adds `pi`, and `loud` adds `attempts` and `odds`, which
+are `E[R]` and `E[R] - 1`. A v11 receipt has no `semantic.sampled_expert`.
+
+Forecasted `seconds` represents expected **active** execution duration excluding
+external queue wait. Receipts retain the scored `evidence_candidates`, the
+`outcome_observations` and `duration_observations` read from them, each cell's
+`outcome_counts` and beliefs, `pi`, `tier` and `admission_risk`, the seed, the sampled values and the reason
+for a sampled non-best choice. A fixed seed reproduces selection given frozen forecasts
+and the request's scored evidence candidates; it does not make inference deterministic.
+A receipt records the time its request was prepared, because the age of every counted
+run is measured to that moment, so two decisions prepared at different times are
+different receipts even when nothing else differs.
+
+Loading a stored decision recomputes every belief of every forecast cell from its
+frozen forecasts, expert weights, counted runs, agent labels and policy, then `J`,
+`expected_attempts` and `cost_sd` from those beliefs on the same grid, and replays the
+draw from `seed`. A receipt in which a counted sum, a belief, a `P_*` field, `pi`, `tier`,
+`admissible`, `J`, `expected_attempts`, `cost_sd`, a sampled value, a `sampled_J`,
+`exploration.pool`, `exploration.eligible_cells`, the chosen cell or a flag disagrees
+is refused with a message that names the field.
 
 Loud attempts are retried on the same cell until a non-loud result is accepted.
-`1/(1-P_loud)` charges the expected attempts; `C_loud` is extra detection/rework overhead
-per loud failure, in addition to the repeated time/money. The probability floor keeps
-a near-certain loud failure finite but very costly. Retry-on-another-cell is not assumed.
+`E[R]` charges the expected attempts; `C_loud` is extra detection/rework overhead
+per loud failure, in addition to the repeated time/money. The grid's highest loud rate,
+0.99988, keeps a near-certain loud failure finite but very costly.
+Retry-on-another-cell is not assumed.
 
 Risk-class `explore_within` can further tighten the posterior-overlap band; it cannot
 permit exploration outside it. Each cheaper alternative is explained in `why`:
 `insufficient-credit`, `silent-cap` for a cell outside the pool (the message quotes its
 `pi`), `explore-within` or `posterior-overlap` for a pool cell outside the band, and
-otherwise `sampled-cost` with signed cost components.
+otherwise `sampled-cost` with signed `components`: for each of the four parts of the
+sampled cost, that cell's part minus the chosen cell's.
+
+```text
+run = q * K_s * R_s    time = lambda_per_hour * T_s * R_s    loud = C_loud * (R_s - 1)    silent = C_silent * S_s
+```
 
 New receipts use `howhard-decision-v11` (`howhard-semantic-v8`, reader prompt
 `semantic-reader-v8`, interval kind `log-odds-grid`). Loading a v11
 receipt recomputes every belief from its frozen forecast panels, expert weights,
 `outcome_observations`, `duration_observations` and sampling policy, then each cell's
 `outcome_counts`, the `P_*`
-fields, `pi`, `T`, the three credit numbers, `session_cost_usd`, `credit_ok` and `J`,
-and every {ref}`reused memory-free row <stored-forecasts>` from its sources; a
-receipt whose stored values differ is refused.
+fields, `pi`, `T`, the three credit numbers, `session_cost_usd`, `credit_ok`, `J`,
+`expected_attempts` and `cost_sd`, and every
+{ref}`reused memory-free row <stored-forecasts>` from its sources, and replays the draw
+from the seed; a receipt whose stored values differ is refused.
 Frozen `howhard-decision-v10` and `howhard-decision-v9` receipts keep the outcome
 posterior they recorded (interval kind `dirichlet-posterior-mixture`): each expert's
 forecast as a Dirichlet prior of at most `prior_strength` pseudo-observations plus the
@@ -983,7 +1088,10 @@ keep the cap as they recorded it:
 | `exploration.enabled` | `cap_met` and more than one eligible cell | More than one eligible cell |
 | Cell fields | `admissible`, and `admission_risk` from v9; four `{mean, lower, upper}` probabilities | Also `pi` and `tier`; `P_clean` and `P_silent` carry `mean` only |
 | `selection.sampling_policy` | Without the two tier constants; with `prior_strength`, `min_concentration` and `max_concentration` | With `trial_probability`, `all_excluded_factor`, `model_worth`, `task_worth_silent` and `task_worth_loud` |
-| `semantic.sampling.cells[]` | `outcome_posterior` and `concentration` from v9 | `outcome_beliefs.loud` and `outcome_beliefs.silent` |
+| `semantic.sampling.cells[]` | `outcome_posterior` and `concentration` from v9; the drawn `expert` | `outcome_beliefs.loud` and `outcome_beliefs.silent`; `sampled`; no `expert` |
+| `J`, `expected_attempts` | The cost at the posterior means: `(C_run + lambda_per_hour * T + C_loud * P_loud + C_silent * P_silent) / max(0.0001, 1 - P_loud)`, with `1 / max(0.0001, 1 - P_loud)` attempts | The cost averaged over the beliefs, with `E[R]` attempts |
+| `cost_sd` | A first-order spread that treats run cost as exact; not recomputed on load | The exact spread, recomputed on load |
+| The draw | One expert drawn by weight (`semantic.sampled_expert`), then each cell's rates and active time; not replayed on load | Four uniform numbers per forecast cell from `PCG64`; replayed on load |
 | Widening labels | Trigger `silent-cap-unmet`; stop `cap-met` | Trigger `all-excluded`; stop `pickable` |
 
 ## Prices and measurements

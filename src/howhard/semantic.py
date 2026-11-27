@@ -642,12 +642,16 @@ def outcome_observations(candidates):
 
 
 def duration_observations(candidates, pairs):
-    """Runs of each forecast cell itself that record an active time: ``m * sim * a``, limited per ticket.
+    """Runs of each forecast cell itself that record an amount: ``m * sim * a``, limited per ticket.
 
     Active time and tokens count runs of the same cell only: no related cell's run enters, and
-    the per-ticket limit runs over the cell's own candidate runs. Each row also carries what
-    its run recorded for the token beliefs: total ``tokens``, and ``token_usage`` by kind
-    when the run's execution usage is complete.
+    the per-ticket limit runs over the cell's own candidate runs. Each row carries what its
+    run recorded for the amount beliefs: ``active_seconds``, total ``tokens``, and
+    ``token_usage`` by kind when the run's execution usage is complete. A run has a row when
+    it records any of the three, and each belief reads only the rows that record its value.
+    A run with complete usage and no active time has ``active_seconds`` null: it moves the
+    token beliefs and leaves the active-time belief unchanged. A run that records only a
+    total ``tokens`` count moves the total-tokens belief alone.
     """
     from . import evidence
     result = []
@@ -656,9 +660,10 @@ def duration_observations(candidates, pairs):
                if (item["family"], item["effort"]) == pair]
         shares = evidence.ticket_shares([(item["ticket"], value) for item, value in own])
         for (item, value), share in zip(own, shares):
-            if item["active_seconds"] is not None:
+            active = item["active_seconds"]
+            if active is not None or item["token_usage"] is not None or item["tokens"] is not None:
                 result.append({"id": item["id"], "family": pair[0], "effort": pair[1],
-                               "active_seconds": float(item["active_seconds"]), "tokens": item["tokens"],
+                               "active_seconds": None if active is None else float(active), "tokens": item["tokens"],
                                "token_usage": deepcopy(item["token_usage"]), "weight": value * share})
     return result
 
@@ -675,8 +680,8 @@ def augment(engine, prepared, response, payload, snapshot, usage, *, candidates,
     from . import prediction
     from .capability import cell_key
     from .prototypes import validate_reuse
-    from .success import (admission_tier, belief_intervals, cell_beliefs, cost, counted_totals, credit_fits,
-                          denominator, outcome_beliefs)
+    from .success import (admission_tier, belief_intervals, cell_beliefs, cell_cost, counted_totals, credit_fits,
+                          money_terms, outcome_beliefs)
     result, cells = deepcopy(prepared[0]), prepared[1]
     # A request scored before candidates carried an agent reads every run as the unnamed agent.
     candidates = {**candidates, "candidates": [{**item, "agent": item.get("agent")} for item in candidates["candidates"]]}
@@ -734,10 +739,12 @@ def augment(engine, prepared, response, payload, snapshot, usage, *, candidates,
         row["available_credit_usd"] = cell["credit_budget"]["available_credit_usd"] if cell["credit_budget"] is not None else None
         row["credit_ok"] = credit_fits(row["needed_credit_usd"], row["credit_p80_usd"], row["available_credit_usd"])
         row["T"] = row["active_time"]["expected_seconds"] / 3600
-        c = result["constants"]
-        loud, silent = row["P_loud"]["mean"], row["P_silent"]["mean"]
-        row["expected_attempts"] = 1/denominator(loud)
-        row["J"] = cost(row["session_cost_usd"] if cell["money_included"] else 0., row["T"], loud, silent, c)
+        # The cost is averaged over the beliefs, not read at their means: the retry factor is curved.
+        _, run, run_variance = money_terms(row["cost_per_credit"], row["needed_credit_usd"], row["credit_variance"],
+                                           cell["money_included"])
+        averaged = cell_cost(beliefs, row["active_time"], run, run_variance, result["constants"])
+        row["expected_attempts"] = averaged["expected_attempts"]
+        row["J"] = averaged["J"]
         row["admissible"] = row["tier"] == "trusted"
     result["cells"].sort(key=lambda row: (row["session_cost_usd"] if row["session_cost_usd"] is not None else float("inf"), row["family"], row["effort"]))
     result["semantic"] = {"format": FORMAT, "prompt_version": SETTINGS["prompt_version"], "backend": usage["backend"],
@@ -767,34 +774,30 @@ def forecast_session_cost(token_beliefs, cell):
 
 
 def sample(prepared, seed):
-    from .success import belief_point, calibration
+    """Draw one value of everything each cell is uncertain about, and return the parts of each sampled cost.
+
+    Every forecast cell draws, in the order stored in ``sampling.cells``, whether or not
+    it will compete, so the stream of numbers does not depend on the pool. No expert is
+    drawn: each cell holds one belief per value.
+    """
+    from .success import PARTS, calibration, draw, uniforms
     result, cells = prepared
     state = result["semantic"]
-    parts = {k: np.zeros((1, len(cells))) for k in ("run", "loud", "silent", "time")}
+    parts = {k: np.zeros((1, len(cells))) for k in PARTS}
     constants = result["constants"]
-    # A sample is drawn for every decision; the tiers decide which cells compete on it.
-    experts = state["beliefs"]["experts"]
-    rng = np.random.default_rng(seed)
-    chosen = str(rng.choice([e["key"] for e in experts], p=[e["weight"] for e in experts]))
-    state["sampled_expert"] = chosen
-    expert = next(e for e in experts if e["key"] == chosen)
     indexed = panel_lookup(result["cells"])
+    numbers = uniforms(seed, 4 * len(cells))
     calibration_rows = []
     for i, cell in enumerate(cells):
-        calibrated = calibration(result, state, expert, cell)
-        calibration_rows.append(calibrated)
-        # One uniform number per rate, read at the first grid point whose running total reaches it.
-        beliefs = calibrated["outcome_beliefs"]
-        loud = belief_point(beliefs["loud"], float(rng.random()))
-        share = belief_point(beliefs["silent"], float(rng.random()))
-        # Active time is drawn from the cell's belief; run cost stays at its average.
+        calibrated = calibration(result, state, cell)
         summary = indexed[cell["family"], cell["effort"]]
-        sampled_seconds = float(rng.lognormal(summary["active_time"]["centre"], summary["active_time"]["spread"]))
-        d = 1. - loud  # The grid's top rate is 0.99988, so a sampled loud rate never reaches 1.
-        parts["run"][0, i] = summary["session_cost_usd"]/d if cell["money_included"] else 0.
-        parts["loud"][0, i] = constants["C_loud"]*loud/d
-        parts["silent"][0, i] = constants["C_silent"]*share
-        parts["time"][0, i] = sampled_seconds/3600*constants["lambda_per_hour"]/d
+        drawn = draw(numbers[4 * i:4 * i + 4], calibrated["outcome_beliefs"], summary["active_time"],
+                     summary["token_beliefs"], cell["rate_card"], cell["credit_rate"],
+                     cell["cost_per_credit"] if cell["money_included"] else 0., constants)
+        calibrated["sampled"] = drawn["sampled"]
+        calibration_rows.append(calibrated)
+        for name in PARTS:
+            parts[name][0, i] = drawn["parts"][name]
     state["sampling"] = {"enabled": True, "reason": "per-cell-log-odds-grid-beliefs",
                          "policy": deepcopy(result["sampling_policy"]), "cells": calibration_rows}
     return parts
@@ -823,7 +826,8 @@ def validate_receipt(state, *, decision_format=DECISION_FORMAT, selection=None, 
         required.append("outcome_observations")
     if scored:
         required += ["evidence_candidates", "stored_forecasts", "prediction"]
-    keys(state, required, ["sampled_expert"], "decision.semantic")
+    # v11 draws no expert: each cell holds one belief per value.
+    keys(state, required, [] if tiered else ["sampled_expert"], "decision.semantic")
     if decision_format not in RECEIPT_SEMANTICS or (state["format"], state["prompt_version"]) != RECEIPT_SEMANTICS[decision_format]:
         raise HowHardError("decision.semantic: unsupported forecast format or prompt version")
     if type(state["memory_revision"]) is not int or state["memory_revision"] < 0:
@@ -889,8 +893,8 @@ def validate_receipt(state, *, decision_format=DECISION_FORMAT, selection=None, 
             raise HowHardError("decision.semantic.expert.evidence_count: expected non-negative integer")
     if not {"llm"} <= seen or abs(mass - 1) > 1e-6 or set(state["worlds"]) - seen:
         raise HowHardError("decision.semantic.beliefs: expert weights must cover forecasts and sum to one")
-    from .success import (BELIEF_FIELDS, EMPIRICAL_FLOOR, POSTERIOR_FIELDS, RATES, belief_probabilities, calibrate_duration,
-                          cell_beliefs, counted_totals, outcome_beliefs, outcome_posterior, same_number,
+    from .success import (BELIEF_FIELDS, EMPIRICAL_FLOOR, POSTERIOR_FIELDS, RATES, SAMPLED_FIELDS, belief_probabilities,
+                          calibrate_duration, cell_beliefs, counted_totals, outcome_beliefs, outcome_posterior, same_number,
                           validate_policy as validate_sampling)
     if scored:
         # Recompute what each reader stored from the candidates; the discounts and counts follow below.
@@ -1003,8 +1007,15 @@ def validate_receipt(state, *, decision_format=DECISION_FORMAT, selection=None, 
         for c in sampling["cells"]:
             if tiered:
                 # Checked before any field is read: v11 has beliefs in place of a concentration.
-                keys(c, ["family", "effort", "expert", "outcome_beliefs", "probabilities", "cost_sd"],
+                keys(c, ["family", "effort", "outcome_beliefs", "probabilities", "cost_sd", "sampled"],
                      where="decision.semantic.sampling.cell")
+                # The values this cell drew; the selection check replays them from the seed.
+                keys(c["sampled"], list(SAMPLED_FIELDS), where="decision.semantic.sampling.cell.sampled")
+                number(c["sampled"]["S"], "sampling.sampled.S", nonnegative=True)
+                number(c["sampled"]["u"], "sampling.sampled.u")
+                number(c["sampled"]["seconds"], "sampling.sampled.seconds", nonnegative=True)
+                if c["sampled"]["credit"] is not None:
+                    number(c["sampled"]["credit"], "sampling.sampled.credit", nonnegative=True)
             else:
                 number(c["concentration"], "sampling concentration", positive=True)
                 if not min_conc <= c["concentration"] <= sampling["policy"]["max_concentration"]:
@@ -1040,8 +1051,6 @@ def validate_receipt(state, *, decision_format=DECISION_FORMAT, selection=None, 
                         raise HowHardError("decision.semantic.sampling: inconsistent duration calibration")
             if tiered:
                 pair = c["family"], c["effort"]
-                if c["expert"] not in panels_by_key:
-                    raise HowHardError("decision.semantic.sampling: unknown calibrated expert")
                 if pair not in agents:
                     raise HowHardError("decision.selection: missing forecasted cells")
                 # Recompute both beliefs from the frozen prediction and the counted runs.

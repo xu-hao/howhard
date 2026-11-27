@@ -39,26 +39,43 @@ Acceptance is therefore observable workflow behavior, not proof of correctness.
 An execution retains its actual model, effort, outcome and measured usage. An
 alternative that never ran has forecasts but no observed outcome.
 
-For each candidate, define {math}`C_{\mathrm{run}}` as the expected worker cost of one
-run, {math}`T` as the expected active execution hours of one run, {math}`p_l` as
-loud-failure probability and {math}`p_s` as silent-failure probability. The selection
-objective is:
+The selection objective is the cost to an accepted result, averaged over what is
+believed about the candidate:
 
 ```{math}
-J(a)=\frac{C_{\mathrm{run}}(a)+\lambda T(a)
-             +C_l p_l(a)+C_s p_s(a)}
-            {\max(\delta,1-p_l(a))}.
+J(a)=\bigl(C_{\mathrm{run}}(a)+\lambda\,\mathbb{E}[T]\bigr)\,\mathbb{E}[R]
+     +C_l\,\bigl(\mathbb{E}[R]-1\bigr)+C_s\,\mathbb{E}[S],
+\qquad R=\frac{1}{1-\theta_l}=1+e^{u},
+\qquad C_{\mathrm{run}}=q\,\mathbb{E}[K].
 ```
 
-Here {math}`\lambda` prices elapsed time, {math}`C_l` prices extra overhead per
-caught failure, {math}`C_s` prices an escaped defect, and {math}`\delta` is a
-numerical probability floor. These penalties express policy assumptions; actual
-charges and rework remain separately measured evidence.
+- {math}`\theta_l`, {math}`u`: the candidate's loud rate, the share of attempts that
+  fail loudly, and its log-odds.
+- {math}`R`: the attempts until a run is not loud, so {math}`R-1` is the loud failures
+  per accepted result.
+- {math}`S`: the accepted-defect share, silent results divided by accepted results.
+- {math}`K`: the credit of one run, and {math}`q` the candidate's cost per credit, or
+  0 when worker money is excluded from the comparison (section 7).
+- {math}`T`: the active execution hours of one run.
+- {math}`\lambda`, {math}`C_l`, {math}`C_s`: the risk class's price of an hour, of the
+  extra overhead of a caught failure and of an escaped defect.
+
+In plain words, every attempt costs its credit and its time, a loud run is retried,
+and each loud failure and each accepted defect has a price. The averages
+{math}`\mathbb{E}[R]` and {math}`\mathbb{E}[S]` are taken over the candidate's two
+outcome beliefs (section 5), and {math}`\mathbb{E}[T]` and {math}`\mathbb{E}[K]` over
+its beliefs for active time and tokens (below). The penalties express policy
+assumptions; actual charges and rework remain separately measured evidence.
+
+Example, with {math}`\lambda=25`, {math}`C_l=50` and {math}`C_s=1{,}000`:
+{math}`C_{\mathrm{run}}=2`, {math}`\mathbb{E}[T]=0.5`, {math}`\mathbb{E}[R]=1.25` and
+{math}`\mathbb{E}[S]=0.04` give
+{math}`J=14.5\times1.25+50\times0.25+1{,}000\times0.04=70.625`.
 
 ### Beliefs for active time and tokens
 
-{math}`T` and {math}`C_{\mathrm{run}}` are averages of beliefs, not forecasts taken
-at face value. Active time and each token kind have one log-normal belief per
+{math}`\mathbb{E}[T]` and {math}`C_{\mathrm{run}}` are averages of beliefs, not
+forecasts taken at face value. Active time and each token kind have one log-normal belief per
 candidate. Let {math}`A` be such an amount, with
 
 ```{math}
@@ -110,27 +127,38 @@ m'=m+s'^2\,\frac{\sum_i w_i\,(y_i-m)}{\tau^2},\qquad
 Each run pulls the centre {math}`m'` toward its own amount and narrows the spread
 {math}`s'`, by its weight. Two runs with weights 0.5 and 0.3 that recorded 1,800 and
 5,400 seconds give {math}`W=0.8`, {math}`s'=0.719`, {math}`m'=7.792` and an average of
-3,137 seconds. {math}`T` is the average of the active-time belief, in hours.
-{math}`C_{\mathrm{run}}` prices the averages of the token beliefs at the candidate's
-rates; section 7 gives its spread. A token kind that every expert forecasts at zero,
-with no non-zero upper end, is exactly zero.
+3,137 seconds. {math}`\mathbb{E}[T]` is the average of the active-time belief, in
+hours. {math}`C_{\mathrm{run}}` prices the averages of the token beliefs at the
+candidate's rates; section 7 gives its spread. A token kind that every expert forecasts
+at zero, with no non-zero upper end, is exactly zero. A belief is updated by the runs
+that record its value: a run with a complete usage record and no active time moves the
+token beliefs and leaves the active-time belief unchanged, and a run that records only
+a total token count moves the belief for total tokens alone.
 
-### Why the retry denominator matters
+### Why the retry factor matters
 
 Under the model's stationary same-candidate retry assumption, attempts continue
-until a non-loud result is accepted. Away from the numerical floor:
+until a non-loud result is accepted. At a known loud rate {math}`\theta_l`, with
+{math}`p_s` the share of attempts that end silently wrong:
 
 ```{math}
-\mathbb{E}[N]=\frac{1}{1-p_l},
+\mathbb{E}[N\mid\theta_l]=R=\frac{1}{1-\theta_l},
 \qquad
-P(\mathrm{silent}\mid\mathrm{accepted})=\frac{p_s}{1-p_l}.
+P(\mathrm{silent}\mid\mathrm{accepted})=S=\frac{p_s}{1-\theta_l}.
 ```
 
-The denominator charges repeated worker cost and time. The loud penalty adds
+The retry factor {math}`R` charges repeated worker cost and time. The loud penalty adds
 detection or rework overhead beyond those repeated attempts. The model does not
 assume that a failed attempt switches to another candidate. Real retries can be
 correlated or change the task, so the geometric calculation is an approximation
 to assess against observed workflow behavior.
+
+The loud rate is not known, and the retry factor is curved in it, so the cost is
+averaged over the belief instead of being read at the belief's average. For example, a
+belief split evenly between loud rates of 0.2 and 0.6 averages 0.4. The cost at the
+average charges {math}`1/0.6=1.67` attempts, and the average over the belief charges
+{math}`(1.25+2.5)/2=1.875`. At the same average loud rate, a wider belief therefore
+charges more attempts and a higher cost.
 
 As an illustrative calculation, assume known comparable host charges and ignore
 time and defect penalties:
@@ -901,8 +929,9 @@ P_{\mathrm{silent}}=(1-E[\theta_l])\,E[S],\qquad
 P_{\mathrm{clean}}=(1-E[\theta_l])\,(1-E[S]).
 ```
 
-The cost {math}`J` of section 1 is evaluated at {math}`P_{\mathrm{loud}}` and
-{math}`P_{\mathrm{silent}}`. For example, {math}`E[\theta_l]=0.20` and
+These three means are reports. The cost {math}`J` of section 1 is averaged over the
+two beliefs, through {math}`E[1/(1-\theta_l)]=\mathbb{E}[R]` and {math}`E[S]`, and is
+not the cost at these means. For example, {math}`E[\theta_l]=0.20` and
 {math}`E[S]=0.10` give {math}`P_{\mathrm{silent}}=0.08` and
 {math}`P_{\mathrm{clean}}=0.72`. The reported ranges are those of the two beliefs.
 They are Bayesian under the stated start and exchangeability assumptions; they are not
@@ -963,6 +992,52 @@ The last column is the receipt's `admission_risk`, the {math}`q` point of the sa
 belief. It is at most {math}`\varepsilon` exactly when {math}`\pi\ge q`, so the
 trusted tier is the same test read from the other side.
 
+### The spread of the cost
+
+The cost of section 1 is uncertain because four things about a cell are: the credit
+{math}`K` and active time {math}`T` of one run, its loud rate and its accepted-defect
+share. Each has its own belief, and the four are independent, so the spread of the cost
+follows from their means and variances with no approximation. Write the cost before
+averaging as {math}`X R-C_l+C_s S`, with {math}`X=qK+\lambda T+C_l`:
+
+```{math}
+\begin{aligned}
+\mathrm{Var}(J)&=\mathbb{E}[X^2]\,\mathbb{E}[R^2]-\bigl(\mathbb{E}[X]\,\mathbb{E}[R]\bigr)^2
+                +C_s^2\,\mathrm{Var}(S),\\
+\mathbb{E}[X]&=C_{\mathrm{run}}+\lambda\,\mathbb{E}[T]+C_l,\\
+\mathbb{E}[X^2]&=q^2\,\mathrm{Var}(K)+\lambda^2\,\mathrm{Var}(T)+\mathbb{E}[X]^2,\\
+\mathrm{Var}(T)&=\mathbb{E}[T]^2\,\bigl(e^{s'^2}-1\bigr),\\
+\mathrm{sd}(c)&=\sqrt{\mathrm{Var}(J)}.
+\end{aligned}
+```
+
+- {math}`X`: what one attempt costs, plus {math}`C_l`.
+- {math}`R=1+e^{u}`: the attempts until a run is not loud. {math}`\mathbb{E}[R]` and
+  {math}`\mathbb{E}[R^2]` are the averages of {math}`1+e^{x_j}` and of its square under
+  the belief {math}`b_j` of the loud rate on its grid.
+- {math}`\mathrm{Var}(S)`: the average of {math}`S^2` minus {math}`\mathbb{E}[S]^2`,
+  summed on the grid of the belief of {math}`S`.
+- {math}`\mathrm{Var}(K)`: the variance of the credit of one run (section 7), and
+  {math}`q` the cost per credit, or 0 when worker money is excluded.
+- {math}`s'`: the spread of the active-time belief after its counted runs (section 1).
+- {math}`\mathrm{sd}(c)`: the spread of the cell's cost, the receipt's `cost_sd`.
+
+In plain words, the cost is a product of what one attempt costs and how many attempts
+are needed, plus the price of accepted defects, and the variance of a product of
+independent quantities is exact in their first two moments.
+
+Example, continuing the example of section 1 with {math}`q=1`,
+{math}`\mathrm{sd}(K)=1`, {math}`s'=0.6`, {math}`\mathbb{E}[R^2]=1.60` and
+{math}`\mathrm{sd}(S)=0.03`: {math}`\mathrm{Var}(T)=0.25\,(e^{0.36}-1)=0.1083`,
+{math}`\mathbb{E}[X]=64.5` and
+{math}`\mathbb{E}[X^2]=1+625\times0.1083+4{,}160.25=4{,}228.96`. Then
+{math}`\mathrm{Var}(J)=4{,}228.96\times1.60-80.625^2+900=1{,}165.94` and
+{math}`\mathrm{sd}(c)=34.15`.
+
+A wider stated range on active time or on a token kind raises the spread of that cell's
+cost. It does not move the cell's {math}`J`, because a belief averages to its prediction
+however wide it is, and it changes no number of another cell.
+
 ### Who competes
 
 ```{math}
@@ -982,19 +1057,16 @@ c^{*}&=\arg\min_{c\in\mathcal{P}}J(c),\\
 - {math}`\mathrm{credit\_ok}(c)`: the cell has enough credit; the maximum in the
   second line runs over the cells {math}`c'` that have enough credit.
 - {math}`f`: `all_excluded_factor`, 0.5.
-- {math}`J(c)`, {math}`\mathrm{sd}(c)`: the cell's mean cost and the delta-method
-  standard deviation of that cost. It combines the variances of the cell's two
-  outcome beliefs with the variance of its active time,
-  {math}`(\lambda/(1-p_l))^2\,\mathbb{E}[T]^2\,(e^{s'^2}-1)`; run cost is exact in it.
-- {math}`c^{*}`: the pool cell with the lowest mean cost.
+- {math}`J(c)`, {math}`\mathrm{sd}(c)`: the cell's cost averaged over its beliefs
+  (section 1) and the exact spread of that cost (above).
+- {math}`c^{*}`: the pool cell with the lowest {math}`J`.
 - {math}`u`: `uncertainty_multiplier`, 1. A risk class's `explore_within` additionally
   caps the gap at that fraction of {math}`|J(c^{*})|`.
-- {math}`\tilde J(c)`: the cell's cost under the seed's draw. Selection samples a
-  predictive expert in proportion to its support. Each cell then draws its loud rate
-  and its accepted-defect share, one uniform number each read at the first grid point
-  whose running total of the belief reaches it, and its active time from its belief,
-  {math}`\ln T\sim\mathcal{N}(m',s'^2)`; run cost stays at its average
-  (Thompson sampling).
+- {math}`\tilde J(c)`: the cell's cost under the seed's draw (below).
+
+Example of eligibility: {math}`c^{*}` has {math}`J` 70.6 and spread 34.2. A cell with
+{math}`J` 110 and spread 20 is eligible, because the gap of 39.4 is at most 54.2. A cell
+with {math}`J` 140 and spread 10 is not, because 69.4 exceeds 44.2.
 
 In plain words, trusted and on-trial cells compete as equals, and nothing limits how
 often an on-trial cell is chosen. A cell must still be close enough to the cheapest
@@ -1007,6 +1079,52 @@ when no cell has enough credit.
 Example of the second pool: three cells with enough credit have {math}`\pi` 0.12, 0.08
 and 0.05. The bar is {math}`0.5\times0.12=0.06`, so the first two form the pool and the
 third is left out.
+
+### The draw
+
+Each forecast cell draws one value of everything it is uncertain about, and the lowest
+sampled cost among the eligible cells wins (Thompson sampling).
+
+```{math}
+\begin{aligned}
+\tilde S&=\operatorname{logistic}(x_j),
+  &&j=\text{the first grid point where the running total of the belief of }S\text{ reaches }U_S,\\
+\tilde R&=1+e^{x_j},
+  &&j=\text{the same on the belief of the loud rate, with }U_u,\\
+\tilde T&=\exp\bigl(m'+s'\,z(U_T)\bigr)/3600,\\
+\tilde n_a&=\exp\bigl(m_a+s_a\,z(U_K)\bigr)&&\text{for every token kind }a,\\
+\tilde J&=\bigl(q\tilde K+\lambda\tilde T\bigr)\,\tilde R+C_l\,(\tilde R-1)+C_s\,\tilde S.
+\end{aligned}
+```
+
+- {math}`U_S`, {math}`U_u`, {math}`U_T`, {math}`U_K`: four uniform numbers strictly
+  between 0 and 1, drawn in this order for every forecast cell.
+- {math}`x_j`: a point of the grid of log-odds. It is the last point when rounding
+  keeps the running total below {math}`U`.
+- {math}`z(U)`: the standard normal value with probability {math}`U` below it.
+- {math}`m'`, {math}`s'`: the centre and spread of the active-time belief, in log
+  seconds; {math}`\tilde T` is in hours.
+- {math}`m_a`, {math}`s_a`: the centre and spread of the belief of token kind
+  {math}`a`, and {math}`\tilde n_a` its sampled count. One {math}`U_K` serves every
+  kind, because the kinds are taken to move together (section 7).
+- {math}`\tilde K`: the credit of the counts {math}`\tilde n_a` at the candidate's
+  rates.
+- {math}`\tilde J`: the sampled cost.
+
+In plain words, a wide belief sometimes draws a low cost, so its cell is tried, and the
+trial's outcome then narrows the belief. No predictive expert is drawn: every value of
+a cell is one belief merged over the experts, and experts that disagree have already
+widened it.
+
+Example: {math}`\tilde S=0.02`, {math}`\tilde R=1.25`, {math}`\tilde T=0.4` and
+{math}`q\tilde K=1.50` give {math}`\tilde J=11.5\times1.25+12.5+20=46.875`.
+
+The numbers come from the PCG64 generator seeded with the decision's stored seed. Each
+is {math}`((r\gg12)+0.5)/2^{52}` from one raw 64-bit output {math}`r`, so replaying a
+decision does not depend on a library's distribution methods. Every forecast cell
+draws, in a stored order and whether or not it is eligible, so the stream of numbers
+does not depend on the pool. A stored decision is checked by replaying its draw from
+its seed.
 
 ### The flag
 
@@ -1163,7 +1281,8 @@ The components have distinct statistical meanings:
 | Active time and token beliefs | Per-cell log-normal belief with a conjugate update from same-cell runs | The miss `D`, scatter share and worths are fixed modelling choices; token kinds are taken to move together |
 | Credit check | 80% point of a log-normal matched to the average and variance of run credit | A moment match, not the exact distribution of a sum |
 | Admission tiers | Share of the accepted-defect belief within epsilon, cut at 0.80 and 0.20 | No calibrated coverage guarantee; the two lines are policy choices |
-| Selection sampling | Thompson sampling within posterior cost overlap, among trusted and on-trial cells | Delta-method overlap is approximate |
+| Cost and its spread | The cost to an accepted result averaged over four independent per-cell beliefs, with the exact variance of that cost | Credit, active time, the loud rate and the accepted-defect share are treated as independent; same-cell retries are taken to be stationary |
+| Selection sampling | Thompson sampling within cost overlap, among trusted and on-trial cells: one draw of both rates, active time and token counts per cell | Overlap within one spread on each side is a rule, not a test; token kinds are drawn together |
 | Outcome amendments | Correction and replay of an earlier execution | Requires supported attribution and preserved provenance |
 
 Together, these mechanisms give routing access to both immediate outcomes and

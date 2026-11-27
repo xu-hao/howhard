@@ -6,7 +6,7 @@ import pytest
 
 from howhard import Engine
 from howhard.decisions import load
-from conftest import forecast_request
+from conftest import averaged_cost, forecast_request
 from test_capability_filter import SimilarityDouble, filtering
 
 # Forecast inputs retained from a reported decision; these are not observed outcomes.
@@ -38,7 +38,10 @@ def test_reported_high_failure_cell_loses_on_cost_to_success_and_cap(tmp_path):
     result = engine.decide(request["request_id"], response, seed=42)
     assert result["chosen"]["model"] == "claude-opus-5-5"
     indexed = {(c["model"], c["effort"]): c for c in result["cells"]}
-    assert indexed["claude-haiku-5-5", "low"]["J"] == pytest.approx(253.5/.18)
+    # The cost is averaged over the beliefs, so it exceeds the cost at the forecast, 253.5 / 0.18.
+    cheap = indexed["claude-haiku-5-5", "low"]
+    assert cheap["J"] == pytest.approx(averaged_cost(result, cheap)) and cheap["J"] > 253.5/.18
+    assert cheap["expected_attempts"] > 1/.18
     assert indexed["claude-haiku-5-5", "high"]["P_silent_accepted"]["mean"] == pytest.approx(.72)
     assert not indexed["claude-haiku-5-5", "high"]["admissible"]
     # No cell is trusted. The two stronger cells are on trial and compete on one drawn sample;
@@ -49,7 +52,7 @@ def test_reported_high_failure_cell_loses_on_cost_to_success_and_cap(tmp_path):
     assert result["exploration"]["pool"] == "trusted-and-on-trial"
     assert {c["model"] for c in result["exploration"]["eligible_cells"]} == {"claude-opus-5-5"}
     assert result["needs_review"] and not result["cap_met"]
-    assert result["semantic"]["sampling"]["enabled"] and "sampled_expert" in result["semantic"]
+    assert result["semantic"]["sampling"]["enabled"] and "sampled_expert" not in result["semantic"]
     receipt = load(engine.config, result["decision_id"])
     assert receipt["selection"]["objective"] == "cost-to-accepted-result"
     assert receipt["selection"]["exploration"] == result["exploration"]
@@ -65,14 +68,15 @@ def test_one_thousand_seeds_never_choose_the_low_clean_probability_cells(tmp_pat
 
 
 @pytest.mark.parametrize("loud,silent,clean", [(.4, .13, .47), (1., 0., 0.)])
-def test_retry_formula_and_denominator_floor_are_finite(tmp_path, loud, silent, clean):
+def test_retry_formula_is_finite_up_to_the_top_of_the_loud_grid(tmp_path, loud, silent, clean):
     engine = Engine(directory=tmp_path, retrieval=SimilarityDouble())
     request, response = prepare(engine, [("fixture/worker", "high", clean, loud, silent, 2.)])
     result = engine.decide(request["request_id"], response, seed=1)
     row = result["cells"][0]
-    p_loud, p_silent = row["P_loud"]["mean"], row["P_silent"]["mean"]
-    expected = (25*2+50*p_loud+1000*p_silent)/max(.0001, 1-p_loud)
-    assert row["J"] == pytest.approx(expected)
+    assert row["J"] == pytest.approx(averaged_cost(result, row))
+    # The retry factor is curved, so the average over the belief charges more than the cost at the means.
+    at_means = (25*2+50*row["P_loud"]["mean"]+1000*row["P_silent"]["mean"])/(1-row["P_loud"]["mean"])
+    assert row["J"] > at_means and row["expected_attempts"] > 1/(1-row["P_loud"]["mean"])
     assert math.isfinite(row["J"]) and math.isfinite(row["sampled_J"])
     if loud == 1.:
         # Heavy loud evidence pushes P_loud towards the top of the belief's grid, logistic(9) = 0.99988,
@@ -89,14 +93,15 @@ def test_retry_formula_and_denominator_floor_are_finite(tmp_path, loud, silent, 
             heavy_engine.observe("task", "fixture/worker", "high", "loud",
                                  task_text="Repair rollback", note="capability_caused=false", id=f"loud-{i}")
         floored_req, floored_resp = prepare(heavy_engine, [("fixture/worker", "high", clean, loud, silent, 2.)])
-        floored = heavy_engine.decide(floored_req["request_id"], floored_resp, seed=1)["cells"][0]
+        heavy = heavy_engine.decide(floored_req["request_id"], floored_resp, seed=1)
+        floored = heavy["cells"][0]
         top = 1 / (1 + math.exp(-9))
         assert row["P_loud"]["mean"] < floored["P_loud"]["mean"] <= top and floored["P_loud"]["mean"] > .9998
         assert floored["P_loud"]["upper"] == pytest.approx(top)
-        assert floored["expected_attempts"] == pytest.approx(1/(1-floored["P_loud"]["mean"]))
+        # The most attempts the grid can charge is 1 + exp(9), at its highest loud rate.
+        assert 1/(1-floored["P_loud"]["mean"]) <= floored["expected_attempts"] <= 1 + math.exp(9)
         assert 5000 < floored["expected_attempts"] < 1/.0001
-        assert floored["J"] == pytest.approx(
-            (25*2+50*floored["P_loud"]["mean"]+1000*floored["P_silent"]["mean"])/(1-floored["P_loud"]["mean"]))
+        assert floored["J"] == pytest.approx(averaged_cost(heavy, floored))
         assert math.isfinite(floored["J"]) and math.isfinite(floored["sampled_J"])
 
 
@@ -148,11 +153,11 @@ def test_no_trusted_cell_still_draws_one_seeded_sample(tmp_path, monkeypatch):
     import numpy
     engine = Engine(directory=tmp_path)
     request, response = prepare(engine, TABLE)
-    seeds, original = [], numpy.random.default_rng
+    seeds, original = [], numpy.random.PCG64
     def recording(seed=None):
         seeds.append(seed)
         return original(seed)
-    monkeypatch.setattr("numpy.random.default_rng", recording)
+    monkeypatch.setattr("numpy.random.PCG64", recording)
     result = engine.decide(request["request_id"], response, seed=42)
     assert seeds == [42] and result["seed"] == 42
     assert not result["cap_met"] and result["semantic"]["sampling"]["enabled"]

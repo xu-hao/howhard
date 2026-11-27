@@ -139,8 +139,10 @@ is false and the comparison excludes worker money for all cells. Unknown
 `session_cost_usd` is null; known session costs remain visible but do not affect that comparison.
 `J` then includes expected retry-adjusted risk/time cost while omitting unknown worker
 money. The full objective uses `C_run = session_cost_usd` and is
-`(session_cost_usd + lambda*T + C_loud*P_loud + C_silent*P_silent)
-/ max(probability_floor, 1-P_loud)`: loud attempts retry the same cell. Fully priced native
+`(session_cost_usd + lambda*T) * expected_attempts + C_loud*(expected_attempts - 1)
++ C_silent*P_silent_accepted`, averaged over the cell's beliefs: loud attempts retry the
+same cell, and `expected_attempts` is the average of `1/(1 - loud rate)` over the belief,
+which is above `1/(1-P_loud)`. Fully priced native
 inventories with a uniform credit-rate basis include worker money using each candidate's
 `cost_per_credit`. Mixed bases omit it uniformly.
 Each cell holds one belief for its loud rate and one for its accepted-defect share
@@ -155,8 +157,10 @@ belief that its accepted-defect share is at most epsilon, and a `tier`:
 (`admission_risk` is the 80% point of the same belief).
 `P_loud` and `P_silent_accepted` report the 95% range of those two beliefs, including
 for an `llm`-only forecast; `P_clean` and `P_silent` report a mean only. Trusted and on-trial cells with enough credit compete together. Exploration
-(Thompson sampling) covers the competing cells whose posterior cost overlaps the
-mean-best one; only an explicit risk-class `explore_within` also caps the mean gap.
+(Thompson sampling) covers the competing cells whose cost overlaps the
+mean-best one within their spreads; only an explicit risk-class `explore_within` also
+caps the mean gap. Each forecast cell draws one value of both rates, its active time and
+its token counts from the stored `seed`, and the lowest `sampled_J` among those cells wins.
 When no trusted or on-trial cell has enough credit, the cells with enough credit whose
 `pi` is at least half the best `pi` compete instead (`exploration.pool` is
 `all-excluded`), so a cell is always drawn. `needs_review` means the chosen cell is not

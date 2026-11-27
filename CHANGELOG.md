@@ -287,6 +287,45 @@
   and `v7` receipts keep their own evidence shapes and keep loading, observing,
   replaying and reporting.
 
+- Cost averaged over the beliefs, its exact spread and a draw of every uncertain value
+  (#135). **Changed behaviour:** `J` is now the cost to an accepted result averaged
+  over the cell's beliefs, `(C_run + lambda_per_hour * E[T]) * E[R] + C_loud * (E[R] - 1)
+  + C_silent * E[S]`, where `R = 1 / (1 - loud rate)` is the attempts until a run is not
+  loud and `S` the accepted-defect share; it replaces the cost at the posterior means.
+  `expected_attempts` is `E[R]`, which is above `1 / (1 - P_loud)` because the retry
+  factor is curved: at the same average loud rate a wider loud belief now charges more
+  attempts and a higher `J`. `cost_sd` is the exact spread of that cost from the means
+  and variances of four independent beliefs (credit, active time, the loud rate and the
+  accepted-defect share); it replaces the first-order estimate that treated run cost as
+  exact, so a wider stated range on active time or on a token kind raises that cell's
+  `cost_sd` and changes no other cell's numbers. Eligibility keeps its rule,
+  `J(c) - J(c*) <= uncertainty_multiplier * (sd(c*) + sd(c))` with a class
+  `explore_within` capping the gap, on the new `J` and `cost_sd`. The draw no longer
+  samples one expert: every forecast cell draws one value of its accepted-defect share,
+  its loud rate, its active time and its token counts, priced at the cell's rates, and
+  the lowest sampled cost among the eligible cells wins. The numbers are
+  `((r >> 12) + 0.5) / 2^52` from raw `numpy.random.PCG64` output seeded with the stored
+  `seed`, four per forecast cell in the order of `semantic.sampling.cells`, so **a seed
+  gives a different choice than in earlier builds** and a replay does not depend on a
+  library's distribution methods. Each `semantic.sampling.cells` entry gains `sampled`
+  (`S`, `u`, `seconds`, `credit`) and drops `expert`; `semantic.sampled_expert` is no
+  longer written. The `sampled-cost` explanation in `why` compares the parts
+  `run = q * K_s * R_s`, `time = lambda_per_hour * T_s * R_s`, `loud = C_loud * (R_s - 1)`
+  and `silent = C_silent * S_s`. Loading a v11 receipt recomputes `J`,
+  `expected_attempts` and `cost_sd` from its beliefs and replays the draw from its seed:
+  a receipt whose `J`, `expected_attempts`, `cost_sd`, sampled value, `sampled_J`,
+  `exploration.eligible_cells` or chosen cell differs is refused with a message that
+  names the field. No configuration key is added. The token beliefs now also count a
+  same-cell run that records a `complete` `execution_usage` and no active time, at the
+  weight a run of its own cell carries: such a run has a row in
+  `semantic.duration_observations` with `active_seconds` null, moves the token beliefs
+  and leaves the active-time belief unchanged. A same-cell run that records only a total
+  `tokens` count, with neither an active time nor complete usage, has a row as well and
+  moves the total-`tokens` belief alone. v11 decisions stored by earlier
+  unreleased builds no longer load. `v10`, `v9`, `v8` and `v7` receipts keep the cost at
+  the posterior means and their recorded draw, are not replayed, and keep loading,
+  observing, replaying and reporting.
+
 ## 5.0.0 — 2026-11-24
 
 - Dynamic synthesized `(task, context)` prototypes with materialized per-cell priors and

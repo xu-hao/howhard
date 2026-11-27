@@ -324,13 +324,18 @@ Fine selection charges expected same-cell retries to an accepted result. Active 
 and each token kind have one {ref}`belief per cell <amount-beliefs>`: the experts'
 forecasts are merged on the log scale, with their disagreement and stated ranges as the
 stated spread, and the cell's own {ref}`evidence candidates <evidence-candidates>` update
-it. `T` and the run cost are the beliefs' averages. Its admission tiers use the cell's
+it. A belief is updated by the runs that record its value, so a run with complete usage
+and no active time moves the token beliefs alone, and a run that records only a total
+`tokens` count moves the total-`tokens` belief alone. The cost is averaged over the cell's
+beliefs: its loud rate, its accepted-defect share, its active time and the credit of one
+run. Its admission tiers use the cell's
 belief for the accepted-defect share: the share of that belief within epsilon.
-Sampling draws each cell's loud rate and accepted-defect share from its two outcome
-beliefs, and its active time from its belief. Posterior cost overlap (including the active-time
-variance) gates exploration, optionally capped by an explicit
-risk-class `explore_within`; a chosen cell that is not trusted is flagged for review. Receipts
-preserve the formula, constants, beliefs and explanation.
+Sampling draws one value of each rate, one active time and one set of token counts per
+forecast cell, and no expert: experts that disagree have already widened the beliefs. A
+cell competes when its cost overlaps the best cost within their exact spreads, optionally
+capped by an explicit risk-class `explore_within`; a chosen cell that is not trusted is
+flagged for review. Receipts preserve the formula, constants, beliefs, seed, sampled
+values and explanation, and loading one replays its draw.
 A consistency disagreement compares the raw stage-2 clean forecast (before outcome updates) with stage-1 `P_clear`; it
 does not substitute the accepted-result risk ratio or silently alter the chosen cell.
 See [capability filtering](capability.md) and {ref}`selection <accepted-result-selection>`.

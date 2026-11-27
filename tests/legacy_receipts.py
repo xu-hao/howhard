@@ -2,11 +2,13 @@
 
 ``to_v10`` is the base of every older builder: it removes what v11 added (the host's name,
 agent labels, ranges on active time and token kinds, the scored evidence candidates, admission
-tiers, the outcome beliefs on the log-odds scale, the amount beliefs and credit spread, and the
-host-aware band with its core and reserved cells) and restores the v10 format names, evidence
-rows, policies, Dirichlet outcome posteriors, meaning of the silent cap, per-expert active-time
-calibration, forecast pricing and credit check. A v10 receipt forecasts exactly its band and its
-widening cells, so the current receipt it is derived from must have no reserved cell.
+tiers, the outcome beliefs on the log-odds scale, the amount beliefs and credit spread, the
+host-aware band with its core and reserved cells, and the cost averaged over the beliefs with
+its drawn values) and restores the v10 format names, evidence rows, policies, Dirichlet outcome
+posteriors, meaning of the silent cap, per-expert active-time calibration, forecast pricing,
+credit check, cost at the posterior means and the one expert a decision drew. A v10 receipt
+forecasts exactly its band and its widening cells, so the current receipt it is derived from
+must have no reserved cell.
 """
 
 from copy import deepcopy
@@ -97,13 +99,20 @@ def legacy_calibration(constants, policy, state, expert, candidate, money_includ
             "duration": dur, "cost_sd": math.sqrt(variance)}
 
 
+def drawn_expert(receipt):
+    """The one expert a v8 to v10 decision drew from its seed, by the experts' weights."""
+    experts = receipt["semantic"]["beliefs"]["experts"]
+    return str(np.random.default_rng(receipt["seed"]).choice([e["key"] for e in experts], p=[e["weight"] for e in experts]))
+
+
 def legacy_sampling_cells(receipt, *, legacy_v9=False):
-    """Rebuild every sampled cell of a receipt with the v8 to v10 calibration."""
+    """Rebuild every sampled cell of a receipt with the v8 to v10 calibration of its drawn expert."""
     sem, selection = receipt["semantic"], receipt["selection"]
     candidates = {(c["model"], c["effort"]): c for c in receipt["native_candidates"]}
     models = {(c["family"], c["effort"]): c["model"] for c in selection["cells"]}
     experts = {e["key"]: e for e in sem["beliefs"]["experts"]}
-    return [legacy_calibration(selection["constants"], selection["sampling_policy"], sem, experts[cell["expert"]],
+    drawn = sem["sampled_expert"]
+    return [legacy_calibration(selection["constants"], selection["sampling_policy"], sem, experts[drawn],
                                candidates[models[cell["family"], cell["effort"]], cell["effort"]],
                                receipt["cost_policy"]["worker_money_included"], (cell["family"], cell["effort"]),
                                legacy_v9=legacy_v9)
@@ -130,6 +139,8 @@ def restore_dirichlet(receipt, *, legacy_v9=False):
         row["expected_attempts"] = 1.0 / denominator(loud)
         row["J"] = cost(run, row["T"], loud, silent, constants)
     if sem["sampling"]["enabled"]:
+        # A v11 decision draws no expert; an older one drew one from its seed.
+        sem.setdefault("sampled_expert", drawn_expert(receipt))
         sem["sampling"]["cells"] = legacy_sampling_cells(receipt, legacy_v9=legacy_v9)
         sem["sampling"]["reason"] = "per-cell-dirichlet-posterior"
 
@@ -221,6 +232,8 @@ def to_v10(receipt, on_cap_unmet="flag-review"):
                          "age": ages.get(pair, 0), "weight": own[(*pair, obs["id"])]})
         ages[pair] = ages.get(pair, 0) + 1
     sem["outcome_observations"] = sorted(outcomes, key=lambda obs: (obs["family"], obs["effort"]))
+    # v10 read active time alone, so a run with usage by kind and no active time had no row.
+    sem["duration_observations"] = [obs for obs in sem["duration_observations"] if obs["active_seconds"] is not None]
     for obs in sem["duration_observations"]:
         del obs["tokens"], obs["token_usage"]
         obs.update(score=scored[obs["id"]]["score"], similarity=scored[obs["id"]]["similarity"])
