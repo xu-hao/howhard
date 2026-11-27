@@ -28,23 +28,25 @@ class MemoryStore:
 
     @contextmanager
     def _db(self):
-        from .storage import locked
-        # Initialization is a mutation too; ordinary reads perform no schema writes.
-        if not self.path.exists():
-            with locked(self.config, operation="memory initialize"):
-                with self._connection() as db:
-                    self._initialize(db)
-        with self._connection() as db:
-            version = db.execute("PRAGMA user_version").fetchone()[0]
+        from .storage import locked, reading
+        # Readers hold the shared data locks, so a read that meets an admitted mutation
+        # waits for its commit within the bounded admission policy. Initialization is a
+        # mutation too; it takes a write turn, and ordinary reads perform no schema writes.
+        with reading(self.config):
+            version = self._version()
         if version == 0:
-            with locked(self.config, operation="memory initialize"):
-                with self._connection() as db:
-                    self._initialize(db)
-            version = 1
-        with self._connection() as db:
-            if version != 1:
+            with locked(self.config, operation="memory initialize"), self._connection() as db:
+                self._initialize(db)
+        with reading(self.config), self._connection() as db:
+            if db.execute("PRAGMA user_version").fetchone()[0] != 1:
                 raise HowHardError("memory database: unsupported schema version")
             yield db
+
+    def _version(self):
+        if not self.path.exists():
+            return 0
+        with self._connection() as db:
+            return db.execute("PRAGMA user_version").fetchone()[0]
 
     @contextmanager
     def _connection(self):

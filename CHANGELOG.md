@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Memory reads wait for an admitted write (#154). A memory read, including the first
+  read of a new store while another client creates its memory schema, now takes the
+  same shared data locks as evidence reads. One that meets an admitted mutation's
+  SQLite commit waits for it within the store's bounded admission, or ends with
+  `WriteTimeout` (`write_timeout`) at its deadline, instead of failing at once with
+  `write_dependency_failed: ... database is locked`. Two concurrent request
+  preparations on a new store no longer fail this way. An out-of-protocol SQLite
+  writer still causes an immediate dependency failure.
 - Refined constants (#137). Eleven estimated constants (`half_life_days`, the three
   discounts, `rung_worth`, `task_worth_silent`, `task_worth_loud`, `duration_miss`,
   `scatter_share`, `task_worth_amount` and `capability.caught_share_worth`) are now
