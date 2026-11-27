@@ -81,6 +81,10 @@ class Config:
     project_identity: str = ""
     native_models: dict = field(default_factory=dict)
     write_policy: WritePolicy = field(default_factory=WritePolicy)
+    # The ``(table, key)`` pairs the configuration file sets: a refined constant never replaces one.
+    file_keys: frozenset = frozenset()
+    # Each refinable constant's value before any refinement: the default or the configured value.
+    unrefined: dict = field(default_factory=dict)
 
     def path(self, value):
         relative = Path(text(value, "path"))
@@ -110,11 +114,13 @@ def load_config(path=None, *, directory=None, state_directory=None):
         path = base / "howhard.toml"
     default = parse_toml(packaged("default_config.toml"), "default config")
     raw = b""
+    file_keys = frozenset()
     if path is not None:
         path = Path(path).resolve()
         base = path.parent
         raw = path.read_bytes()
         overrides = parse_toml(raw, str(path))
+        file_keys = frozenset((name, key) for name, value in overrides.items() if isinstance(value, dict) for key in value)
         data = merge(default, overrides)
     else:
         data = default
@@ -173,7 +179,9 @@ def load_config(path=None, *, directory=None, state_directory=None):
         text(cls, f"task_types.{task}")
         if cls not in data["classes"]:
             raise HowHardError(f"task_types.{task}: unknown class {cls!r}")
-    config = Config(data, base, path is not None)
+    config = Config(data, base, path is not None, file_keys=file_keys)
+    from .refine import KEYS
+    config.unrefined = {(name, key): data[name][key] for name, key in KEYS}
     if "inventories" in data:
         from .native import preflight
         table(data["inventories"], "config.inventories")

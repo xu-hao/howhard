@@ -1,5 +1,34 @@
 # Changelog
 
+## Unreleased
+
+- Refined constants (#137). Eleven estimated constants (`half_life_days`, the three
+  discounts, `rung_worth`, `task_worth_silent`, `task_worth_loud`, `duration_miss`,
+  `scatter_share`, `task_worth_amount` and `capability.caught_share_worth`) are now
+  re-estimated from the store's own record, with no setting and no tuning. A scored run
+  is a finished routed run with a `howhard-decision-v11` receipt; its beliefs are
+  rebuilt with each value tried, only from the rows and amendments observed before its
+  decision, and scored by the log probability they gave to its outcome, its active time
+  or, for a failed run, whether its host caught it. Only the candidates a receipt stores
+  are left out of its rebuilt ladders, so a decision whose prototypes matched more than
+  `comparison_cap` runs is rescored with the extra matched runs as history. The
+  constants are tried one at a time in a fixed order, and one leaves its default only
+  when at least 200 runs are scored and the mean gain exceeds twice its standard error;
+  `duration_miss` and `scatter_share` also try the values the record measures. **Changed
+  behaviour:** once 200 scored runs exist, `observe` (and `usage attach`) and `flush`
+  may publish `refined-constants.json` in the state root, and the engine applies it at
+  refresh, in the order default, refined, configured; a key set in the configuration
+  file is never tried, so setting a key pins it. Decisions never start a refinement, and
+  with fewer than 200 scored runs every constant keeps its default. A refined value is
+  stored in the receipt's existing sampling and capability policies; no receipt field is
+  added, and a refinement that moves a constant makes requests prepared before it stale.
+  `observe --json`, `usage attach --json` and `flush --json` add `refinement` beside
+  `memory_update` (Python `Engine.last_refinement`); a failed refinement is reported
+  there and never fails the observation or the flush. `v10`, `v9`, `v8` and `v7`
+  receipts keep loading, observing, replaying and reporting; their runs, under any host
+  and agent names imported for them, are history for the rebuilt predictions and are
+  never scored.
+
 ## 6.0.0 — 2026-11-27
 
 A major release: the prepared request, the forecast contract and the decision receipt

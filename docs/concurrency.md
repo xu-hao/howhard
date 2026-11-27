@@ -26,11 +26,12 @@ number may restart after the queue empties; the random ticket suffix distinguish
 | Memory operations / learning | Recheck current evidence, event key, expected revision/version, then commit the SQLite transaction |
 | Retrieval / inference caches | Serialize howhard-owned SQLite cache transactions and atomic response-cache publication |
 | `flush` | Validate, append/fsync, then truncate/fsync under one turn |
+| Refined constants after `observe` / `flush` | Score the record from one snapshot outside admission; in one turn, drop the result if the cached one covers more scored runs, else replace `refined-constants.json` atomically |
 | `scripts/migrate-payloads.py` | Offline utility only (never invoked by runtime commands): commit and verify bounded SQLite batches under store write admission before unlinking pre-4.0 loose request and decision JSON |
 
 The queue does not reserve a whole workflow. External LLM forecasts, local embedding,
-graph construction, reranking, source collection, worker execution, review and gate
-waits happen outside the write turn. Retrieval cache publication is separate from its
+graph construction, reranking, the scoring of a refinement, source collection, worker
+execution, review and gate waits happen outside the write turn. Retrieval cache publication is separate from its
 expensive computation. Pretrained model loading/downloads belong to the inference
 libraries, outside store admission. A caller-selected receipt export is an ordinary
 output file, outside backend state coordination.
@@ -121,6 +122,8 @@ Additional memory/evidence retrieval reads the original snapshot. It cannot sile
 replace old content with a newer version. Edits to unsurfaced memories, new observations
 and unrelated learning commits leave the request valid. Amendments or usage corrections
 to a surfaced execution invalidate it when its effective contents change.
+A published {ref}`refinement <refined-constants>` that moves a constant changes the bound
+configuration digest, so a request prepared before it is refused as stale.
 
 The weight policy is **snapshot**. Both readers use the captured belief/expert scores,
 evidence counts and the scored evidence candidates, with their similarity and age factors, throughout the workflow.
