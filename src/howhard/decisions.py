@@ -152,7 +152,8 @@ def load(config, source, *, for_scoring=False):
     if "semantic" in value:
         from .capability import validate_receipt as validate_capability
         validate_capability(value["capability"], inventory, value["semantic"], value["chosen"],
-                            decision_format=value["format"], constants=value["selection"].get("constants"))
+                            decision_format=value["format"], constants=value["selection"].get("constants"),
+                            host=host(value))
         from .success import validate_selection
         validate_selection(value["selection"], value["semantic"], value["capability"], value["cost_policy"],
                            decision_format=value["format"], chosen=value["chosen"], inventory=inventory)

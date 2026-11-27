@@ -209,6 +209,9 @@ order_penalty = 0.15
 loud_weight = 0.75
 silent_weight = 1.0
 unknown_cause_weight = 0.5
+caught_share_worth = 12.0
+reserved_forecast_cells = 2
+unproven_clear_probability = 0.2
 
 [sampling]
 uncertainty_multiplier = 1.0
@@ -228,9 +231,27 @@ task_worth_loud = 16.0
 The full inventory has no size bound. If the span of the clearing and timely intervals
 exceeds the forecast budget, the filter uses their union. If the forecast set still
 exceeds the budget, it gets one re-filter round and then a clear error. Widening
-forecasts the next stronger overpowered cell per round, within the same total budget.
+forecasts the next stronger cell with no forecast per round, within the same total
+budget.
+
+`min_clear_probability` is the floor of the band's lower edge and
+`overpowered_gain_margin` the widest upper margin. Both edges tighten when the asking
+host catches a smaller share of its failures than `d_0`
+({ref}`the host's caught share <host-aware-band>`); with no failed run on record they
+are exactly these two values. `caught_share_worth` is the number of failed runs at
+which a record weighs as much as what it leans on: a host with 12 failed runs of its
+own gets a caught share halfway between its own and that of all hosts, and all hosts
+with 12 failed runs get one halfway between theirs and `d_0`.
+`reserved_forecast_cells` of the `max_forecast_cells` slots
+are reserved for families and agents the band leaves out
+({ref}`reserved forecast slots <reserved-slots>`); 0 turns the rule off, and the
+forecast cells are then the band. `unproven_clear_probability` is the `P_clear` a
+family with no run on this kind of task must reach to take a reserved slot. All three
+are optional.
 
 `max_forecast_cells` is a positive integer; widening rounds are nonnegative integers.
+`reserved_forecast_cells` is a nonnegative integer below `max_forecast_cells`, and
+`caught_share_worth` is positive and may exceed 1.
 Require `0 < min_clear_probability < reliability_probability < 1` and observation noise
 in `(0,0.5)`. Probability/strength margins are in `[0,1]`; order penalty is nonnegative.
 The uncertainty multiplier is positive,

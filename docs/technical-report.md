@@ -280,20 +280,111 @@ about the current threshold under the proposed order.
 ### From posterior to fit band
 
 The posterior cumulative probability {math}`P(H\leq r\mid D,x)` estimates how
-likely a candidate is to clear the task's capability threshold. The clearing and
+likely a candidate is to clear the task's capability threshold; write
+{math}`P_{\mathrm{clear}}(o)` for its value at cell {math}`o`. The clearing and
 timely-clearing posteriors each define an interval. An interval starts at the first
-position meeting the minimum probability and retains a reliable candidate when one
-exists. It ends at the first position at or above that anchor where the remaining
-probability gain is below the margin. When reliability is unattainable, the lower
-boundary is the gain rule's anchor. When the timely minimum is also unattainable,
-only the timely gain cut is kept. The clearing minimum still applies to all
-forecasted cells.
+position meeting its lower edge and retains a reliable candidate when one exists. It
+ends at the first position at or above that anchor where the remaining probability
+gain is below its margin. When reliability is unattainable, the lower boundary is the
+gain rule's anchor. When the timely minimum is also unattainable, only the timely gain
+cut is kept.
+
+The two edges of the clearing interval follow the host, the agent that asks for the
+route and accepts or rejects the result. A failure the host finds before acceptance is
+loud and one found afterwards is silent, so the share of its failures a host catches
+decides how much weakness the band can afford. The caught share is estimated from the
+failed routed runs on record, shrunk towards all hosts and towards a reference share:
+
+```{math}
+d_0=\frac{1-2\varepsilon}{1-\varepsilon},\qquad
+d_{\mathrm{all}}=\frac{C_{\mathrm{all}}+\kappa_d\,d_0}{F_{\mathrm{all}}+\kappa_d},\qquad
+d=\frac{C_{\mathrm{host}}+\kappa_d\,d_{\mathrm{all}}}{F_{\mathrm{host}}+\kappa_d},
+\qquad F=\sum_i a_i,\quad C=\sum_i a_i c_i.
+```
+
+Here {math}`\varepsilon` is the risk class's accepted-defect limit. The sums run over
+the failed runs: finished loud or silent runs whose decision receipt holds a forecast
+for the cell that ran, of all hosts for {math}`F_{\mathrm{all}}` and
+{math}`C_{\mathrm{all}}` and of the asking host for {math}`F_{\mathrm{host}}` and
+{math}`C_{\mathrm{host}}`. {math}`c_i` is 1 for a loud run and 0 for a silent one.
+{math}`a_i` is the age factor of the weighted likelihood update above, half as much
+for every 14 days between the run and the request, divided by {math}`\max(1,A_t)`
+where {math}`A_t` is the total age factor of the failed runs of the same ticket, so
+one ticket's failed runs count as one run at most.
+A run's host is the name in its decision receipt; a receipt with no name, or older
+than decision v11, belongs to one unnamed host. {math}`\kappa_d=12` is the number of
+failed runs the prior is worth. {math}`d_0` is the caught share at which both edges
+below equal the configured ones.
+
+In plain words: {math}`d` is the share of its failures that the host caught. A host
+with few failures of its own leans on all hosts, and an empty record gives
+{math}`d_0`. For example, at {math}`\varepsilon=0.10`, {math}`d_0=0.889`. With
+{math}`F_{\mathrm{all}}=60` and {math}`C_{\mathrm{all}}=42`,
+{math}`d_{\mathrm{all}}=(42+12\times0.889)/72=0.731`. With
+{math}`F_{\mathrm{host}}=20` and {math}`C_{\mathrm{host}}=8`,
+{math}`d=(8+12\times0.731)/32=0.524`.
+
+```{math}
+e=\max\!\left(p_{\min},\;1-\frac{\varepsilon}{1-d+\varepsilon d}\right),\qquad
+g=\min\!\left(g_{\max},\;\frac{g_{\max}\,\varepsilon}{(1-\varepsilon)(1-d)}\right).
+```
+
+The clearing interval starts at the first cell with
+{math}`P_{\mathrm{clear}}(o)\geq e` and ends at the first reliable cell with
+{math}`P_{\mathrm{clear}}(\text{strongest})-P_{\mathrm{clear}}(o)<g`. {math}`p_{\min}`
+is `min_clear_probability` (0.5), the floor of {math}`e`, and {math}`g_{\max}` is
+`overpowered_gain_margin` (0.05), the widest margin. A reliable cell has
+{math}`P_{\mathrm{clear}}` at or above `reliability_probability`, and the strongest
+cell is the last of the order. At {math}`d\geq d_0` both edges are the configured
+values, and below it both tighten.
+
+In plain words: a cell too weak for the task fails. With
+{math}`q=1-P_{\mathrm{clear}}`, a share {math}`q(1-d)` of its results escapes the host
+and a share {math}`1-qd` is accepted. Holding the escaped share of the accepted results
+at {math}`\varepsilon` gives {math}`e`. At the top, 0.05 more
+{math}`P_{\mathrm{clear}}` removes about {math}`(1-d)\times0.05` of the silent
+results, so {math}`g` shrinks to keep {math}`(1-d)\,g` constant. At
+{math}`\varepsilon=0.10`, a host that catches 90% or more keeps {math}`e=0.5` and
+{math}`g=0.05`; {math}`d=0.8` gives 0.643 and 0.0278; {math}`d=0.5` gives 0.818 and
+0.0111; {math}`d=0` gives 0.900 and 0.0056. For example, {math}`d=0.524` gives
+{math}`e=0.811` and {math}`g=0.0117`: with {math}`P_{\mathrm{clear}}` of 0.30, 0.55,
+0.72, 0.84, 0.91, 0.955, 0.985 and 0.99 along the order, the configured edges give
+cells 2 to 6 and these edges give cells 4 to 7.
+
+If no cell reaches {math}`e`, the band starts at the first cell with the highest
+{math}`P_{\mathrm{clear}}` when that value reaches {math}`p_{\min}`, and the request
+is refused otherwise. The timely interval and the prior CDF keep the configured values.
 
 When the span of the two intervals exceeds the forecast budget, the fine reader
 forecasts their union. The gap lies beyond the clearing gain cut and before the
 timely interval. This retains both clearing and timely alternatives for {math}`J` to
 compare, while the receipt keeps probabilities for every rank. If the union itself
 exceeds the budget, request a sharper independent prior over the same inventory.
+
+The band alone can leave out a family that has never run this kind of task, or every
+cell of one agent. Of the {math}`B` cells the forecast budget allows, {math}`R=2` are
+reserved:
+
+```{math}
+\mathrm{core}=\text{the first }B-R\text{ cells of the band},\qquad
+\mathrm{forecast}=\mathrm{core}\;\cup\;\{\text{up to }R\text{ cells }o_f\text{ with }P_{\mathrm{clear}}(o_f)\geq b_f\}.
+```
+
+Here {math}`f` is a family with no core cell and {math}`o_f` its cell nearest to the
+core in the order, the stronger one on a tie. The bar {math}`b_f` is 0.2 when no run
+of {math}`f` is among the decision's candidate runs, and {math}`e` otherwise. Slots go
+first to those unproven families, each on its own and nearest first. The remaining
+slots go to agents with no core cell, at most one slot per agent: a proven family
+whose agent is missing takes the slot on that agent's behalf, at the agent's
+qualifying cell nearest to the core, and an agent whose unproven family already took a
+slot counts as served. In plain words: a slot buys one forecast for a family or an agent
+the band leaves out. For example, a band of 11 cells with {math}`B=12` has a core of
+ten. A family with no candidate run whose nearest cell has
+{math}`P_{\mathrm{clear}}=0.35` takes the first slot, and an agent with no core cell
+whose nearest cell is the band's eleventh takes the second. A slot that no family
+takes goes back to the band, whose next cell beyond the core is then forecast. A
+reserved cell keeps its position's classification, and no decision forecasts more
+than {math}`B` cells.
 
 Cross-model placements can change through constrained local search using marginal
 threshold evidence and an order-distance penalty. This is approximate posterior/MAP
@@ -636,7 +727,7 @@ Example: a chosen cell with {math}`\pi=0.702` is on trial, so `cap_met` is false
 `needs_review` is true.
 
 When every forecast cell is excluded, the engine first forecasts the next stronger
-overpowered cell, one per round, up to `widening_rounds` and within the forecast
+cell with no forecast, one per round, up to `widening_rounds` and within the forecast
 budget; one trusted or on-trial cell stops this widening. The
 {ref}`selection reference <admission-tiers>` defines the receipt fields, and the
 [capability filter](capability.md) defines widening.

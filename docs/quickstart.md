@@ -83,7 +83,10 @@ the agent reports the limitation instead of inventing a selection.
 
 The agent can name itself with `--host NAME` and label each candidate with the `agent`
 product that would run it; both names are optional, stored unverified in the decision
-and listed by `report`. Its forecasts can state 95% ranges on the failure rates, on
+and listed by `report`. The fit band tightens for a host that catches a smaller share
+of its failures before accepting a result, and up to two forecasts are reserved for
+model families and agents the band would leave out
+({ref}`the host's caught share <host-aware-band>`). Its forecasts can state 95% ranges on the failure rates, on
 active time (`seconds_ci`) and on each token kind (`token_usage_ci`). See the
 {ref}`forecast contract <forecast-contract>`.
 

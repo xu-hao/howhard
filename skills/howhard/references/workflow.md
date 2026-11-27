@@ -14,7 +14,8 @@ quota credit windows are known for a uniformly priced inventory, optional `credi
 `weekly_7d_remaining_credit_usd`) enforces hard scheduling feasibility (`credit_ok`) against
 the larger of `needed_credit_usd` and its 80% point `credit_p80_usd`. Optional `agent` is a short label (letters, digits, `_`, `-`) for
 the agent product that would run the cell; it is stored with the cell, never verified,
-and a candidate without one belongs to one unnamed agent. Selection uses `session_cost_usd`; neither rate source represents
+and a candidate without one belongs to one unnamed agent. An agent with no cell in the
+core of the fit band can take a reserved forecast slot. Selection uses `session_cost_usd`; neither rate source represents
 actual session money cost when `cost_per_credit` differs from `1.0`. Omitted/null rate means unknown, including
 when the ID also exists in howhard's shipped registry. Do not fabricate an example
 inventory, prices, family labels, weights or statistical settings.
@@ -159,10 +160,23 @@ backend enforces and records nothing for it. Inspect the recorded reason and poo
 
 Capability placement is an order for this task/project, learned from similar actual
 executions. Fitness is an underpowered/fit/overpowered band. Unseen cells have visibly
-prior-only placement but may benefit from the learned task threshold. The default
-fine-forecast budget is 12, with one explicit re-filter and up to two stronger-only
-widening rounds. Only prospectively forecasted cells may be selected or scored.
-`howhard report --json` exposes filter failures, widening and cross-reader disagreements.
+prior-only placement but may benefit from the learned task threshold. Both edges of
+the band follow the host named with `--host`: `capability.caught_share` in the
+response gives the share of its failed runs that host caught before acceptance
+(`d_host`), the lowest `P_clear` of a band cell (`e`) and the upper margin (`g`). A
+host that catches fewer of its failures gets a band of stronger cells; with no failed
+run on record the edges are the configured 0.5 and 0.05. The default fine-forecast
+budget is 12, of which two slots are reserved: `capability.reserved` lists up to two
+cells outside the core of the band that are forecast anyway, first for a model family
+with no run on this kind of task (`unproven-family`, needs `P_clear >= 0.2`), then for
+an agent with no core cell (`missing-agent`, needs `P_clear >= e`, at most one slot
+per agent). A reserved cell
+keeps its classification, so the forecast request can include an `underpowered` or
+`overpowered` cell. There is one explicit re-filter and up to two stronger-only
+widening rounds, each taking the next stronger cell with no forecast. Only
+prospectively forecasted cells may be selected or scored.
+`howhard report --json` exposes filter failures, widening, cross-reader disagreements
+and each decision's caught share, edges, core and reserved cells (`filter_quality.bands`).
 One observe call records one execution and updates both readers.
 
 Delegate through the host's actual tool with supported controls and the authorized

@@ -1,6 +1,7 @@
 """Task-conditioned ordinal threshold reader over the shared execution evidence."""
 
 from copy import deepcopy
+from datetime import datetime
 import math
 import re
 
@@ -26,23 +27,33 @@ DEFAULTS = {"max_forecast_cells": 12, "widening_rounds": 2,
             "min_clear_probability": .5, "reliability_probability": .9,
             "overpowered_gain_margin": .05, "consistency_margin": .2,
             "observation_noise": .05, "order_penalty": .15,
-            "loud_weight": .75, "silent_weight": 1., "unknown_cause_weight": .5}
+            "loud_weight": .75, "silent_weight": 1., "unknown_cause_weight": .5,
+            "caught_share_worth": 12., "reserved_forecast_cells": 2, "unproven_clear_probability": .2}
+# Capability formats before v6 froze their policy without the host-aware band settings.
+HOST_AWARE_SETTINGS = ("caught_share_worth", "reserved_forecast_cells", "unproven_clear_probability")
+RESERVED_REASONS = ("unproven-family", "missing-agent")
 
 
 def cell_key(cell):
     return "cell:" + digest([cell["model"], cell["effort"]])[:24]
 
 
-def validate_policy(policy):
-    keys(policy, list(DEFAULTS), where="capability")
+def validate_policy(policy, *, host_aware=True):
+    """Check a capability policy. ``host_aware=False`` reads one frozen before the host-aware band."""
+    keys(policy, [k for k in DEFAULTS if host_aware or k not in HOST_AWARE_SETTINGS], where="capability")
     for k, v in policy.items():
-        if k in ("max_forecast_cells", "widening_rounds"):
+        if k in ("max_forecast_cells", "widening_rounds", "reserved_forecast_cells"):
             if type(v) is not int or v < (1 if k == "max_forecast_cells" else 0):
                 raise HowHardError(f"capability.{k}: expected {'positive' if k == 'max_forecast_cells' else 'nonnegative'} integer")
+        elif k == "caught_share_worth":
+            # A count of failed runs' worth, so it may exceed 1.
+            number(v, f"capability.{k}", positive=True)
         else:
             number(v, f"capability.{k}", nonnegative=True)
             if k != "order_penalty" and v > 1:
                 raise HowHardError(f"capability.{k}: expected probability/weight in [0, 1]")
+    if host_aware and policy["reserved_forecast_cells"] >= policy["max_forecast_cells"]:
+        raise HowHardError("capability.reserved_forecast_cells: expected an integer below max_forecast_cells")
     if not 0 < policy["min_clear_probability"] < policy["reliability_probability"] < 1:
         raise HowHardError("capability: require 0 < min_clear_probability < reliability_probability < 1")
     if not 0 < policy["observation_noise"] < .5:
@@ -200,6 +211,84 @@ def observations(engine, payload, candidates):
             for (item, row, strength, value), share in zip(counted, shares)]
 
 
+def caught_record(engine, host, candidates):
+    """``F`` and ``C``: the failed routed runs on record, of all hosts and of the asking host.
+
+    A failed run is a finished loud or silent run whose decision receipt holds a forecast
+    for the cell that ran. It counts at its age factor ``a = 0.5 ** (days / half_life_days)``,
+    limited so that one ticket's failed runs count as one run at most. ``F`` sums ``a`` and
+    ``C`` sums ``a`` over the loud runs, which were caught before acceptance. The host is
+    the name in the run's receipt; a receipt with no name, or older than v11, belongs to
+    the one unnamed host. The age is measured to the request's prepare time.
+    """
+    from . import evidence
+    from .decisions import exists, host as receipt_host, load
+    prepared = datetime.fromisoformat(candidates["prepared_at"])
+    # A receipt is immutable under its ID, so its host and forecast cells are read once per engine.
+    known = engine.receipt_hosts
+    failed = []
+    for row in engine.rows:
+        decision_id = row.get("decision_id")
+        if row["outcome"] not in ("loud", "silent") or not decision_id:
+            continue
+        if decision_id not in known:
+            if not exists(engine.config, decision_id):
+                continue
+            receipt = load(engine.config, decision_id, for_scoring=True)
+            known[decision_id] = None if receipt is None else (receipt_host(receipt), frozenset(
+                (c["family"], c["effort"]) for c in receipt["semantic"]["worlds"]["llm"]))
+        if known[decision_id] is None or (row["family"], row["resolved_effort"]) not in known[decision_id][1]:
+            continue
+        days = max(0.0, (prepared - datetime.fromisoformat(row["observed_at"])).total_seconds() / 86400.0)
+        failed.append((row, known[decision_id][0], evidence.age_factor(days, candidates["half_life_days"])))
+    shares = evidence.ticket_shares([(row["ticket"], age) for row, _, age in failed])
+    counted = [(row["outcome"] == "loud", name, age * share) for (row, name, age), share in zip(failed, shares)]
+
+    def total(rows):
+        return float(math.fsum(rows))
+    return {"host": host,
+            "F_all": total(a for _, _, a in counted), "C_all": total(a for loud, _, a in counted if loud),
+            "F_host": total(a for _, name, a in counted if name == host),
+            "C_host": total(a for loud, name, a in counted if loud and name == host)}
+
+
+def _shrunk(caught, failed, prior, worth):
+    # (caught + worth * prior) / (failed + worth), written so that an empty record gives ``prior`` exactly.
+    return prior + (caught - failed * prior) / (failed + worth)
+
+
+def caught_share(record, epsilon, policy):
+    """The asking host's caught share ``d`` and the two band edges it sets.
+
+    ``d_0 = (1 - 2 * epsilon) / (1 - epsilon)`` is the share at which both edges equal the
+    configured ones. ``d(all)`` shrinks the caught share of all hosts towards ``d_0`` and
+    ``d(host)`` shrinks the asking host's towards ``d(all)``, each by ``caught_share_worth``
+    failed runs' worth, so an empty record gives ``d_0``.
+    """
+    worth = policy["caught_share_worth"]
+    d_0 = (1.0 - 2.0 * epsilon) / (1.0 - epsilon)
+    d_all = _shrunk(record["C_all"], record["F_all"], d_0, worth)
+    d_host = _shrunk(record["C_host"], record["F_host"], d_all, worth)
+    e, g = band_edges(d_host, epsilon, policy)
+    return {**{k: record[k] for k in ("host", "F_all", "C_all", "F_host", "C_host")},
+            "d_0": d_0, "d_all": d_all, "d_host": d_host, "e": e, "g": g}
+
+
+def band_edges(d, epsilon, policy):
+    """The lowest ``P_clear`` of a band cell, ``e``, and the upper margin, ``g``, at caught share ``d``.
+
+    A cell too weak for the task fails. With ``q = 1 - P_clear``, ``q * (1 - d)`` of its
+    results escape and ``1 - q * d`` are accepted; holding the escaped share at ``epsilon``
+    gives ``e``. ``g`` shrinks to keep ``(1 - d) * g`` constant. At ``d >= d_0`` both are the
+    configured values, and below it both tighten.
+    """
+    minimum, margin = policy["min_clear_probability"], policy["overpowered_gain_margin"]
+    if d >= (1.0 - 2.0 * epsilon) / (1.0 - epsilon):
+        return minimum, margin
+    return (max(minimum, 1.0 - epsilon / (1.0 - d + epsilon * d)),
+            min(margin, margin * epsilon / ((1.0 - epsilon) * (1.0 - d))))
+
+
 def _unanchored_reference_seconds(constants, policy):
     rate = constants.get("lambda_per_hour", 0.0) if constants else 0.0
     if rate <= 0:
@@ -265,25 +354,32 @@ def _posterior(order, cdf, obs, policy, *, targets=None):
     return dict(zip(order, np.cumsum(posterior)[:-1].tolist())), normalizer
 
 
-def _upper_cut(learned_order, probabilities, lo, policy):
+def _upper_cut(learned_order, probabilities, lo, policy, *, margin=None):
     n = len(learned_order)
+    margin = policy["overpowered_gain_margin"] if margin is None else margin
     best = probabilities[learned_order[-1]]
     reliable = next((i for i in range(lo, n) if probabilities[learned_order[i]] >= policy["reliability_probability"]), None)
     anchor = lo if reliable is None else reliable
-    return next((i for i in range(anchor, n) if best - probabilities[learned_order[i]] < policy["overpowered_gain_margin"]), n - 1)
+    return next((i for i in range(anchor, n) if best - probabilities[learned_order[i]] < margin), n - 1)
 
 
-def _forecast_band(order, clear, timely, policy, *, independent_prior=None):
+def _forecast_band(order, clear, timely, policy, *, independent_prior=None, share=None):
+    """The fit band. ``share`` moves the clearing interval's two edges; the timely interval keeps the configured ones."""
     minimum = policy["min_clear_probability"]
-    lo_clear = next((i for i, key in enumerate(order) if clear[key] >= minimum), None)
+    e, g = (minimum, policy["overpowered_gain_margin"]) if share is None else (share["e"], share["g"])
+    lo_clear = next((i for i, key in enumerate(order) if clear[key] >= e), None)
     if lo_clear is None:
-        raise HowHardError("capability filter: no cell reaches the required capability probability; supply a more capable inventory")
-    if independent_prior is not None:
+        # No cell reaches the lower edge: start at the first best cell when it reaches the floor.
+        best = max(clear[key] for key in order)
+        if best < minimum:
+            raise HowHardError("capability filter: no cell reaches the required capability probability; supply a more capable inventory")
+        lo_clear = next(i for i, key in enumerate(order) if clear[key] >= best)
+    if independent_prior is not None and (share is None or share["d_host"] >= share["d_0"]):
         lo = order.index(independent_prior["lower"])
         hi = order.index(independent_prior["upper"])
         return order[lo:hi+1]
 
-    hi_clear = _upper_cut(order, clear, lo_clear, policy)
+    hi_clear = _upper_cut(order, clear, lo_clear, policy, margin=g)
 
     lo_timely = next((i for i in range(lo_clear, len(order)) if timely[order[i]] >= minimum), None)
     if lo_timely is None:
@@ -300,6 +396,66 @@ def _forecast_band(order, clear, timely, policy, *, independent_prior=None):
     # Keep both threshold intervals. In the gap, clearing is already saturated
     # and timely clearing falls short of the minimum (or near-best fallback).
     return order[lo_clear:hi_clear+1] + order[lo_timely:hi_timely+1]
+
+
+def _core(band, policy):
+    return band[:policy["max_forecast_cells"] - policy["reserved_forecast_cells"]]
+
+
+def _reserved(cells, core, share, proven, policy):
+    """The cells that take a reserved slot, in slot order.
+
+    A slot buys one forecast for a family the core leaves out, at its cell nearest to the
+    core in the order (the stronger one on a tie). Unproven families, with no run among
+    the candidate runs, come first, each on its own, at the bar ``unproven_clear_probability``.
+    A proven family whose agent has no core cell takes a slot on behalf of that agent, at
+    the lower edge ``e``: at most one slot per missing agent, given to its qualifying cell
+    nearest to the core. An agent whose unproven family already took a slot is served.
+    Nearest first within each group.
+    """
+    slots, inside = policy["reserved_forecast_cells"], set(core)
+    positions = [c["position"] for c in cells if c["key"] in inside]
+    families = {c["family"] for c in cells if c["key"] in inside}
+    agents = {c["agent"] for c in cells if c["key"] in inside}
+    nearest = {}
+    for c in cells:
+        if not slots or c["family"] in families:
+            continue
+        rank = min(abs(c["position"] - p) for p in positions), -c["position"]
+        if c["family"] not in nearest or rank < nearest[c["family"]][0]:
+            nearest[c["family"]] = rank, c
+    groups = {reason: [] for reason in RESERVED_REASONS}
+    for rank, c in nearest.values():
+        if c["family"] not in proven:
+            reason, bar = "unproven-family", policy["unproven_clear_probability"]
+        elif c["agent"] not in agents:
+            reason, bar = "missing-agent", share["e"]
+        else:
+            continue
+        if c["P_clear"] >= bar:
+            groups[reason].append((rank, c["agent"], {"key": c["key"], "reason": reason, "bar": bar}))
+    taken, served = [], set()
+    for reason in RESERVED_REASONS:
+        for _, agent, item in sorted(groups[reason], key=lambda entry: entry[0]):
+            if len(taken) == slots or (reason == "missing-agent" and agent in served):
+                continue
+            taken.append(item)
+            served.add(agent)
+    return taken
+
+
+def forecast_cells(state):
+    """The cells of a new band that get a forecast: the core, the reserved cells, and the
+    band's next cells beyond the core for each slot that no family took."""
+    taken = [item["key"] for item in state["reserved"]]
+    beyond = [k for k in state["band"][len(state["core"]):] if k not in taken]
+    return state["core"] + taken + beyond[:max(0, state["policy"]["reserved_forecast_cells"] - len(taken))]
+
+
+def widening_order(state, forecasted):
+    """The stronger cells with no forecast, next first: band cells beyond the core, then overpowered cells."""
+    beyond = [k for k in state["band"][len(state["core"]):] if k not in forecasted]
+    return beyond + [c["key"] for c in state["cells"] if c["classification"] == "overpowered" and c["key"] not in forecasted]
 
 
 def _classification(position, lo, hi, in_band):
@@ -359,7 +515,7 @@ def _pav_along(order, raw_cdf):
     return {k: p for group, p in blocks for k in group}
 
 
-def aggregate(engine, payload, response, *, observed, covered_priors=None, agents=None):
+def aggregate(engine, payload, response, *, observed, covered_priors=None, agents=None, caught=None, candidates=None):
     from .semantic import normalize_support
     policy = payload["filter_policy"]
     baseline = response["filter"]
@@ -414,26 +570,34 @@ def aggregate(engine, payload, response, *, observed, covered_priors=None, agent
         item["timely_strength"] = strength
     timely_probabilities, _ = _posterior(learned_order, cdf, obs, policy, targets=timely_targets)
     independent_prior = baseline if not obs and len(worlds) == 1 and prior_sources is None else None
+    # Both edges of the clearing interval follow the share of its failures the asking host catches.
+    share = caught_share(caught or {"host": None, "F_all": 0., "C_all": 0., "F_host": 0., "C_host": 0.},
+                         payload["constants"]["epsilon"], policy)
     band = _forecast_band(learned_order, probabilities, timely_probabilities, policy,
-                          independent_prior=independent_prior)
+                          independent_prior=independent_prior, share=share)
     if prior_sources is not None and len(band) > policy["max_forecast_cells"]:
         # Do not let smaller-inventory prototype priors inflate a valid larger-inventory filter past budget.
-        return aggregate(engine, payload, response, observed=obs, covered_priors=None, agents=agents)
+        return aggregate(engine, payload, response, observed=obs, covered_priors=None, agents=agents,
+                         caught=caught, candidates=candidates)
     lo, hi = learned_order.index(band[0]), learned_order.index(band[-1])
     band_keys = set(band)
     observed = {r["key"] for r in obs if r["weight"] > .01}
     by_key = {c["key"]: c for c in payload["cells"]}
     agents = agents or {}
-    # The agent label is stored with its cell; None is the one unnamed agent. Nothing here reads it.
+    # The agent label is stored with its cell; None is the one unnamed agent. Only the reserved slots read it.
     rows = [{**{name: by_key[k][name] for name in ("key", "model", "family", "effort")},
              "agent": agents.get(k), "position": i, "classification": _classification(i, lo, hi, k in band_keys),
              "P_clear": probabilities[k], "P_timely": timely_probabilities[k],
              "placement": "learned" if k in observed else "prior-only",
              "threshold": "learned" if any(r["weight"] > .01 for r in obs) else "prior-only"}
             for i, k in enumerate(learned_order)]
+    core = _core(band, policy)
+    # A family is proven for this kind of task when one of its runs is among the candidate runs.
+    proven = sorted({c["family"] for c in (candidates or {"candidates": []})["candidates"]})
     out = {"format": FORMAT, "baseline": deepcopy(baseline), "memory_filters": deepcopy(response["memory_filters"]),
            "order": learned_order, "lower": band[0], "upper": band[-1],
-           "band": band, "cells": rows, "worlds": worlds, "beliefs": belief,
+           "band": band, "caught_share": share, "core": core, "proven_families": proven,
+           "reserved": _reserved(rows, core, share, set(proven), policy), "cells": rows, "worlds": worlds, "beliefs": belief,
            "evidence": obs, "policy": deepcopy(policy), "reason": response["reason"],
            "widening": [], "disagreements": [], "refilter_rounds": 0}
     if prior_sources is not None:
@@ -455,12 +619,30 @@ def disagreements(capability, prepared):
             and abs(c["P_clear"]-forecast[c["key"]]) > margin]
 
 
-def validate_receipt(state, inventory, semantic, chosen, *, decision_format=DECISION_FORMAT, constants=None):
+def _recomputed_share(state, constants, host):
+    """Recompute the caught shares and both edges from the recorded ``F`` and ``C``, which are taken as recorded."""
+    from .evidence import TOLERANCE, close
+    stored = state["caught_share"]
+    keys(stored, ["host", "F_all", "C_all", "F_host", "C_host", "d_0", "d_all", "d_host", "e", "g"],
+         where="capability caught_share")
+    if stored["host"] != host:
+        raise HowHardError("decision.capability: caught share does not belong to the host that asked")
+    record = {k: number(stored[k], "capability caught_share." + k, nonnegative=True)
+              for k in ("F_all", "C_all", "F_host", "C_host")}
+    if any(record[part] > record[whole] + TOLERANCE for part, whole in
+           (("C_all", "F_all"), ("C_host", "F_host"), ("F_host", "F_all"), ("C_host", "C_all"))):
+        raise HowHardError("decision.capability: caught runs must be among the failed runs, and a host's among all hosts'")
+    if not isinstance(constants, dict) or type(constants.get("epsilon")) not in (int, float) or not 0 < constants["epsilon"] < 1:
+        raise HowHardError("decision.capability: caught share needs the risk class's accepted-defect limit")
+    expected = caught_share({"host": host, **record}, constants["epsilon"], state["policy"])
+    if any(not close(stored[k], expected[k]) for k in ("d_0", "d_all", "d_host", "e", "g")):
+        raise HowHardError("decision.capability: caught shares and band edges do not follow from the recorded failed runs")
+    return expected
+
+
+def validate_receipt(state, inventory, semantic, chosen, *, decision_format=DECISION_FORMAT, constants=None, host=None):
     """Check complete filter coverage and the exact set of prospectively forecast cells."""
     optional_keys = ["prior_sources"] if isinstance(state, dict) and state.get("format") in (FORMAT, LEGACY_FORMAT_V5) else []
-    keys(state, ["format", "baseline", "memory_filters", "order", "lower", "upper", "band", "cells", "worlds", "beliefs",
-                 "evidence", "policy", "reason", "widening", "disagreements", "refilter_rounds", "reader_usage", "widening_stop", "executed"],
-         optional_keys, where="decision.capability")
     allowed_formats = {
         DECISION_FORMAT: (FORMAT,),
         LEGACY_DECISION_V10: (LEGACY_FORMAT_V5, LEGACY_FORMAT_V4),
@@ -468,13 +650,20 @@ def validate_receipt(state, inventory, semantic, chosen, *, decision_format=DECI
         LEGACY_DECISION_V8: (LEGACY_FORMAT_V3,),
         LEGACY_DECISION_V7: (LEGACY_FORMAT_V2, LEGACY_FORMAT_V1),
     }
-    if state["format"] not in allowed_formats.get(decision_format, ()):
+    # The format decides the block's shape, so a block of another decision format is refused by its format.
+    if isinstance(state, dict) and "format" in state and state["format"] not in allowed_formats.get(decision_format, ()):
         raise HowHardError("decision.capability.format: unsupported version")
+    # v6 adds the host's caught share, the two edges it sets, the core and the reserved cells.
+    host_aware = isinstance(state, dict) and state.get("format") == FORMAT
+    keys(state, ["format", "baseline", "memory_filters", "order", "lower", "upper", "band", "cells", "worlds", "beliefs",
+                 "evidence", "policy", "reason", "widening", "disagreements", "refilter_rounds", "reader_usage", "widening_stop", "executed",
+                 *(["caught_share", "core", "proven_families", "reserved"] if host_aware else [])],
+         optional_keys, where="decision.capability")
     has_timely = state["format"] in (FORMAT, LEGACY_FORMAT_V5, LEGACY_FORMAT_V4, LEGACY_FORMAT_V3)
     has_split_band = state["format"] in (FORMAT, LEGACY_FORMAT_V5, LEGACY_FORMAT_V4)
     has_prototype_priors = state["format"] in (FORMAT, LEGACY_FORMAT_V5)
     has_agents = state["format"] == FORMAT
-    validate_policy(state["policy"])
+    validate_policy(state["policy"], host_aware=host_aware)
     cells = [{**c, "key": cell_key(c)} for c in inventory]
     known = {c["key"]: c for c in cells}
     validate_filter(state["baseline"], cells)
@@ -488,7 +677,7 @@ def validate_receipt(state, inventory, semantic, chosen, *, decision_format=DECI
             or any(not isinstance(key, str) for key in band)
             or (not has_split_band and band != state["order"][lo:hi+1])):
         raise HowHardError("decision.capability: inconsistent band")
-    forecasted = set(band)
+    banded, forecasted = set(band), set(band)
     cell_fields = ["key", "model", "family", "effort", "position", "classification", "P_clear", "placement", "threshold"]
     if has_timely:
         cell_fields.insert(7, "P_timely")
@@ -504,7 +693,7 @@ def validate_receipt(state, inventory, semantic, chosen, *, decision_format=DECI
             raise HowHardError("decision.capability: inconsistent inventory identity")
         if has_agents and c["agent"] != known[c["key"]].get("agent"):
             raise HowHardError("decision.capability: cell agent does not match native candidate inventory")
-        expected = _classification(i, lo, hi, c["key"] in forecasted)
+        expected = _classification(i, lo, hi, c["key"] in banded)
         if c["classification"] != expected or c["placement"] not in ("learned", "prior-only") or c["threshold"] not in ("learned", "prior-only"):
             raise HowHardError("decision.capability: inconsistent classification or evidence status")
         value = number(c["P_clear"], "capability.P_clear", nonnegative=True)
@@ -626,8 +815,29 @@ def validate_receipt(state, inventory, semantic, chosen, *, decision_format=DECI
         )
         clear = {c["key"]: c["P_clear"] for c in state["cells"]}
         timely = {c["key"]: c["P_timely"] for c in state["cells"]}
-        if band != _forecast_band(state["order"], clear, timely, state["policy"], independent_prior=independent_prior):
+        share = _recomputed_share(state, constants, host) if host_aware else None
+        if band != _forecast_band(state["order"], clear, timely, state["policy"], independent_prior=independent_prior,
+                                  share=share):
             raise HowHardError("decision.capability: band does not match the frozen probabilities")
+    if host_aware:
+        # The core, the reserved cells and the cells that get the first forecasts all follow from the band.
+        from .evidence import close
+        policy = state["policy"]
+        if len(band) > policy["max_forecast_cells"]:
+            raise HowHardError("decision.capability: forecast budget exceeded")
+        if state["core"] != _core(band, policy):
+            raise HowHardError("decision.capability: core does not match the band")
+        proven = sorted({c["family"] for c in semantic["evidence_candidates"]["candidates"]})
+        if state["proven_families"] != proven:
+            raise HowHardError("decision.capability: proven families do not match the scored candidates")
+        reserved = _reserved(state["cells"], state["core"], share, set(proven), policy)
+        if not isinstance(state["reserved"], list) or len(state["reserved"]) != len(reserved):
+            raise HowHardError("decision.capability: reserved cells do not follow from the band and the candidate runs")
+        for stored, wanted in zip(state["reserved"], reserved):
+            keys(stored, ["key", "reason", "bar"], where="capability reserved cell")
+            if (stored["key"], stored["reason"]) != (wanted["key"], wanted["reason"]) or not close(stored["bar"], wanted["bar"]):
+                raise HowHardError("decision.capability: reserved cells do not follow from the band and the candidate runs")
+        forecasted = set(forecast_cells(state))
     if not isinstance(state["widening"], list) or len(state["widening"]) > state["policy"]["widening_rounds"]:
         raise HowHardError("decision.capability: invalid widening rounds")
     stronger = state["order"][hi+1:]
@@ -635,8 +845,12 @@ def validate_receipt(state, inventory, semantic, chosen, *, decision_format=DECI
     trigger = WIDENING_TRIGGER if tiered else LEGACY_WIDENING_TRIGGER
     for i, item in enumerate(state["widening"]):
         keys(item, ["round", "cells", "trigger"], where="capability widening")
-        if item != {"round": i+1, "cells": stronger[i:i+1], "trigger": trigger} or not item["cells"]:
-            raise HowHardError("decision.capability: widening must forecast the next stronger overpowered cell")
+        # Older formats widen over the overpowered cells alone, in order.
+        following = widening_order(state, forecasted)[:1] if host_aware else stronger[i:i+1]
+        if item != {"round": i+1, "cells": following, "trigger": trigger} or not item["cells"]:
+            raise HowHardError("decision.capability: widening must forecast the next stronger overpowered cell"
+                               if not host_aware else
+                               "decision.capability: widening must forecast the next stronger cell with no forecast")
         forecasted.update(item["cells"])
     if tiered and state["widening_stop"] not in WIDENING_STOPS:
         raise HowHardError("decision.capability.widening_stop: expected one of " + ", ".join(WIDENING_STOPS))
@@ -648,7 +862,10 @@ def validate_receipt(state, inventory, semantic, chosen, *, decision_format=DECI
     actual = {(c["family"], c["effort"]) for c in baseline}
     expected = {(c["family"], c["effort"]) for c in state["cells"] if c["key"] in forecasted}
     if actual != expected:
-        raise HowHardError("decision.capability: forecasts must cover exactly the band and forecasted widening cells")
+        raise HowHardError("decision.capability: forecasts must cover exactly the band and forecasted widening cells"
+                           if not host_aware else
+                           "decision.capability: forecasts must cover exactly the core, the reserved cells, "
+                           "the band cells in unfilled slots and the widening cells")
     chosen_cell = next(c for c in state["cells"] if c["key"] == cell_key(chosen))
     if chosen_cell["key"] not in forecasted or state["executed"] != {k: chosen_cell[k] for k in ("key", "classification", "position", "P_clear")}:
         raise HowHardError("decision.capability: executed classification/position must match a forecasted cell")
