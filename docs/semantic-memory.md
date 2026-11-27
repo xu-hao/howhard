@@ -172,11 +172,12 @@ beyond `prior_strength`. Rows without intervals remain valid. A row may also sta
 `seconds_ci` and `token_usage_ci` ranges, which are validated and stored but not read by
 selection ({ref}`forecast contract <forecast-contract>`). Intervals are credible
 intervals of the support-weighted mixture of per-expert Beta posteriors, so a lone `llm`
-forecast still reports its posterior uncertainty. The silent cap compares the 80%
-posterior quantile of accepted-result risk with epsilon, with no fitted statistical
+forecast still reports its posterior uncertainty. The
+{ref}`admission tiers <admission-tiers>` read the share of the accepted-result risk
+posterior within epsilon, with no fitted statistical
 floor. Tiny-weight pessimistic experts do not automatically veto every cell. The
 posterior is a model assumption, not a calibrated risk guarantee. Results identify the
-interval method and preserve the review-required policy when the cap is unmet. Predictive
+interval method and flag a chosen cell that is not trusted. Predictive
 support (`evidence_count`, `log_score`) weights experts; it never stands in for a cell's
 own sample size. See the {ref}`outcome posterior <outcome-posterior>`.
 
@@ -308,12 +309,12 @@ stage-1 prior; it has no independent observation store or feedback path.
 Fine selection charges expected same-cell retries to an accepted result and calibrates
 active duration from expert `seconds` forecasts plus shrunk `effective_active_seconds`
 log-residuals of the cell's own evidence candidates, pricing the log-normal right-tail
-expectation `exp(mu + sigma^2 / 2)`. Its silent cap uses each expert's joint
-accepted-result posterior `Beta(alpha_silent, alpha_clean)` at the admission quantile.
+expectation `exp(mu + sigma^2 / 2)`. Its admission tiers use each expert's joint
+accepted-result posterior `Beta(alpha_silent, alpha_clean)`: the share within epsilon.
 Sampling draws from the sampled expert's per-cell Dirichlet posterior alongside
 log-normal active-duration draws. Posterior cost overlap (including log-normal and
 between-expert duration variance) gates exploration, optionally capped by an explicit
-risk-class `explore_within`; an unmet cap disables all draws and requires review. Receipts
+risk-class `explore_within`; a chosen cell that is not trusted is flagged for review. Receipts
 preserve the formula, constants, calibration and explanation.
 A consistency disagreement compares the raw stage-2 clean forecast (before outcome updates) with stage-1 `P_clear`; it
 does not substitute the accepted-result risk ratio or silently alter the chosen cell.

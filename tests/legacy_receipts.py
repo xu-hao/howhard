@@ -1,8 +1,9 @@
 """Derive authentic frozen legacy receipts from a current receipt's base structure.
 
 ``to_v10`` is the base of every older builder: it removes what v11 added (the host's name,
-agent labels, ranges on active time and token kinds, and the scored evidence candidates) and
-restores the v10 format names, evidence rows and sampling policy.
+agent labels, ranges on active time and token kinds, the scored evidence candidates and
+admission tiers) and restores the v10 format names, evidence rows, sampling policy and
+meaning of the silent cap.
 """
 
 from copy import deepcopy
@@ -43,8 +44,27 @@ def legacy_capability_prior(flt, policy, *, linear_tail=False):
     return dict(zip(order, before + fit + after))
 
 
-def to_v10(receipt):
-    """A v10 receipt: no host name, no agent labels, no ranges on active time or token kinds."""
+def restore_cap(receipt):
+    """The cap before admission tiers: met when some admissible cell has enough credit, else no draw."""
+    sem, selection = receipt["semantic"], receipt["selection"]
+    cap_met = any(c["admissible"] and c.get("credit_ok", True) for c in selection["cells"])
+    assert sem["sampling"]["enabled"] or not cap_met, "a fixture cannot restore a draw that was never made"
+    selection["cap_met"] = cap_met
+    selection["needs_review"] = not cap_met
+    if not cap_met:
+        sem["sampling"] = {
+            "enabled": False,
+            "reason": "cap-unmet",
+            "policy": deepcopy(selection["sampling_policy"]),
+            "cells": [],
+        }
+        sem.pop("sampled_expert", None)
+        selection["exploration"]["enabled"] = False
+        selection["exploration"]["reason"] = "disabled-cap-unmet"
+
+
+def to_v10(receipt, on_cap_unmet="flag-review"):
+    """A v10 receipt: no host name, agent labels, ranges on active time or token kinds, or tiers."""
     receipt = deepcopy(receipt)
     if receipt["format"] != "howhard-decision-v11":
         return receipt
@@ -56,6 +76,10 @@ def to_v10(receipt):
     cap["format"] = "howhard-capability-v5"
     for cell in cap["cells"]:
         cell.pop("agent")
+    for item in cap["widening"]:
+        item["trigger"] = "silent-cap-unmet"
+    if cap["widening_stop"] == "pickable":
+        cap["widening_stop"] = "cap-met"
     sem = receipt["semantic"]
     sem["format"] = "howhard-semantic-v7"
     sem["prompt_version"] = "semantic-reader-v7"
@@ -79,6 +103,18 @@ def to_v10(receipt):
     for policy in (sem["sampling"]["policy"], receipt["selection"]["sampling_policy"]):
         del policy["half_life_days"], policy["comparison_cap"]
         policy["outcome_recency"] = .95
+    # v10 has no tiers: a cell is admissible or not (trusted is exactly v10 admissible), the
+    # policy lacks the two tier constants, and the cap-unmet policy is recorded.
+    selection = receipt["selection"]
+    selection["on_cap_unmet"] = on_cap_unmet
+    selection["exploration"].pop("pool")
+    for policy in (selection["sampling_policy"], sem["sampling"]["policy"]):
+        policy.pop("trial_probability", None)
+        policy.pop("all_excluded_factor", None)
+    for row in selection["cells"]:
+        row.pop("pi")
+        row.pop("tier")
+    restore_cap(receipt)
     return receipt
 
 
@@ -153,19 +189,7 @@ def to_v9(receipt):
             )
         sem["sampling"]["cells"] = new_cal
 
-    cap_met = any(c["admissible"] and c.get("credit_ok", True) for c in selection["cells"])
-    selection["cap_met"] = cap_met
-    selection["needs_review"] = not cap_met
-    if not cap_met:
-        sem["sampling"] = {
-            "enabled": False,
-            "reason": "cap-unmet",
-            "policy": deepcopy(policy),
-            "cells": [],
-        }
-        sem.pop("sampled_expert", None)
-        selection["exploration"]["enabled"] = False
-        selection["exploration"]["reason"] = "disabled-cap-unmet"
+    restore_cap(receipt)
     return receipt
 
 
@@ -220,6 +244,7 @@ def to_v8(receipt):
         run = row["session_cost_usd"] if receipt["cost_policy"]["worker_money_included"] else 0.
         row["J"] = cost(run, row["T"], loud, silent, selection["constants"])
         row["expected_attempts"] = 1 / denominator(loud)
+    restore_cap(receipt)
     return receipt
 
 

@@ -286,7 +286,7 @@ def test_rate_card_candidates_enforce_credit_budget_and_exact_equality_is_schedu
 
 
 @pytest.mark.parametrize("policy", ["flag-review", "lowest-bound"])
-def test_on_cap_unmet_never_falls_back_to_unschedulable_cell_lacking_credit(tmp_path, policy):
+def test_no_trusted_cell_with_credit_never_falls_back_to_unschedulable_cell_lacking_credit(tmp_path, policy):
     config_path = tmp_path / "howhard.toml"
     config_path.write_text(f'on_cap_unmet = "{policy}"\n[task_types]\ntask = "standard"\n')
     engine = Engine(config_path)
@@ -310,9 +310,10 @@ def test_on_cap_unmet_never_falls_back_to_unschedulable_cell_lacking_credit(tmp_
             "credit_budget": {"available_credit_usd": 1.0, "session_5h_remaining_credit_usd": 1.0, "weekly_7d_remaining_credit_usd": 5.0},
         },
     ]
-    # Unschedulable cell has lower silent risk (even admissible) and lower J, but lacks credit (needs 0.05 > 0.01).
-    # Both schedulable cells fail the standard epsilon=0.10 silent cap:
-    # schedulable-a has lower J (silent=0.30, J cheaper) while schedulable-b has lower silent risk (silent=0.20) but higher J.
+    # Unschedulable cell has lower silent risk (even trusted) and lower J, but lacks credit (needs 0.05 > 0.01).
+    # Neither schedulable cell is trusted at the standard epsilon=0.10 silent limit:
+    # schedulable-a has lower J (silent=0.30) and is excluded, while schedulable-b has lower silent risk
+    # (silent=0.20) but higher J and is on trial. The retired on_cap_unmet value does not change the choice.
     result = decide_with_forecasts(
         engine,
         candidates,
@@ -324,8 +325,11 @@ def test_on_cap_unmet_never_falls_back_to_unschedulable_cell_lacking_credit(tmp_
     )
     assert not result["cap_met"] and result["needs_review"]
     assert result["chosen"]["model"] != "route-unschedulable/model"
-    expected_model = "route-schedulable-a/model" if policy == "flag-review" else "route-schedulable-b/model"
-    assert result["chosen"]["model"] == expected_model
+    assert {c["model"]: c["tier"] for c in result["cells"]} == {
+        "route-unschedulable/model": "trusted", "route-schedulable-a/model": "excluded",
+        "route-schedulable-b/model": "on-trial"}
+    expected_model = "route-schedulable-b/model"
+    assert result["chosen"]["model"] == expected_model and result["exploration"]["pool"] == "trusted-and-on-trial"
     assert result["why"][0]["model"] == "route-unschedulable/model"
     assert result["why"][0]["reason"] == "insufficient-credit"
 

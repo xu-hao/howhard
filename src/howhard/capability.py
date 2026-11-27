@@ -17,6 +17,10 @@ LEGACY_FORMAT_V3 = "howhard-capability-v3"
 LEGACY_FORMAT_V2 = "howhard-capability-v2"
 LEGACY_FORMAT_V1 = "howhard-capability-v1"
 OVERRUN_GRACE_RATIO = 1.5
+# Why a widening round ran, and why widening ended. v11 reads admission tiers; older receipts
+# recorded the silent cap. The other three stop labels are shared.
+WIDENING_TRIGGER, LEGACY_WIDENING_TRIGGER = "all-excluded", "silent-cap-unmet"
+WIDENING_STOPS = ("pickable", "forecast-budget", "round-limit", "exhausted")
 EFFORT_ORDER = {e: i for i, e in enumerate(("low", "medium", "high", "xhigh", "max", "ultra"))}
 DEFAULTS = {"max_forecast_cells": 12, "widening_rounds": 2,
             "min_clear_probability": .5, "reliability_probability": .9,
@@ -627,11 +631,15 @@ def validate_receipt(state, inventory, semantic, chosen, *, decision_format=DECI
     if not isinstance(state["widening"], list) or len(state["widening"]) > state["policy"]["widening_rounds"]:
         raise HowHardError("decision.capability: invalid widening rounds")
     stronger = state["order"][hi+1:]
+    tiered = decision_format == DECISION_FORMAT
+    trigger = WIDENING_TRIGGER if tiered else LEGACY_WIDENING_TRIGGER
     for i, item in enumerate(state["widening"]):
         keys(item, ["round", "cells", "trigger"], where="capability widening")
-        if item != {"round": i+1, "cells": stronger[i:i+1], "trigger": "silent-cap-unmet"} or not item["cells"]:
+        if item != {"round": i+1, "cells": stronger[i:i+1], "trigger": trigger} or not item["cells"]:
             raise HowHardError("decision.capability: widening must forecast the next stronger overpowered cell")
         forecasted.update(item["cells"])
+    if tiered and state["widening_stop"] not in WIDENING_STOPS:
+        raise HowHardError("decision.capability.widening_stop: expected one of " + ", ".join(WIDENING_STOPS))
     if len(forecasted) > state["policy"]["max_forecast_cells"]:
         raise HowHardError("decision.capability: forecast budget exceeded")
     if type(state["refilter_rounds"]) is not int or state["refilter_rounds"] not in (0, 1):

@@ -1,6 +1,5 @@
 # Ready-to-use policy. No configuration or parameter tuning is required.
 project = "local"
-on_cap_unmet = "flag-review"
 journal = ".howhard/pending.jsonl"
 
 [[logs]]

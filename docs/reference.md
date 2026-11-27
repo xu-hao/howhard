@@ -170,13 +170,116 @@ support-weighted mixture of the experts' Beta marginals `Beta(alpha_i, sum(alpha
 the mean and the equal-tailed 2.5%/97.5% quantiles, expanded to contain the mean. This is
 a real posterior interval even when only the `llm` expert participates. Accepted-result
 risk `P_silent / (1 - P_loud)` is, under each Dirichlet, `Beta(alpha_silent, alpha_clean)`;
-`P_silent_accepted` reports the same mixture mean and 95% interval. A cell is
-`admissible` when its `admission_risk`, the `admission_quantile` (default 0.80) posterior
-quantile of accepted risk, is at most the risk class epsilon. Using q80 rather than the
-97.5% bound keeps unseen cells with an ordinary forecast admissible while still rejecting
-high-silent cells. There is no additional statistical risk floor, and the posterior is a
-model assumption, not a calibrated coverage guarantee. `J` uses the posterior means.
+`P_silent_accepted` reports the same mixture mean and 95% interval. There is no
+additional statistical risk floor, and the posterior is a model assumption, not a
+calibrated coverage guarantee. `J` uses the posterior means.
 
+(admission-tiers)=
+### Admission tiers
+
+Every forecast cell is sorted by its chance of meeting the risk class's limit on
+silently wrong accepted results:
+
+```text
+pi(c) = P(S <= epsilon)
+      = sum over k of  w_k * I(epsilon; alpha_silent_k, alpha_clean_k)
+```
+
+- `c`: a forecast cell.
+- `S`: the accepted-defect share, silent results / accepted results
+  (`P_silent / (1 - P_loud)`).
+- `epsilon`: the risk class's limit on `S`.
+- `pi(c)`: the share of the cell's posterior for `S` at or below `epsilon`.
+- `k`, `w_k`: an expert in `semantic.beliefs.experts` and its weight. The weights sum
+  to 1.
+- `alpha_silent_k`, `alpha_clean_k`: the silent and clean entries of expert `k`'s
+  posterior `alpha` for the cell.
+- `I(x; a, b)`: the regularized incomplete beta function, the share of a `Beta(a, b)`
+  distribution at or below `x`.
+
+In plain words, `pi` is the chance, under the cell's current belief, that no more than
+`epsilon` of its accepted results are silently wrong.
+
+Example: `epsilon` is 0.10. Two experts weigh 0.6 and 0.4, and their posteriors for `S`
+are `Beta(1, 30)` and `Beta(1, 9)`. Then `I` is `1 - 0.9^30 = 0.958` and
+`1 - 0.9^9 = 0.613`, so `pi = 0.6 * 0.958 + 0.4 * 0.613 = 0.820`.
+
+```text
+trusted   <=> pi(c) >= admission_quantile
+on trial  <=> trial_probability <= pi(c) < admission_quantile
+excluded  <=> pi(c) < trial_probability
+```
+
+- `admission_quantile`: the trusted line, 0.80 by default.
+- `trial_probability`: the on-trial line, 0.20 by default.
+
+In plain words, a cell that very likely meets the limit is trusted, an uncertain cell is
+on trial, and only a cell that very likely misses the limit is excluded. A wide
+posterior alone therefore puts an unproven cell on trial instead of shutting it out.
+
+Example, with one expert and `epsilon` 0.10:
+
+| Posterior for `S` | Average | `pi` | Tier | `admission_risk` |
+| --- | --- | --- | --- | --- |
+| `Beta(1, 30)` | 3.2% | 0.958 | trusted | 0.052 |
+| `Beta(1, 9)` | 10.0% | 0.613 | on trial | 0.164 |
+| `Beta(4, 8)` | 33.3% | 0.019 | excluded | 0.445 |
+
+Each cell, in `pick` and in `summary`, reports `pi`, `tier` (`trusted`, `on-trial` or
+`excluded`), `admission_risk` and `admissible`. `admission_risk` is the
+`admission_quantile` point of the same mixture, so `admission_risk <= epsilon` holds
+exactly when `pi >= admission_quantile`. `admissible` is true exactly when the tier is
+trusted.
+
+Trusted and on-trial cells compete together:
+
+```text
+pool = { c : credit_ok(c) and c is trusted or on trial }                                   when not empty
+pool = { c : credit_ok(c) and pi(c) >= all_excluded_factor * max pi over credit_ok cells }  otherwise
+best = the pool cell with the lowest J
+eligible(c) <=> c in pool and J(c) - J(best) <= uncertainty_multiplier * (sd(best) + sd(c))
+chosen = the eligible cell with the lowest sampled J
+```
+
+- `credit_ok(c)`: the cell has enough credit (see the
+  {ref}`credit budget <credit-budget>`).
+- `all_excluded_factor`: 0.5 by default.
+- `J`, `sd`, sampled `J`: the cell's mean cost, its `cost_sd` and its cost under the
+  seed's draw (`sampled_J`).
+- `uncertainty_multiplier`: 1 by default. A risk class's `explore_within` additionally
+  caps the gap at `explore_within * |J(best)|`.
+
+In plain words, trusted and on-trial cells compete as equals, and nothing limits how
+often an on-trial cell is chosen. When no such cell has enough credit, the cells nearest
+the best chance compete instead, so a cell is always drawn. Selection is refused only
+when no cell has enough credit.
+
+Example of the second pool: three cells with enough credit have `pi` 0.12, 0.08 and
+0.05. The bar is `0.5 * 0.12 = 0.06`, so the first two form the pool and the third is
+left out.
+
+```text
+cap_met      <=> the chosen cell is trusted
+needs_review <=> not cap_met
+```
+
+In plain words, the flag says that the chosen cell is not trusted. It is advice to the
+caller to have the result reviewed independently; nothing is enforced or recorded for
+it.
+
+Example: a chosen cell with `pi` 0.613 is on trial, so `cap_met` is false and
+`needs_review` is true.
+
+`exploration.pool` records which pool competed: `trusted-and-on-trial` or
+`all-excluded`. `exploration.enabled` is true when more than one cell is eligible, and
+`exploration.reason` is `sampled-within-posterior-overlap` (the draw chose a cell other
+than the mean-best), `mean-best` or `disabled-no-supported-alternative` (one eligible
+cell). The three constants are frozen with the rest of the policy in
+`selection.sampling_policy`.
+
+### The draw
+
+A sample is drawn for every decision, so `semantic.sampling.enabled` is always true.
 `pick` samples one expert by its weight and draws outcome probabilities from that
 expert's per-cell Dirichlet posterior `alpha`, and calibrates active duration `T`
 alongside outcomes. Forecasted `seconds` represents expected **active** execution
@@ -189,42 +292,54 @@ calibrate log-normal parameters `(mu, sigma)` and price the right-tail expectati
 standard deviation from the posterior Dirichlet covariance
 `(diag(m) - m m^T) / (sum(alpha) + 1)` and log-normal active-duration variance, raised to
 the between-expert spread of per-expert posterior costs when larger. Thompson sampling
-considers every admissible, schedulable cell whose posterior cost overlaps the mean-best
+considers every cell of the pool whose posterior cost overlaps the pool's mean-best
 cell: `J - J_best <= uncertainty_multiplier * (sd_best + sd_cell)`. Only an explicit
 risk-class `explore_within` additionally caps that gap at `explore_within * |J_best|`.
 Thompson sampling draws log-normal active duration in `parts["time"]` when duration
 variance is present. Receipts retain the scored `evidence_candidates`, the
 `outcome_observations` and `duration_observations` counted from them, each sampled cell's
 `outcome_posterior` (`prior`, `prior_concentration`, `counts`, `evidence_weight`,
-`alpha`), concentrations, duration calibration parameters, each cell's `admission_risk`,
-the seed and the reason for a sampled non-best choice. `summary` returns the same
-posterior means and intervals without sampling a selection. A fixed seed reproduces
-selection given frozen forecasts and the request's scored evidence candidates; it does
-not make inference deterministic. A receipt records the time its request was prepared,
-because the age of every counted run is measured to that moment, so two decisions
-prepared at different times are different receipts even when nothing else differs.
+`alpha`), concentrations, duration calibration parameters, each cell's `pi`, `tier` and
+`admission_risk`, the seed and the reason for a sampled non-best choice. `summary`
+returns the same posterior means, intervals and tiers without sampling a selection. A
+fixed seed reproduces selection given frozen forecasts and the request's scored evidence
+candidates; it does not make inference deterministic. A receipt records the time its
+request was prepared, because the age of every counted run is measured to that moment,
+so two decisions prepared at different times are different receipts even when nothing
+else differs. Loading a stored decision recomputes `pi` from its frozen forecasts,
+expert weights and outcome observations and refuses a receipt whose `pi`, `tier`,
+`admissible`, `exploration.pool`, chosen cell or flags disagree with them.
 
 Loud attempts are retried on the same cell until a non-loud result is accepted.
 `1/(1-P_loud)` charges the expected attempts; `C_loud` is extra detection/rework overhead
 per loud failure, in addition to the repeated time/money. The probability floor keeps
 a near-certain loud failure finite but very costly. Retry-on-another-cell is not assumed.
 
-If the cap is unmet after stronger-only capability widening, no expert or probability
-sample is drawn. `flag-review` chooses the minimum mean J; `lowest-bound` chooses the
-lowest accepted-result `admission_risk`, with mean J breaking ties. Both require
-review. `exploration.reason` records `disabled-cap-unmet`. Risk-class `explore_within`
-can further tighten the posterior-overlap band; it cannot permit exploration outside
-it. Cheaper alternatives include signed cost component explanations or the policy that
-excluded them.
+Risk-class `explore_within` can further tighten the posterior-overlap band; it cannot
+permit exploration outside it. Each cheaper alternative is explained in `why`:
+`insufficient-credit`, `silent-cap` for a cell outside the pool (the message quotes its
+`pi`), `explore-within` or `posterior-overlap` for a pool cell outside the band, and
+otherwise `sampled-cost` with signed cost components.
 
 New receipts use `howhard-decision-v11` (`howhard-semantic-v8`, reader prompt
 `semantic-reader-v8`, interval kind `dirichlet-posterior-mixture`). Frozen
-`howhard-decision-v10` receipts use the same posterior and selection rules without a
-host name, agent labels or ranges on active time and token kinds. Frozen
+`howhard-decision-v10` receipts use the same posterior without a host name, agent
+labels, ranges on active time and token kinds, or tiers. Frozen
 `howhard-decision-v9` receipts keep undecayed `kappa_0 * p_0 + counts` posteriors, while
 frozen `howhard-decision-v8` and `howhard-decision-v7` receipts keep their original weighted
 forecast envelopes, upper-envelope admission and sampling policy shape; all load,
-validate, accept outcomes and replay into predictive weights.
+validate, accept outcomes and replay into predictive weights. Receipts older than v11
+keep the cap as they recorded it:
+
+| Item | Formats v7 to v10 | Format v11 |
+| --- | --- | --- |
+| `cap_met` | Some admissible cell has enough credit | The chosen cell is trusted |
+| No cell passes | No draw; `selection.on_cap_unmet` records the policy and `exploration.reason` is `disabled-cap-unmet` | A draw over the second pool |
+| `semantic.sampling.enabled` | Equals `cap_met` | Always true |
+| `exploration.enabled` | `cap_met` and more than one eligible cell | More than one eligible cell |
+| Cell fields | `admissible`, and `admission_risk` from v9 | Also `pi` and `tier` |
+| `selection.sampling_policy` | Without the two tier constants | With `trial_probability` and `all_excluded_factor` |
+| Widening labels | Trigger `silent-cap-unmet`; stop `cap-met` | Trigger `all-excluded`; stop `pickable` |
 
 ## Prices and measurements
 
@@ -243,6 +358,7 @@ are supplied, `abs((active_seconds + queue_wait_seconds) - seconds) <= 1e-6` is 
 scalar `seconds` otherwise. Observations update both the threshold reader and shared
 predictive evidence from one stored row.
 
+(credit-budget)=
 An optional candidate `credit_budget` object enforces hard scheduling feasibility against
 forecasted `needed_credit_usd`, independently of the session money cost. It requires
 nonnegative finite `available_credit_usd` and accepts optional
@@ -254,11 +370,12 @@ known on a single credit basis. Each evaluated cell reports `session_cost_usd`,
 `cost_per_credit`, `needed_credit_usd`,
 `credit_budget`, `available_credit_usd` and `credit_ok` (`needed_credit_usd <= available_credit_usd`
 when `credit_budget` is present, or `true` when omitted), while
-`admissible` remains accepted-result silent-risk admissibility. Selection filters to
-schedulable cells (`credit_ok == true`) before sampling, exploration or `on_cap_unmet`
-fallback (`lowest-bound` or `flag-review`), refuses selection when no evaluated cell is
-schedulable, and labels cheaper unschedulable alternatives with `insufficient-credit` in
-`why`.
+`tier` and `admissible` describe accepted-result silent risk only. Only schedulable
+cells (`credit_ok == true`) enter either pool of the
+{ref}`admission tiers <admission-tiers>`, so an excluded cell or a cell without enough
+credit is never chosen while a trusted or on-trial cell has enough credit. Selection is
+refused when no evaluated cell is schedulable, and cheaper unschedulable alternatives
+are labeled `insufficient-credit` in `why`.
 
 (portable-execution-accounting)=
 ## Portable execution accounting
@@ -498,7 +615,8 @@ The `decisions` table also stores uncompressed `created_at`, `chosen`,
 `context_summary`, `selection`, `task_type`, `risk_class`, `cap_met`, and
 `needs_review` columns. `chosen`, `context_summary`, and `selection` are small JSON
 summaries; `context_summary` includes task text and project fingerprint, while
-`selection` includes objective, retry policy, and cap fallback. Indexes cover creation
+`selection` includes objective, retry policy and, for receipts older than v11, the
+recorded cap-unmet policy. Indexes cover creation
 time, task/risk, chosen cell, and review status. The helper
 `howhard.decisions.summaries(config, task_type=...,
 risk_class=..., cap_met=..., needs_review=..., limit=...)` reads them without decompressing receipts.

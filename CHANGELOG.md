@@ -45,6 +45,31 @@
   their own evidence shapes and limits. An `Engine(retrieval=...)` object must provide
   `reranker.score(query, documents)`, as `RetrievalPipeline` does.
 
+- Tiered admission (#130). Every forecast cell reports `pi`, the posterior chance that
+  its accepted-defect share is within the risk class's epsilon, and a `tier`: `trusted`
+  when `pi >= admission_quantile` (0.80), `on-trial` when
+  `trial_probability <= pi < admission_quantile` (0.20), `excluded` below that.
+  `admissible` is true exactly when the tier is trusted, which is the cell the earlier
+  cap admitted. Trusted and on-trial cells with enough credit compete together on one
+  drawn sample; when there is none, the cells with enough credit whose `pi` is at least
+  `all_excluded_factor` (0.5) times the best `pi` compete instead, so a sample is drawn
+  for every decision and `exploration.pool` records `trusted-and-on-trial` or
+  `all-excluded`. **Changed meaning:** `cap_met` is now true when the chosen cell is
+  trusted, and `needs_review` is its opposite; the flag is advice to the caller and
+  nothing is enforced or recorded for it. Widening runs while every forecast cell is
+  excluded (round trigger `all-excluded`) and stops at the first trusted or on-trial
+  cell (`widening_stop` `pickable`). `[sampling]` gains `trial_probability`, from 0 to
+  `admission_quantile`, and `all_excluded_factor`, from 0 to 1; a value outside its
+  range is refused by key name. **Retired:** `on_cap_unmet`. An explicit configuration
+  file no longer has to state it, the packaged default drops it, and a file that still
+  sets it loads with the value ignored and one notice on standard error. Receipts no
+  longer record it, `exploration.reason` no longer takes `disabled-cap-unmet`, and
+  `why` no longer takes `lowest-bound`; `silent-cap` now marks a cell outside the pool
+  and quotes its `pi`. Loading a v11 decision recomputes `pi` and refuses a changed
+  `pi`, `tier`, `admissible`, pool, chosen cell or flag. `v10`, `v9`, `v8` and `v7`
+  receipts keep their recorded cap, policy and widening labels, and keep loading,
+  observing, replaying and reporting.
+
 ## 5.0.0 — 2026-11-24
 
 - Dynamic synthesized `(task, context)` prototypes with materialized per-cell priors and

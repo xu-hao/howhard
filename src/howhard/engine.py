@@ -463,17 +463,18 @@ class Engine:
                                     candidates=bundle["learned_state"]["evidence_candidates"])
         state = deepcopy(bundle["capability"])
         state["disagreements"] = capability.disagreements(state, prepared)
-        admissible = any(c["admissible"] for c in prepared[0]["cells"])
+        # Widening reads tiers only, never credit: it stops once a forecast cell is trusted or on trial.
+        pickable = any(c["tier"] != "excluded" for c in prepared[0]["cells"])
         forecasted = {capability.cell_key(c) for c in prepared[0]["cells"]}
         stronger = [c["key"] for c in state["cells"] if c["classification"] == "overpowered" and c["key"] not in forecasted]
-        if (not admissible and stronger and len(state["widening"]) < state["policy"]["widening_rounds"]
+        if (not pickable and stronger and len(state["widening"]) < state["policy"]["widening_rounds"]
                 and len(forecasted) < state["policy"]["max_forecast_cells"]):
             next_cell = stronger[0]
-            state["widening"].append({"round": len(state["widening"])+1, "cells": [next_cell], "trigger": "silent-cap-unmet"})
+            state["widening"].append({"round": len(state["widening"])+1, "cells": [next_cell], "trigger": capability.WIDENING_TRIGGER})
             bundle["capability"] = state
             bundle["forecast_state"] = {"response": combined, "cells": combined_payload["cells"], "usage": usage}
             return self._forecast_request(bundle, {next_cell})
-        state["widening_stop"] = "cap-met" if admissible else "forecast-budget" if len(forecasted) >= state["policy"]["max_forecast_cells"] else "round-limit" if stronger else "exhausted"
+        state["widening_stop"] = "pickable" if pickable else "forecast-budget" if len(forecasted) >= state["policy"]["max_forecast_cells"] else "round-limit" if stronger else "exhausted"
         prepared[0]["capability"] = state
         if "dependencies" in bundle:
             prepared[0]["request_snapshot"] = {"weights_policy": "snapshot", "dependencies": deepcopy(bundle["dependencies"]),

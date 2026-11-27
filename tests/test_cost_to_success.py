@@ -37,14 +37,19 @@ def test_reported_high_failure_cell_loses_on_cost_to_success_and_cap(tmp_path):
     request, response = prepare(engine, TABLE)
     result = engine.decide(request["request_id"], response, seed=42)
     assert result["chosen"]["model"] == "claude-opus-5-5"
-    assert result["chosen"]["effort"] == "xhigh"
     indexed = {(c["model"], c["effort"]): c for c in result["cells"]}
     assert indexed["claude-haiku-5-5", "low"]["J"] == pytest.approx(253.5/.18)
     assert indexed["claude-haiku-5-5", "high"]["P_silent_accepted"]["mean"] == pytest.approx(.72)
     assert not indexed["claude-haiku-5-5", "high"]["admissible"]
-    assert result["exploration"]["reason"] == "disabled-cap-unmet"
-    assert not result["exploration"]["enabled"] and result["needs_review"]
-    assert "sampled_expert" not in result["semantic"]
+    # No cell is trusted. The two stronger cells are on trial and compete on one drawn sample;
+    # the high-failure cells are excluded, and the decision is flagged.
+    assert {pair: c["tier"] for pair, c in indexed.items()} == {
+        ("claude-haiku-5-5", "low"): "excluded", ("claude-haiku-5-5", "high"): "excluded",
+        ("claude-opus-5-5", "xhigh"): "on-trial", ("claude-opus-5-5", "high"): "on-trial"}
+    assert result["exploration"]["pool"] == "trusted-and-on-trial"
+    assert {c["model"] for c in result["exploration"]["eligible_cells"]} == {"claude-opus-5-5"}
+    assert result["needs_review"] and not result["cap_met"]
+    assert result["semantic"]["sampling"]["enabled"] and "sampled_expert" in result["semantic"]
     receipt = load(engine.config, result["decision_id"])
     assert receipt["selection"]["objective"] == "cost-to-accepted-result"
     assert receipt["selection"]["exploration"] == result["exploration"]
@@ -54,9 +59,9 @@ def test_one_thousand_seeds_never_choose_the_low_clean_probability_cells(tmp_pat
     engine = Engine(directory=tmp_path)
     request, response = prepare(engine, TABLE)
     first = engine.decide(request["request_id"], response, seed=42)
-    assert not first["exploration"]["enabled"]
+    assert first["exploration"]["pool"] == "trusted-and-on-trial"
     selected = [engine.decide(request["request_id"], response, seed=seed)["chosen"] for seed in range(1000)]
-    assert all(c["model"] == "claude-opus-5-5" and c["effort"] == "xhigh" for c in selected)
+    assert all(c["model"] == "claude-opus-5-5" and c["effort"] in ("xhigh", "high") for c in selected)
 
 
 @pytest.mark.parametrize("loud,silent,clean", [(.4, .13, .47), (1., 0., 0.)])
@@ -100,7 +105,7 @@ def test_cap_targets_the_accepted_result_even_when_raw_silent_risk_is_small(tmp_
     assert row["P_silent_accepted"]["mean"] == pytest.approx(.5)
     assert row["P_silent_accepted"]["upper"] > row["admission_risk"] > result["constants"]["epsilon"]
     assert not result["cap_met"] and result["needs_review"]
-    assert result["exploration"]["reason"] == "disabled-cap-unmet"
+    assert row["tier"] == "on-trial" and result["exploration"]["reason"] == "disabled-no-supported-alternative"
 
 
 def test_evidence_tightens_only_the_observed_cell_while_a_weak_prior_can_explore(tmp_path):
@@ -127,14 +132,19 @@ def test_evidence_tightens_only_the_observed_cell_while_a_weak_prior_can_explore
     assert strong_choices.count("fixture/b") > weak_choices.count("fixture/b")
 
 
-def test_unmet_cap_does_not_create_a_random_generator(tmp_path, monkeypatch):
+def test_no_trusted_cell_still_draws_one_seeded_sample(tmp_path, monkeypatch):
+    import numpy
     engine = Engine(directory=tmp_path)
     request, response = prepare(engine, TABLE)
-    def forbidden(*args, **kwargs):
-        raise AssertionError("No random sampling is allowed when the cap is unmet")
-    monkeypatch.setattr("numpy.random.default_rng", forbidden)
+    seeds, original = [], numpy.random.default_rng
+    def recording(seed=None):
+        seeds.append(seed)
+        return original(seed)
+    monkeypatch.setattr("numpy.random.default_rng", recording)
     result = engine.decide(request["request_id"], response, seed=42)
-    assert result["chosen"]["effort"] == "xhigh"
+    assert seeds == [42] and result["seed"] == 42
+    assert not result["cap_met"] and result["semantic"]["sampling"]["enabled"]
+    assert result["chosen"]["model"] == "claude-opus-5-5"
 
 
 def test_accepted_risk_envelope_uses_each_experts_joint_probabilities(tmp_path):
@@ -168,12 +178,16 @@ def test_forecasted_band_owns_worker_money_comparison(tmp_path):
 
 
 
-def test_lowest_bound_is_deterministic_and_still_requires_review(tmp_path):
-    config = tmp_path / "howhard.toml"
-    config.write_text('on_cap_unmet="lowest-bound"\n[task_types]\ntask="standard"\n')
-    engine = Engine(config)
-    request, response = prepare(engine, TABLE)
-    result = engine.decide(request["request_id"], response, seed=42)
-    assert result["chosen"]["model"] == "claude-opus-5-5"
-    assert result["needs_review"] and result["exploration"]["reason"] == "disabled-cap-unmet"
-    load(engine.config, result["decision_id"])
+def test_retired_lowest_bound_policy_changes_nothing_and_the_decision_is_still_flagged(tmp_path):
+    results = []
+    for name, policy in (("old", 'on_cap_unmet="lowest-bound"\n'), ("new", "")):
+        (tmp_path / name).mkdir()
+        config = tmp_path / name / "howhard.toml"
+        config.write_text(policy + '[task_types]\ntask="standard"\n')
+        engine = Engine(config)
+        request, response = prepare(engine, TABLE)
+        result = engine.decide(request["request_id"], response, seed=42)
+        assert result["chosen"]["model"] == "claude-opus-5-5" and result["needs_review"]
+        assert "on_cap_unmet" not in load(engine.config, result["decision_id"])["selection"]
+        results.append(result)
+    assert results[0]["chosen"] == results[1]["chosen"] and results[0]["selection"] == results[1]["selection"]

@@ -644,7 +644,7 @@ def duration_observations(candidates, outcome_obs):
 
 
 def augment(engine, prepared, response, payload, snapshot, usage, *, candidates):
-    from .success import calibrate_duration, cost, denominator, posterior_intervals
+    from .success import admission_tier, calibrate_duration, cost, denominator, posterior_intervals
     result, cells = deepcopy(prepared[0]), prepared[1]
     # The readers only weigh the request's scored candidates; nothing is compared again here.
     outcome_obs = outcome_observations(candidates, {(row["family"], row["effort"]) for row in result["cells"]})
@@ -671,10 +671,14 @@ def augment(engine, prepared, response, payload, snapshot, usage, *, candidates)
     indexed = {key: panel_lookup(panel) for key, panel in worlds.items()}
     for row in result["cells"]:
         pair = row["family"], row["effort"]
-        intervals, _ = posterior_intervals(indexed, weights, pair, outcome_obs, policy)
+        intervals, _ = posterior_intervals(indexed, weights, pair, outcome_obs, policy,
+                                           epsilon=result["constants"]["epsilon"])
         for field in ("P_clean", "P_loud", "P_silent", "P_silent_accepted"):
             row[field] = intervals[field]
         row["admission_risk"] = intervals["admission_risk"]
+        # pi is the chance that the accepted-defect share is within epsilon; it sorts the cell into a tier.
+        row["pi"] = intervals["pi"]
+        row["tier"] = admission_tier(row["pi"], policy)
         seconds = sum(
             weights[k] * calibrate_duration(indexed[k][pair]["seconds"], pair, duration_obs)["expected_seconds"]
             for k in weights
@@ -696,7 +700,7 @@ def augment(engine, prepared, response, payload, snapshot, usage, *, candidates)
         loud, silent = row["P_loud"]["mean"], row["P_silent"]["mean"]
         row["expected_attempts"] = 1/denominator(loud)
         row["J"] = cost(row["session_cost_usd"] if cell["money_included"] else 0., row["T"], loud, silent, c)
-        row["admissible"] = row["admission_risk"] <= c["epsilon"]
+        row["admissible"] = row["tier"] == "trusted"
     result["cells"].sort(key=lambda row: (row["session_cost_usd"] if row["session_cost_usd"] is not None else float("inf"), row["family"], row["effort"]))
     result["semantic"] = {"format": FORMAT, "prompt_version": SETTINGS["prompt_version"], "backend": usage["backend"],
                           "memory_revision": snapshot["revision"], "memories": deepcopy(snapshot["memories"]),
@@ -728,18 +732,7 @@ def sample(prepared, seed):
     state = result["semantic"]
     parts = {k: np.zeros((1, len(cells))) for k in ("run", "loud", "silent", "time")}
     constants = result["constants"]
-    if not any(c["admissible"] and c.get("credit_ok", True) for c in result["cells"]):
-        # No RNG call is made when the accepted-result cap is unmet.
-        state["sampling"] = {"enabled": False, "reason": "cap-unmet", "policy": deepcopy(result["sampling_policy"]), "cells": []}
-        indexed = panel_lookup(result["cells"])
-        for i, cell in enumerate(cells):
-            row = indexed[cell["family"], cell["effort"]]
-            d = denominator(row["P_loud"]["mean"])
-            parts["run"][0, i] = row["session_cost_usd"]/d if cell["money_included"] else 0.
-            parts["loud"][0, i] = constants["C_loud"]*row["P_loud"]["mean"]/d
-            parts["silent"][0, i] = constants["C_silent"]*row["P_silent"]["mean"]/d
-            parts["time"][0, i] = constants["lambda_per_hour"]*row["T"]/d
-        return parts
+    # A sample is drawn for every decision; the tiers decide which cells compete on it.
     experts = state["beliefs"]["experts"]
     rng = np.random.default_rng(seed)
     chosen = str(rng.choice([e["key"] for e in experts], p=[e["weight"] for e in experts]))
@@ -767,10 +760,11 @@ def sample(prepared, seed):
 def validate_receipt(state, *, decision_format=DECISION_FORMAT):
     """Validate portable frozen semantic inputs before they affect feedback weights."""
     legacy = decision_format in (LEGACY_DECISION_V7, LEGACY_DECISION_V8)
-    # v10 opened per-cell evidence bounds; v11 adds ranges on active time and token kinds
-    # and counts one scored candidate set in place of those bounds.
+    # v10 opened per-cell evidence bounds; v11 adds ranges on active time and token kinds,
+    # counts one scored candidate set in place of those bounds, and always draws a sample
+    # under the tiered sampling policy.
     per_cell_evidence = decision_format in (DECISION_FORMAT, LEGACY_DECISION_V10)
-    ranges = scored = decision_format == DECISION_FORMAT
+    ranges = scored = tiered = decision_format == DECISION_FORMAT
     required = ["format", "prompt_version", "backend", "memory_revision", "memories", "worlds", "exposures", "beliefs", "reason", "retrieval", "evidence", "reader_usage", "interval_kind", "sampling"]
     if decision_format != LEGACY_DECISION_V7:
         required.append("duration_observations")
@@ -897,6 +891,8 @@ def validate_receipt(state, *, decision_format=DECISION_FORMAT):
         raise HowHardError("decision.semantic.evidence_candidates: constants differ from the sampling policy")
     if type(sampling["enabled"]) is not bool or not isinstance(sampling["cells"], list):
         raise HowHardError("decision.semantic.sampling: invalid calibration")
+    if tiered and not sampling["enabled"]:
+        raise HowHardError("decision.semantic.sampling: a sample is always drawn")
     if sampling["enabled"]:
         if {(c["family"], c["effort"]) for c in sampling["cells"]} != allowed or len(sampling["cells"]) != len(allowed):
             raise HowHardError("decision.semantic.sampling: calibration must cover forecasted cells")

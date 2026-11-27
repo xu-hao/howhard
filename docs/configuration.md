@@ -2,7 +2,7 @@
 
 The default workflow requires no file. `howhard.toml` in the current directory is loaded
 when present; `--config PATH` chooses another file. Paths are relative to that file.
-An explicit config must state `on_cap_unmet`; other settings overlay packaged defaults.
+Its settings overlay packaged defaults, so a file states only what it changes.
 Unknown keys are refused. This reference is for integrators, not a user setup checklist.
 
 (external-router-inventories)=
@@ -18,8 +18,6 @@ A separate routing application can use howhard for selection and learning while 
 provider access and execution. Save explicitly named inventories in `howhard.toml`:
 
 ```toml
-on_cap_unmet = "flag-review"
-
 [inventories]
 router = [
   { model = "provider-a/model-x", effort = "high" },
@@ -94,8 +92,6 @@ their frozen inventory, and pending requests reject changed configuration.
 Select the reranker in user/application-owned `howhard.toml`:
 
 ```toml
-on_cap_unmet = "flag-review"
-
 [retrieval]
 reranker = "fast"
 ```
@@ -139,7 +135,6 @@ components through Python.
 ## Routing policy and storage
 
 ```toml
-on_cap_unmet = "flag-review" # or lowest-bound
 project = "local"
 journal = ".howhard/pending.jsonl"
 
@@ -221,6 +216,8 @@ max_concentration = 1000000.0
 prior_strength = 8.0
 uncertainty_multiplier = 1.0
 admission_quantile = 0.80
+trial_probability = 0.20
+all_excluded_factor = 0.50
 half_life_days = 14.0
 comparison_cap = 256
 ```
@@ -235,13 +232,14 @@ Require `0 < min_clear_probability < reliability_probability < 1` and observatio
 in `(0,0.5)`. Probability/strength margins are in `[0,1]`; order penalty is nonnegative.
 Concentration bounds satisfy `1 <= min_concentration <= prior_strength` and
 `min_concentration <= max_concentration`; uncertainty multiplier is positive,
-`admission_quantile` lies in `[0.5, 1)`, `half_life_days` is positive and `comparison_cap`
-is a positive integer.
+`admission_quantile` lies in `[0.5, 1)`, `trial_probability` in
+`[0, admission_quantile]`, `all_excluded_factor` in `[0, 1]`, `half_life_days` is positive
+and `comparison_cap` is a positive integer. A value outside its range is refused with a
+message that names the key.
 `prior_strength` caps the pseudo-observations any forecast prior contributes to a cell's
 [Dirichlet outcome posterior](outcome-posterior); optional forecast credible intervals
 can lower it to `min_concentration` but never raise it. `max_concentration` caps the
-posterior after observed outcomes are added. `admission_quantile` is the posterior
-quantile of accepted-result silent risk compared with epsilon.
+posterior after observed outcomes are added.
 
 `half_life_days` and `comparison_cap` govern which recorded runs count as evidence and
 how much ({ref}`evidence candidates <evidence-candidates>`). A run's weight halves for
@@ -252,13 +250,39 @@ most recent first; the rest count nowhere. Both are optional. The former
 `sampling.outcome_recency` is accepted and ignored: a file that sets it loads with one
 notice on standard error, and standard output is unchanged.
 
-Thompson sampling considers every admissible cell whose posterior cost overlaps the
-mean-best cell: `J - J_best <= uncertainty_multiplier * (sd_best + sd_candidate)` using
-delta-method retry-cost standard deviations. A risk class's optional `explore_within`
+Three constants sort cells into the {ref}`admission tiers <admission-tiers>` by `pi`,
+a cell's chance that its accepted-defect share is within the risk class's epsilon:
+
+```text
+trusted   <=> pi >= admission_quantile
+on trial  <=> trial_probability <= pi < admission_quantile
+excluded  <=> pi < trial_probability
+second pool, when no trusted or on-trial cell has enough credit:
+              pi >= all_excluded_factor * (the highest pi among cells with enough credit)
+```
+
+- `admission_quantile`: the trusted line, 0.80. It is also the posterior quantile that
+  `admission_risk` reports.
+- `trial_probability`: the on-trial line, 0.20. With `trial_probability = 0` no cell is
+  excluded; with `trial_probability = admission_quantile` no cell is on trial.
+- `all_excluded_factor`: 0.50. It sets how near the best chance a cell must be to
+  compete when every cell with enough credit is excluded: 1 keeps only the best chance
+  and 0 keeps every cell with enough credit.
+
+Example: with the defaults, cells with `pi` 0.958, 0.613 and 0.019 are trusted, on trial
+and excluded. If the only cells with enough credit have `pi` 0.12, 0.08 and 0.05, the
+bar is `0.50 * 0.12 = 0.06` and the first two compete.
+
+Thompson sampling considers every cell of the pool whose posterior cost overlaps the
+pool's mean-best cell: `J - J_best <= uncertainty_multiplier * (sd_best + sd_candidate)`
+using delta-method retry-cost standard deviations. A risk class's optional `explore_within`
 additionally caps the gap at that fraction of `|J_best|`; it applies only when set on
 the class. The former global `sampling.explore_within` is rejected with an error that
-points to the risk-class setting. No exploration occurs when no cell passes the
-accepted-result silent cap.
+points to the risk-class setting.
+
+`on_cap_unmet` is retired. A file that still sets it loads: the key is accepted, its
+value is ignored, and one notice is printed on standard error. Standard output,
+including `--json` output, is unchanged, and decisions are the same as without the key.
 
 `C_loud` now prices extra overhead for each loud failure on top of its redo. Epsilon
 caps defects among accepted non-loud results, not the raw per-attempt silent rate.

@@ -170,13 +170,17 @@ filter. Both threshold intervals remain intact when the gap is omitted. If the
 posterior puts every cell below the minimum clearing probability, it refuses routing
 and asks for a more capable inventory.
 
-If no forecast cell passes the accepted-result silent cap, request the next stronger
-overpowered cell, one per widening round, in capability order. Each requires an actual
-new prospective forecast before entering selection. Underpowered cells never enter
-widening. The default is two rounds, within the same total forecast budget. Only after
-widening ends does `on_cap_unmet` apply. No probability is invented for an unforecast
-cell. The final {ref}`selection policy <accepted-result-selection>` includes retry cost and
-never explores when the cap is unmet.
+If every forecast cell is excluded by the {ref}`admission tiers <admission-tiers>`,
+request the next stronger overpowered cell, one per widening round, in capability
+order. Each requires an actual new prospective forecast before entering selection.
+Underpowered cells never enter widening. The default is two rounds
+(`widening_rounds`), within the same total forecast budget. The test reads tiers only;
+credit does not enter it, so one trusted or on-trial forecast cell stops widening even
+when it lacks credit. Each round records the trigger `all-excluded`. `widening_stop`
+records why widening ended: `pickable` when a forecast cell is trusted or on trial,
+otherwise `forecast-budget`, `round-limit` or `exhausted`. No probability is invented
+for an unforecast cell. The final {ref}`selection policy <accepted-result-selection>`
+includes retry cost and still draws a cell when every forecast cell stays excluded.
 
 ## Shared predictive scores and quality reports
 
