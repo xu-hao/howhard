@@ -85,6 +85,8 @@ both: the host's name picks whose failed runs set the two edges of the fit band,
 the agent labels decide which agents the reserved forecast slots count as missing (see
 {ref}`the host's caught share <host-aware-band>` and
 {ref}`reserved forecast slots <reserved-slots>`). `report` lists both under `routing`.
+Runs whose receipt stores no name (receipts older than v11 and runs with no decision)
+can be named once with an {ref}`import <imported-names>`.
 No-effort, null and `model_default` controls are refused. Unknown identities receive distinct
 opaque family labels for protocol bookkeeping, without model assumptions or effects.
 Configured identities retain their declared labels and evidence weights. Historical
@@ -261,9 +263,11 @@ cell itself; and all runs of one ticket together count for at most one run.
 **Each run's family and agent.** The judged cell takes its `family` from the model
 registry and its `agent` label from its candidate in the request. A run's family is the
 registry family of the model that ran it. A run's agent is the label stored for the
-chosen cell in the receipt that the row's `decision_id` names. A run with no decision,
-a receipt older than `howhard-decision-v11` or an unlabeled candidate belongs to the one
-unnamed agent, as does an unlabeled cell of the new request. Two unnamed cells are the
+chosen cell in the receipt that the row's `decision_id` names. A run with no decision or
+a receipt older than `howhard-decision-v11` stores no label: it takes the agent an
+operator {ref}`imported <imported-names>` for its family, if any. Otherwise it belongs,
+like an unlabeled candidate and an unlabeled cell of the new request, to the one unnamed
+agent. Two unnamed cells are the
 same agent; a named and an unnamed one are different agents. At the same family the
 agent is not read: such a run gets 1 or `effort_discount`.
 
@@ -675,7 +679,9 @@ usual(r) = (sum_i a_i * g_i + kappa_r * usual(r+)) / (sum_i a_i + kappa_r)
   ladders equal the guess. A rung with no run passes the value above it through.
 - `i`: a finished routed run at rung `r`: a recorded run with outcome `clean`, `loud`
   or `silent` whose decision stored a forecast for the cell that ran. Its host and
-  agent are the {ref}`names <host-and-agent-names>` that decision stores. The
+  agent are the {ref}`names <host-and-agent-names>` that decision stores; for a
+  decision older than v11, the names {ref}`imported <imported-names>` for it and for
+  the run's family, if any. The
   {ref}`evidence candidates <evidence-candidates>` of the new decision (every recorded
   run of a prototype the new task matches) are left out: they count through their
   similarity instead. A run with no decision, a run whose decision cannot be read, and
@@ -816,7 +822,8 @@ stored numbers do not follow is refused, and the beliefs of each cell must start
 the stored prediction.
 
 Receipts older than v11 name neither a host nor an agent: their runs sit under the
-unnamed host and the unnamed agent.
+names an operator {ref}`imported <imported-names>` for their decision and family, and
+otherwise under the unnamed host and the unnamed agent.
 
 (admission-tiers)=
 ### Admission tiers
@@ -1057,42 +1064,14 @@ sampled cost, that cell's part minus the chosen cell's.
 run = q * K_s * R_s    time = lambda_per_hour * T_s * R_s    loud = C_loud * (R_s - 1)    silent = C_silent * S_s
 ```
 
-New receipts use `howhard-decision-v11` (`howhard-semantic-v8`, reader prompt
-`semantic-reader-v8`, interval kind `log-odds-grid`). Loading a v11
-receipt recomputes every belief from its frozen forecast panels, expert weights,
+Loading a receipt recomputes every belief from its frozen forecast panels, expert weights,
 `outcome_observations`, `duration_observations` and sampling policy, then each cell's
 `outcome_counts`, the `P_*`
 fields, `pi`, `T`, the three credit numbers, `session_cost_usd`, `credit_ok`, `J`,
 `expected_attempts` and `cost_sd`, and every
 {ref}`reused memory-free row <stored-forecasts>` from its sources, and replays the draw
-from the seed; a receipt whose stored values differ is refused.
-Frozen `howhard-decision-v10` and `howhard-decision-v9` receipts keep the outcome
-posterior they recorded (interval kind `dirichlet-posterior-mixture`): each expert's
-forecast as a Dirichlet prior of at most `prior_strength` pseudo-observations plus the
-cell's counts, mixed over the experts, with v10's decay of that prior over the first two
-counted runs and without it in v9. v10 also lacks a host name, agent labels, ranges on
-active time and token kinds, tiers and beliefs: these receipts keep the
-per-expert active-time calibration they were made with (each expert's forecast worth one
-run against the same-cell runs, log spread capped at 2, averaged over the experts), price
-each expert's forecast directly, and check `needed_credit_usd <= available_credit_usd`.
-Frozen `howhard-decision-v8` and `howhard-decision-v7` receipts keep their original weighted
-forecast envelopes, upper-envelope admission and sampling policy shape; all load,
-validate, accept outcomes and replay into predictive weights. Receipts older than v11
-keep the cap as they recorded it:
-
-| Item | Formats v7 to v10 | Format v11 |
-| --- | --- | --- |
-| `cap_met` | Some admissible cell has enough credit | The chosen cell is trusted |
-| No cell passes | No draw; `selection.on_cap_unmet` records the policy and `exploration.reason` is `disabled-cap-unmet` | A draw over the second pool |
-| `semantic.sampling.enabled` | Equals `cap_met` | Always true |
-| `exploration.enabled` | `cap_met` and more than one eligible cell | More than one eligible cell |
-| Cell fields | `admissible`, and `admission_risk` from v9; four `{mean, lower, upper}` probabilities | Also `pi` and `tier`; `P_clean` and `P_silent` carry `mean` only |
-| `selection.sampling_policy` | Without the two tier constants; with `prior_strength`, `min_concentration` and `max_concentration` | With `trial_probability`, `all_excluded_factor`, `model_worth`, `task_worth_silent` and `task_worth_loud` |
-| `semantic.sampling.cells[]` | `outcome_posterior` and `concentration` from v9; the drawn `expert` | `outcome_beliefs.loud` and `outcome_beliefs.silent`; `sampled`; no `expert` |
-| `J`, `expected_attempts` | The cost at the posterior means: `(C_run + lambda_per_hour * T + C_loud * P_loud + C_silent * P_silent) / max(0.0001, 1 - P_loud)`, with `1 / max(0.0001, 1 - P_loud)` attempts | The cost averaged over the beliefs, with `E[R]` attempts |
-| `cost_sd` | A first-order spread that treats run cost as exact; not recomputed on load | The exact spread, recomputed on load |
-| The draw | One expert drawn by weight (`semantic.sampled_expert`), then each cell's rates and active time; not replayed on load | Four uniform numbers per forecast cell from `PCG64`; replayed on load |
-| Widening labels | Trigger `silent-cap-unmet`; stop `cap-met` | Trigger `all-excluded`; stop `pickable` |
+from the seed; a receipt whose stored values differ is refused. Receipts older than v11
+keep the rules they were made with ({ref}`older receipts <frozen-formats>`).
 
 ## Prices and measurements
 
@@ -1327,38 +1306,163 @@ or memory writes. All receipts require that identity and their native inventory/
 policy. The resolved state subtree is excluded from capture and
 `project.read`, including symlink aliases; a state root equal to or containing the capture
 root is refused. Prepared calling-agent requests bind the worktree and reject sibling
-retrieve/decide. Requests use `howhard-agent-request-v7` and new receipts use
-`howhard-decision-v11` (`howhard-semantic-v8` / `semantic-reader-v8`) with required
-`host`, capability and accepted-result selection state. Newly aggregated capability state uses
-`howhard-capability-v6`, whose cells each carry their `agent` label. Its `band` is an ordered list of fit cells that can omit
-`intermediate` cells between its `lower` and `upper` endpoints. It also stores
-`caught_share` (`host`, `F_all`, `C_all`, `F_host`, `C_host`, `d_0`, `d_all`, `d_host`
-and the two band edges `e` and `g`), the `core` (the band's first
-`max_forecast_cells - reserved_forecast_cells` cells), `proven_families` (the families
-with a run among the evidence candidates) and `reserved` (each reserved cell's `key`,
-its `reason`, `unproven-family` or `missing-agent`, and its `bar`). The cells that
-carry forecasts are the core, the reserved cells, the band cells that took unfilled
-slots and the widening cells. Loading recomputes the caught shares, the edges, the
-band, the core, the reserved cells and the widening order from the stored numbers and
-refuses a receipt that does not follow from them. See
+retrieve/decide. Requests and receipts use the frozen formats below, and a receipt
+requires its `host`, capability and accepted-result selection state.
+
+(frozen-formats)=
+### Frozen formats
+
+Each stored shape carries a format label. The labels below are frozen: any later change
+to one of these shapes takes a new label. The constant that holds each label is named
+relative to the `howhard` package.
+
+| Stored shape | Constant | Label |
+| --- | --- | --- |
+| Decision receipt | `context.DECISION_FORMAT` | `howhard-decision-v11` |
+| Semantic state of a receipt | `semantic.FORMAT` | `howhard-semantic-v8` |
+| Reader prompt of a receipt | `semantic.PROMPT_VERSION` | `semantic-reader-v8` |
+| Interval kind of a receipt | `semantic.INTERVAL_KIND` | `log-odds-grid` |
+| Capability state of a receipt | `capability.FORMAT` | `howhard-capability-v6` |
+| Prepared request | `engine.REQUEST_FORMAT` | `howhard-agent-request-v7` |
+| Project snapshot | `context.PROJECT_FORMAT` | `howhard-project-v1` |
+| Context encoder | `context.FORMAT` | `howhard-context-v1` |
+| Native registry | `native.FORMAT` | `howhard-native-v1` |
+| Execution usage envelope | `accounting.USAGE_FORMAT` | `howhard-execution-usage-v1` |
+| Rate card | `accounting.RATE_FORMAT` | `howhard-rate-card-v1` |
+
+The semantic format and reader prompt live in the packaged `data/semantic.toml`, and
+`semantic.RECEIPT_SEMANTICS` pairs them with each decision format.
+
+The capability state stores the cells, each with its `agent` label. Its `band` is an
+ordered list of fit cells that can omit `intermediate` cells between its `lower` and
+`upper` endpoints. It also stores `caught_share` (`host`, `F_all`, `C_all`, `F_host`,
+`C_host`, `d_0`, `d_all`, `d_host` and the two band edges `e` and `g`), the `core` (the
+band's first `max_forecast_cells - reserved_forecast_cells` cells), `proven_families`
+(the families with a run among the evidence candidates) and `reserved` (each reserved
+cell's `key`, its `reason`, `unproven-family` or `missing-agent`, and its `bar`). The
+cells that carry forecasts are the core, the reserved cells, the band cells that took
+unfilled slots and the widening cells. Loading recomputes the caught shares, the edges,
+the band, the core, the reserved cells and the widening order from the stored numbers
+and refuses a receipt that does not follow from them. See
 [capability filtering](capability.md) for the band, reserved-slot and widening rules.
-`howhard-decision-v11` is open: its shape can still change before the release that
-freezes it, intermediate shapes are not kept readable, and requests prepared under
-`howhard-agent-request-v6` are refused, so prepare a new request. Persisted
-`howhard-decision-v10` (`howhard-semantic-v7` / `semantic-reader-v7`,
-`howhard-capability-v5` or `howhard-capability-v4`),
-`howhard-decision-v9` (`howhard-semantic-v6` / `semantic-reader-v7`,
-`howhard-capability-v4` or `howhard-capability-v3`), `howhard-decision-v8`
-(`howhard-semantic-v5` / `semantic-reader-v6`, `howhard-capability-v3`), and
-`howhard-decision-v7` (`howhard-semantic-v4` / `semantic-reader-v5`,
-`howhard-capability-v1` or `howhard-capability-v2`) continue to load, validate, accept
-feedback, and participate in belief replay and reporting under their frozen version rules.
-Receipts older than v11 carry no host name and no agent labels; they read as the one
-unnamed host and the one unnamed agent, and they do not accept those fields or the
-ranges on active time and token kinds.
-Receipts v1–v6 remain recognizable as historical store entries but are not replayed as
-new decisions; prepare a fresh request and decision to attach new feedback.
-Frozen-receipt observations and learning share the store across that project's worktrees.
+A stored `P_clear` or `P_timely` may exceed 1 by at most `1e-10`
+(`capability.PROBABILITY_TOLERANCE`), the rounding that a running sum of posterior
+masses can leave; a larger value is refused. The tolerance holds for every receipt
+format.
+
+A request prepared under another format, or whose scored candidates and record have
+another shape, is refused with an error that names the field; prepare a new request.
+A receipt labelled `howhard-decision-v11` whose shape differs from the frozen one is
+refused by the ordinary checks of its fields.
+
+**Older receipts.** These formats keep loading, validating, accepting outcomes, replaying
+their stored forecasts for scoring and appearing in `report`, each under its own rules:
+
+| Decision | Semantic state and reader prompt | Capability state |
+| --- | --- | --- |
+| `howhard-decision-v10` | `howhard-semantic-v7`, `semantic-reader-v7` | `howhard-capability-v5` or `howhard-capability-v4` |
+| `howhard-decision-v9` | `howhard-semantic-v6`, `semantic-reader-v7` | `howhard-capability-v4` or `howhard-capability-v3` |
+| `howhard-decision-v8` | `howhard-semantic-v5`, `semantic-reader-v6` | `howhard-capability-v3` |
+| `howhard-decision-v7` | `howhard-semantic-v4`, `semantic-reader-v5` | `howhard-capability-v1` or `howhard-capability-v2` |
+
+`howhard-decision-v10` and `howhard-decision-v9` receipts keep the outcome
+posterior they recorded (interval kind `dirichlet-posterior-mixture`): each expert's
+forecast as a Dirichlet prior of at most `prior_strength` pseudo-observations plus the
+cell's counts, mixed over the experts, with v10's decay of that prior over the first two
+counted runs and without it in v9. v10 also lacks a host name, agent labels, ranges on
+active time and token kinds, tiers and beliefs: these receipts keep the
+per-expert active-time calibration they were made with (each expert's forecast worth one
+run against the same-cell runs, log spread capped at 2, averaged over the experts), price
+each expert's forecast directly, and check `needed_credit_usd <= available_credit_usd`.
+`howhard-decision-v8` and `howhard-decision-v7` receipts keep their original weighted
+forecast envelopes, upper-envelope admission and sampling policy shape; all load,
+validate, accept outcomes and replay into predictive weights. Receipts older than v11
+keep the cap as they recorded it:
+
+| Item | Formats v7 to v10 | Format v11 |
+| --- | --- | --- |
+| `cap_met` | Some admissible cell has enough credit | The chosen cell is trusted |
+| No cell passes | No draw; `selection.on_cap_unmet` records the policy and `exploration.reason` is `disabled-cap-unmet` | A draw over the second pool |
+| `semantic.sampling.enabled` | Equals `cap_met` | Always true |
+| `exploration.enabled` | `cap_met` and more than one eligible cell | More than one eligible cell |
+| Cell fields | `admissible`, and `admission_risk` from v9; four `{mean, lower, upper}` probabilities | Also `pi` and `tier`; `P_clean` and `P_silent` carry `mean` only |
+| `selection.sampling_policy` | Without the two tier constants; with `prior_strength`, `min_concentration` and `max_concentration` | With `trial_probability`, `all_excluded_factor`, `model_worth`, `task_worth_silent` and `task_worth_loud` |
+| `semantic.sampling.cells[]` | `outcome_posterior` and `concentration` from v9; the drawn `expert` | `outcome_beliefs.loud` and `outcome_beliefs.silent`; `sampled`; no `expert` |
+| `J`, `expected_attempts` | The cost at the posterior means: `(C_run + lambda_per_hour * T + C_loud * P_loud + C_silent * P_silent) / max(0.0001, 1 - P_loud)`, with `1 / max(0.0001, 1 - P_loud)` attempts | The cost averaged over the beliefs, with `E[R]` attempts |
+| `cost_sd` | A first-order spread that treats run cost as exact; not recomputed on load | The exact spread, recomputed on load |
+| The draw | One expert drawn by weight (`semantic.sampled_expert`), then each cell's rates and active time; not replayed on load | Four uniform numbers per forecast cell from `PCG64`; replayed on load |
+| Widening labels | Trigger `silent-cap-unmet`; stop `cap-met` | Trigger `all-excluded`; stop `pickable` |
+
+Receipts older than v11 carry no host name and no agent labels, and they do not accept
+those fields or the ranges on active time and token kinds. Their runs belong to the one
+unnamed host and the one unnamed agent unless an operator
+{ref}`imports names <imported-names>` for them. Receipts v1–v6 remain recognizable as
+historical store entries but are refused on load and skipped when scoring; prepare a
+fresh request and decision to attach new feedback. Frozen-receipt observations and
+learning share the store across that project's worktrees.
+
+`report --json` is the sweep of a store's receipts: it loads every stored receipt, and
+its `receipts` block counts them by format (`formats`, including v1–v6 receipts, which
+are not scored) and counts in `rounded_probabilities` the receipts whose `P_clear` or
+`P_timely` lies above 1 within the tolerance. A receipt that does not load stops the
+report with its error. To sweep a real store, run `howhard report --json` in the
+project, with the same `--config` or `--state-dir` as its other commands; it changes
+no receipt and no recorded run.
+
+(imported-names)=
+### Names for older decisions
+
+A run whose receipt stores no name belongs to the unnamed host and the unnamed agent. An
+operator can name such runs once, with one optional JSON file:
+
+```sh
+howhard names import --file NAMES.json --json
+```
+
+```json
+{"hosts":  {"<decision id>": "<host name>"},
+ "agents": {"<family>": "<agent label>"}}
+```
+
+- `hosts`: names the host of a stored decision whose receipt is older than v11. Its runs
+  then belong to that host: in the failed runs behind the
+  {ref}`host's caught share <host-aware-band>` and on the host rungs of the
+  {ref}`corrected prediction <corrected-prediction>`.
+- `agents`: names the agent of a model family for every run whose receipt stores no
+  agent label, which is a run of a receipt older than v11 or a run recorded with no
+  decision. A registered model id is accepted in place of its family. The name is that
+  run's agent in the {ref}`relatedness discounts <outcome-posterior>` and on the agent
+  rungs of the corrected prediction.
+- Both tables are optional, and any other key refuses the whole file, as does a name
+  that is not 1 to 64 letters, digits, `_` or `-`, or a model id and its family named
+  differently in one file.
+- An entry for a `howhard-decision-v11` receipt, for an identifier that names no stored
+  decision, or for a family or model that is not registered is skipped and reported; the
+  rest of the file is stored. A v11 receipt is never renamed: it stores its own host and
+  agent labels, including the unnamed ones.
+
+The result counts, per table, the names `stored` (new), `unchanged`, `replaced` and
+`skipped`, and lists each skipped entry with its `table`, `key` and `reason`. The same
+file twice changes nothing and writes nothing; a later file replaces the names an earlier
+file gave. Python: `Engine.import_names(value)` with the parsed file.
+
+The names live in two tables of `payloads.sqlite3`, `decision_hosts` and
+`family_agents`, written under the storage lock. No receipt is rewritten, because its
+identifier is the digest of its content. Readers consult the names only for a run whose
+receipt stores none, so every stored v11 receipt still re-validates from its own
+numbers, and a new decision freezes the names it read into its receipt as it does the
+rest of its record. `report` shows the imported names under `routing`. A forecast stored
+on a prototype before v11 names no decision and no host: it stays with the unnamed
+host, and the import does not reach it ({ref}`stored forecasts <stored-forecasts>`);
+neither does the timely statistic of a prototype cell, which reads only the host a
+receipt stores. With no import, older runs belong to the unnamed host and the unnamed
+agent. The ordinary workflow needs no import.
+
+To name the runs of a real store, list its older decisions with
+`howhard.decisions.summaries(config)` or `report --json` (`routing` and `receipts`),
+write the file, run `howhard names import --file NAMES.json --json` in the project (with
+the same `--config` or `--state-dir` as its other commands), and read the counts and the
+skipped entries. Running it again with the same file is safe.
 
 ### Request, decision and prototype storage
 

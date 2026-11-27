@@ -38,7 +38,11 @@ too, and Python takes `host="HOST_NAME"`). The name is returned with the prepare
 request, stored in the receipt and listed by `report --json` under `routing` together
 with the chosen cell's `agent` label. A stored forecast is reused only for requests
 that carry the name it was made under, and a request with no name reuses only forecasts
-stored with no name, so use one name consistently. When matched `(task, context)`
+stored with no name, so use one name consistently. Runs of decisions made before hosts
+were named, and runs recorded without a decision, belong to the unnamed host and the
+unnamed agent; an operator may name them once with
+`howhard names import --file NAMES.json` (hosts by decision ID, agents by model family),
+which routing does not need. When matched `(task, context)`
 prototypes already cover every candidate cell under that name and no active editable
 semantic memories exist, `context --auto-decide` completes both stages immediately and returns the
 committed `decision_id` and `chosen` cell in one call (warm `howhard pick` also succeeds
@@ -149,9 +153,10 @@ Each cell holds one belief for its loud rate and one for its accepted-defect sha
 `P_silent/(1-P_loud)`. Each starts from a prediction: the merged forecast, corrected
 from the record of the same host on other tasks (`semantic.prediction`; pass `--host`
 so that record is the caller's own). With no record the prediction is the merged
-forecast at the weight of about four runs. It is then reshaped only by that cell's own
-recorded outcomes on similar tasks, weighted by task similarity and age with all runs of
-one ticket counting for at most one run. Each cell reports `pi`, the chance under its
+forecast at the weight of about four runs. It is then reshaped by the recorded outcomes
+on similar tasks, the cell's own in full and those of related cells at a discount,
+weighted by task similarity and age with all runs of one ticket counting for at most one
+run. Each cell reports `pi`, the chance under its
 belief that its accepted-defect share is at most epsilon, and a `tier`:
 `trusted` when `pi >= 0.80`, `on-trial` when `0.20 <= pi < 0.80`, `excluded` below 0.20
 (`admission_risk` is the 80% point of the same belief).

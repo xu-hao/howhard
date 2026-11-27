@@ -141,9 +141,11 @@ delta(c_i, c) = 1                 same family, same effort (the same cell)
   fits is used. The defaults are `effort_discount` = 0.5, `model_discount` = 0.25 and
   `agent_discount` = 0.25 in `[sampling]`. A cell's family comes from the model registry
   and its agent from the label on its candidate; a run's agent is the label stored for
-  the chosen cell in the receipt its `decision_id` names. A run with no decision, a
-  receipt older than v11 or an unlabeled candidate belongs to the one unnamed agent, as
-  does an unlabeled cell of the new request.
+  the chosen cell in the receipt its `decision_id` names. A run with no decision or a
+  receipt older than v11 stores no label and takes the agent an operator
+  {ref}`imported <imported-names>` for its family, if any. Otherwise it belongs, like
+  an unlabeled candidate and an unlabeled cell of the new request, to the one unnamed
+  agent.
 - `w_i`: the run's weight for cell `c` before the per-ticket limit.
 
 In plain words: a run counts more when its task reads like the new one, half as much

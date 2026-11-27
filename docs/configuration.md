@@ -178,7 +178,7 @@ optional `usd_per_mtok` or `rate_card`, an optional `cost_per_credit`, and optio
 unknown prices remain omitted/null. Family selection flags, model default efforts,
 component API prices and token-mix configuration are not accepted.
 
-Statistical priors, imported priors, cache paths and transfer tuning are no longer
+Statistical priors, imported priors, cache paths and transfer tuning are not
 accepted. `--journal` remains available for an integration path override. Provider
 selection has no mode switch: Python accepts an adapter, and standalone inference uses
 `HOWHARD_LLM_COMMAND` or an authenticated Claude CLI. Calling-agent commands do not
@@ -313,19 +313,12 @@ silent, under a host whose level is 0.0622 has the level
 `(5 + 40 * 0.0622) / (100 + 40) = 0.0535`; with `rung_worth = 10` it is
 `(5 + 10 * 0.0622) / (100 + 10) = 0.0511`.
 
-`prior_strength`, `min_concentration` and `max_concentration` are retired. A file that
-still sets one loads: the key is accepted, its value is ignored, and one notice per key
-is printed on standard error. Standard output is unchanged, and decisions are the same
-as without the key.
-
 `half_life_days` and `comparison_cap` govern which recorded runs count as evidence and
 how much ({ref}`evidence candidates <evidence-candidates>`). A run's weight halves for
 every `half_life_days` between its `observed_at` and the time the request was prepared,
 in the outcome counts, the active-time and token beliefs and the capability threshold alike.
 At most `comparison_cap` candidate runs are compared with the new task per decision,
-most recent first; the rest count nowhere. Both are optional. The former
-`sampling.outcome_recency` is accepted and ignored: a file that sets it loads with one
-notice on standard error, and standard output is unchanged.
+most recent first; the rest count nowhere. Both are optional.
 
 The three discounts set how much a recorded run counts as outcome evidence for a cell
 other than the one that ran it ({ref}`outcome beliefs <outcome-posterior>`):
@@ -415,16 +408,34 @@ is not, because 69.4 exceeds 44.2. With `uncertainty_multiplier = 2` the second 
 eligible as well, because 69.4 is at most 88.4.
 
 A risk class's optional `explore_within` additionally caps the gap at that fraction of
-`|J(c*)|`; it applies only when set on the class and can only tighten the rule. The
-former global `sampling.explore_within` is rejected with an error that points to the
-risk-class setting. There is no key for the draw itself: the seed is `--seed` or 64
-random bits, and it is stored in the receipt.
+`|J(c*)|`; it applies only when set on the class and can only tighten the rule. A
+`sampling.explore_within` key is refused with an error that points to the risk-class
+setting. There is no key for the draw itself: the seed is `--seed` or 64 random bits,
+and it is stored in the receipt.
 
-`on_cap_unmet` is retired. A file that still sets it loads: the key is accepted, its
-value is ignored, and one notice is printed on standard error. Standard output,
-including `--json` output, is unchanged, and decisions are the same as without the key.
+`C_loud` prices the extra overhead of each loud failure on top of its redo, and
+`epsilon` caps defects among accepted non-loud results, not the raw per-attempt silent
+rate. Review these meanings when writing a custom policy. See
+[estimator assumptions](capability.md) and the
+{ref}`selection objective <accepted-result-selection>`.
 
-`C_loud` now prices extra overhead for each loud failure on top of its redo. Epsilon
-caps defects among accepted non-loud results, not the raw per-attempt silent rate.
-Review these meanings when upgrading a custom policy. See [estimator assumptions](capability.md)
-and the {ref}`selection objective <accepted-result-selection>`.
+(retired-settings)=
+## Retired settings
+
+These keys are accepted so that older files load, and nothing reads them. A command
+that loads a file setting any of them prints one notice on standard error that names
+every one it found, for example
+`howhard: notice: these settings are retired and ignored: on_cap_unmet, sampling.outcome_recency`.
+Standard output, including `--json` output, is unchanged, and decisions are the same as
+without the keys.
+
+| Key | Status |
+| --- | --- |
+| `on_cap_unmet` | Ignored, and not required in a configuration file: {ref}`tiered admission <admission-tiers>` always draws a cell |
+| `[sampling]` `outcome_recency` | Ignored; a run's weight ages by `half_life_days` |
+| `[sampling]` `prior_strength`, `min_concentration`, `max_concentration` | Ignored; an outcome belief starts from its prediction at the worth `model_worth` and the task worths give it |
+
+Three keys keep their names with the meaning described above: `[sampling]`
+`admission_quantile` is the trusted line (0.8), `[capability]` `min_clear_probability`
+the floor of the band's lower edge (0.5), and `[capability]` `overpowered_gain_margin`
+the widest upper margin (0.05).

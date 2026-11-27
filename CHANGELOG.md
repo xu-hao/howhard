@@ -1,6 +1,76 @@
 # Changelog
 
-## Unreleased
+## 6.0.0 — 2026-11-27
+
+A major release: the prepared request, the forecast contract and the decision receipt
+all change, and v11 is frozen.
+
+### Upgrade notes
+
+- **Formats.** New decisions are `howhard-decision-v11` with `howhard-semantic-v8`
+  (reader prompt `semantic-reader-v8`, interval kind `log-odds-grid`) and
+  `howhard-capability-v6`; prepared requests are `howhard-agent-request-v7`. These
+  labels are frozen: a later change to a stored shape takes a new label. Stored `v7`
+  to `v10` receipts keep loading, accepting outcomes, replaying their forecasts and
+  appearing in `report`; `v1` to `v6` stay refused on load and skipped when scoring.
+- **Prepare requests again.** A request prepared by 5.0.0 (`howhard-agent-request-v6`)
+  is refused, so prepare a new one. A v11 receipt or request stored by a build from
+  `main` between 5.0.0 and 6.0.0 is refused as well: those intermediate shapes were
+  never kept readable, and such builds were not for routing real work.
+- **Name the host and the agents.** Pass `--host NAME` (Python `host=`) for the agent
+  that asks for the route, and give each candidate an `agent` label. Both are stored and
+  never verified. Without them every run belongs to one unnamed host and one unnamed
+  agent, which still works. Runs of older decisions can be named once with the optional
+  `howhard names import --file NAMES.json`.
+- **Selection changes.** Every belief now starts from a forecast corrected by the same
+  host's record on other tasks; outcome beliefs live on the log-odds scale; the fit
+  band's edges follow the share of failures the host catches; a cell is trusted, on
+  trial or excluded; the credit check reads the 80% point; and the cost is averaged over
+  the beliefs. The same inputs and seed therefore give different numbers and choices
+  than 5.0.0. `cap_met` now means that the chosen cell is trusted, and `needs_review`
+  is its opposite; the flag is advice to the caller.
+- **Stored forecasts are per host.** A request reuses only the stored forecasts made
+  under its own host name. Forecasts stored before 6.0.0 belong to the unnamed host, so
+  only requests with no host name reuse them; a named host asks the forecaster once per
+  cell. Inference answers cached before 6.0.0 are not read.
+- **Retired settings.** `on_cap_unmet`, `sampling.outcome_recency`,
+  `sampling.prior_strength`, `sampling.min_concentration` and
+  `sampling.max_concentration` are accepted and ignored; a command that loads a file
+  setting any of them prints one notice on standard error naming them. No configuration
+  is needed: the ordinary workflow works without a file, without an import and without
+  tuning.
+- **Hosts should record usage by kind and active time apart from waiting.** Both sharpen
+  the time and token beliefs.
+
+### Changes
+
+- Freeze v11 and prepare the release (#138). The frozen format labels are listed in the
+  reference with the constant that holds each, and a test keeps the two equal; every
+  other format label in the package is unchanged since 5.0.0 and keeps its label. A new
+  optional command, `howhard names import --file NAMES.json` (Python
+  `Engine.import_names(value)`), reads `{"hosts": {DECISION_ID: HOST}, "agents":
+  {FAMILY_OR_MODEL: AGENT}}`: `hosts` names the host of a stored decision older than
+  v11, so its runs belong to that host in the caught share and the corrected prediction;
+  `agents` names the agent of a family (a registered model id stands for its family) for
+  every run whose receipt stores no agent label, so the relatedness discounts and the
+  agent rung read it. The names live in two tables of `payloads.sqlite3`; no receipt is
+  rewritten. A v11 decision, an identifier that names no stored decision and an
+  unregistered family or model are skipped and reported, and any other key or an
+  invalid name refuses the whole file. The result counts the names `stored`,
+  `unchanged`, `replaced` and `skipped` per table; the same file twice writes nothing,
+  and a later file replaces earlier names. `report` shows the names under `routing`.
+  Forecasts stored on prototypes before 6.0.0 stay with the unnamed host, import or not.
+  The retired settings now give one notice naming every one a file sets, in place of
+  one notice per key. A stored `P_clear` or `P_timely` up to `1 + 1e-10` above 1 is
+  accepted in every receipt format, so a receipt that an earlier build stored with a
+  probability rounded a few units past 1 loads, accepts outcomes, replays and reports;
+  anything larger is still refused. `report` gains `receipts`: the count of stored
+  receipts by format, and `rounded_probabilities`, the number that hold a probability
+  in that band, which makes `howhard report --json` the sweep of a store's receipts. A
+  prepared request whose scored candidates or record have the shape of another build is
+  refused with an error naming the field instead of failing part-way through a decision.
+  The compatibility tests start from an authentic v10 receipt that a 5.0.0 build stored
+  for a synthetic task.
 
 - Forecast contract and `howhard-decision-v11` (#128). `pick`, `summary` and `context`
   accept an optional `--host NAME` (Python `host=`) for the agent that asks for the
@@ -16,8 +86,8 @@
   `howhard-decision-v11` (`howhard-semantic-v8`, `semantic-reader-v8`,
   `howhard-capability-v6`, `howhard-agent-request-v7`); `v10`, `v9`, `v8` and `v7`
   receipts keep loading, observing, replaying and reporting, and read as unnamed.
-  Requests prepared under `howhard-agent-request-v6` must be prepared again. The v11
-  shape stays open until the release that freezes it.
+  Requests prepared under `howhard-agent-request-v6` must be prepared again. This
+  release freezes the v11 shape (#138).
 
 - Evidence by direct similarity (#129). The outcome counts, the active-time calibration
   and the capability threshold now read one set of candidate runs per decision: the

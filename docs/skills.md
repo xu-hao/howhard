@@ -64,7 +64,9 @@ update howhard@howhard`. Antigravity's plugin UI/manager owns installed updates;
 flag. Native uninstall commands are `codex plugin remove howhard@howhard`,
 `claude plugin uninstall howhard@howhard` and `agy plugin uninstall howhard`.
 Python package upgrades do not update the installed skill, and native plugin updates do
-not upgrade the Python package.
+not upgrade the Python package. Upgrade both together. After a backend upgrade, prepare
+new requests: one prepared by an earlier version is refused. The
+[changelog](changelog.md) lists the upgrade notes of each release.
 
 ## Automatic activation and delegation
 
