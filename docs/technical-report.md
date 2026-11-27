@@ -2,9 +2,6 @@
 
 ## 1 Introduction
 
-This section states the problem, follows one example through a decision and outlines
-the method.
-
 An AI agent working in a software project hands many of its tasks to worker models, and
 for each task it must pick a model and a reasoning effort. A capable model at high
 effort can spend more than a routine task needs. A cheaper choice can cost more in the
@@ -90,8 +87,8 @@ section 16 the statistical assumptions and limits.
 
 ## 2 Related work
 
-This section places howhard among methods for routing requests to language models and
-names the statistical results it builds on.
+Routing queries among language models to save cost is an active line of work, and
+howhard draws its statistics from standard results.
 
 Several methods reduce the cost of language-model inference by sending each query to the
 cheapest model likely to answer it well. RouteLLM (Ong et al., 2025) trains routers on
@@ -130,8 +127,9 @@ pool-adjacent-violators algorithm (Ayer et al., 1955).
 
 ## 3 Problem setup
 
-This section defines the candidates, the outcomes, the record and the objective, and it
-fixes the notation for the rest of the report.
+To state the decision precisely, we fix the candidates, the outcomes a run can have, the
+record that learning reads and the cost by which candidates are compared, in one
+notation used throughout the report.
 
 ### Candidates, hosts and risk classes
 
@@ -295,8 +293,9 @@ lists them all.
 
 ## 4 Forecasts from the language model
 
-This section describes the two judgments that a language model contributes to a decision
-and how a host's forecasts are stored and reused.
+Every decision draws on two judgments from a language model, one ordering the cells by
+capability and one forecasting each kept cell's outcomes and usage, and a host's
+forecasts are stored for reuse.
 
 The *capability judgment* covers the full inventory. A stateless call receives the task,
 the project snapshot and the candidate identities, and it returns an order of every cell
@@ -309,11 +308,11 @@ The *fine forecast* covers only the cells that the capability stage keeps, its f
 cells. For each it states the probabilities of `clean`, `loud` and `silent`, the active
 seconds and the total tokens, and for a cell priced by token kind the six token counts.
 A forecast may add a central 95% range to its loud and silent probabilities, its active
-time and its token kinds. An independent stateless call produces the baseline row, and the memory
-reader may override rows for the cells where a retrieved memory or execution changes
-its expectation. The independent calls receive no memories, recorded runs or learned
-tables, so the baseline remains a reference against which experience can be scored. An
-unavailable or invalid independent forecast stops routing with an error.
+time and its token kinds. An independent stateless call produces the baseline row, and
+the memory reader may override rows for the cells where a retrieved memory or execution
+changes its expectation. The independent calls receive no memories, recorded runs or
+learned tables, so the baseline remains a reference against which experience can be
+scored. An unavailable or invalid independent forecast stops routing with an error.
 
 Each value has its own scale {math}`\varphi`. A rate is read on the log-odds scale,
 held in {math}`[0.0001,0.9999]`. An amount is read on the log scale, held at 1 or more.
@@ -402,8 +401,8 @@ three rows are stored for the host. The {ref}`stored-forecast reference
 
 ## 5 Expert support
 
-This section weights the forecast sources by how well their earlier forecasts predicted
-what then happened.
+Forecast sources differ in skill, so each is weighted by how well its earlier forecasts
+predicted what then happened.
 
 Every forecast source is an *expert*. The independent forecast is the expert `llm`, a
 written lesson in memory is the expert `memory:ID:VERSION`, and a recorded execution
@@ -467,8 +466,8 @@ are retrieved.
 
 ## 6 Recorded runs as evidence
 
-This section chooses the recorded runs that bear on a new task and gives each a weight,
-which three later readers use.
+Which recorded runs bear on a new task, and how much, is decided once per decision and
+shared by three readers.
 
 A run is a *candidate* for a new task when its outcome is `clean`, `loud` or `silent` and
 it belongs to at least one prototype that the task matches. The prototypes only choose
@@ -558,9 +557,9 @@ In the running example the record is empty, so no reader counts any run. The
 
 ## 7 Capability threshold and the fit band
 
-This section turns the capability judgments and the weighted candidates into the
-probability that each cell is strong enough, and it chooses the cells that receive fine
-forecasts.
+Not every cell in the inventory needs a fine forecast, and the capability threshold,
+learned from the language model's judgments and the weighted candidates, decides which
+do.
 
 ### The threshold prior
 
@@ -763,8 +762,8 @@ classifications in full.
 
 ## 8 Corrected predictions
 
-This section merges the experts' fine forecasts of each value and corrects the merged
-guess with the record of the same host on other tasks.
+Before a cell's beliefs can start, each of its values needs one prediction that the
+project's record has corrected.
 
 For each forecast cell of {eq}`forecast-cells` and each value (the loud rate, the
 accepted-defect share, active time and each token count), the experts' forecasts are
@@ -812,9 +811,10 @@ cell, each rung leaning on the one above:
 
 The runs are the finished routed runs with outcome clean, loud or silent, weighted by
 {eq}`ladder-weight` over the runs of the ladder. A run's host and agent are the names its
-receipt stores, or the names imported for an older receipt. The runs of every prototype
-the new task matches are left out, because they already count as candidates (section
-6). {math}`y_i` is what happened: for a rate, 1 for a failure and 0 otherwise;
+receipt stores, or the names imported for an older receipt. The ladder leaves out every
+run of the prototypes the new task matches, the pool from which section 6 draws the
+evidence candidates, so no run counts both through its similarity and through the
+ladder. {math}`y_i` is what happened: for a rate, 1 for a failure and 0 otherwise;
 for an amount, the logarithm of the recorded amount. {math}`g_i` is the merged guess
 that run's own decision stored, on the same footing. The accepted-defect share counts
 accepted runs with silent as the failure, the loud rate counts every finished run with
@@ -922,13 +922,14 @@ the sums a receipt stores and how loading a receipt recomputes them.
 
 ## 9 Outcome beliefs and admission
 
-This section builds each cell's beliefs about its loud rate and its accepted-defect
-share, and it sorts the cells by their chance of meeting the defect limit.
+Two beliefs describe a cell's outcomes, one about its loud rate {math}`\theta_l` and one
+about its accepted-defect share {math}`S`, and the second decides whether the cell is
+admitted.
 
 ### Beliefs on a log-odds grid
 
-A cell holds two independent beliefs, one for {math}`\theta_l` and one for {math}`S`.
-Each is a normal distribution on the log-odds scale, held on one fixed grid:
+The two beliefs are independent. Each is a normal distribution on the log-odds scale,
+held on one fixed grid:
 
 ```{math}
 :label: grid
@@ -1053,8 +1054,8 @@ The same four clean runs would move B's {math}`\pi` to 0.85, and B would be trus
 
 ## 10 Active time, tokens and credit
 
-This section builds the beliefs for a cell's active time and token counts and derives
-the credit of one run.
+Unlike the two rates, active time and token counts are amounts, and the credit of one
+run follows from the token counts.
 
 ### Amount beliefs
 
@@ -1154,8 +1155,8 @@ rules.
 
 ## 11 Selection
 
-This section computes each cell's expected cost and its spread, forms the pool of
-competing cells and draws the chosen cell.
+Selection turns each forecast cell's beliefs into an expected cost with a spread, admits
+cells by their tier and draws one cell among those whose costs overlap.
 
 ### Expected cost and its spread
 
@@ -1300,8 +1301,6 @@ explanation of each cheaper alternative.
 
 ## 12 Refined constants
 
-This section re-estimates eleven of the constants above from the store's own record.
-
 The half-life {math}`h`, the three discounts, {math}`N_{\mathrm{rung}}`, the three task
 worths, the miss {math}`D` with no record, the scatter share {math}`\beta` and
 {math}`N_{\mathrm{caught}}` are estimated constants. Their defaults work on an empty
@@ -1366,8 +1365,6 @@ the cached result.
 
 ## 13 Retrospective defect attribution
 
-This section corrects the record when a defect is traced to an earlier accepted run.
-
 A task that passes today's checks can contain a defect found later. During a bug fix or
 a requested audit, the companion `attribute-failure` skill investigates whether the
 defect escaped an earlier accepted task:
@@ -1405,8 +1402,6 @@ evidence and provenance requirements.
 
 ## 14 Operational boundaries
 
-This section states what the method relies on from the host and the store.
-
 The host executes the chosen model and effort. An installed plugin does not by itself
 enforce routing at every worker launch, and the feedback must identify the invocation
 that actually ran. Money comparisons need known charges on a comparable basis: list
@@ -1422,11 +1417,8 @@ and the [concurrency contract](concurrency.md) define these boundaries.
 
 ## 15 Evaluating savings and learning
 
-This section sets out how to test whether the method saves money and learns on real
-work.
-
-Net savings require evidence from genuine project work that includes the cost of
-choosing and of learning. The evaluation compares four arms: a stateless language
+Only genuine project work, with the cost of choosing and of learning included, can show
+net savings. The evaluation compares four arms: a stateless language
 model, plain retrieval of earlier executions, writable memory with fixed weights, and
 memory with learned predictive weights. Candidate inventories, prices, worker tools,
 acceptance gates and review budgets are frozen before any outcome is known. Three
@@ -1456,10 +1448,9 @@ procedure.
 
 ## 16 Statistical interpretation
 
-This section states once what each component means statistically and what it assumes.
-
-The method combines language-model priors, Bayesian capability learning,
-evidence-weighted semantic memory and retrospective defect attribution.
+Taken together, the method combines language-model priors, Bayesian capability
+learning, evidence-weighted semantic memory and retrospective defect attribution, and
+each component has its own statistical meaning and assumptions.
 
 The independent language-model judgments are cold-start priors for each task's order
 and outcomes, and their quality needs empirical validation. The corrected prediction
