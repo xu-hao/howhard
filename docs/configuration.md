@@ -220,6 +220,10 @@ trial_probability = 0.20
 all_excluded_factor = 0.50
 half_life_days = 14.0
 comparison_cap = 256
+model_worth = 5.0
+task_worth_amount = 1.0
+duration_miss = 1.3
+scatter_share = 0.5
 ```
 
 The full inventory has no size bound. If the span of the clearing and timely intervals
@@ -244,7 +248,7 @@ posterior after observed outcomes are added.
 `half_life_days` and `comparison_cap` govern which recorded runs count as evidence and
 how much ({ref}`evidence candidates <evidence-candidates>`). A run's weight halves for
 every `half_life_days` between its `observed_at` and the time the request was prepared,
-in the outcome counts, the active-time calibration and the capability threshold alike.
+in the outcome counts, the active-time and token beliefs and the capability threshold alike.
 At most `comparison_cap` candidate runs are compared with the new task per decision,
 most recent first; the rest count nowhere. Both are optional. The former
 `sampling.outcome_recency` is accepted and ignored: a file that sets it loads with one
@@ -272,6 +276,24 @@ second pool, when no trusted or on-trial cell has enough credit:
 Example: with the defaults, cells with `pi` 0.958, 0.613 and 0.019 are trusted, on trial
 and excluded. If the only cells with enough credit have `pi` 0.12, 0.08 and 0.05, the
 bar is `0.50 * 0.12 = 0.06` and the first two compete.
+
+Four keys shape the {ref}`beliefs for active time and tokens <amount-beliefs>`.
+All four are optional and are stored in each receipt's sampling policy.
+
+| Key | Symbol | Meaning | Default |
+| --- | --- | --- | --- |
+| `model_worth` | `worth` | How many runs the record says about a model family's own level | 5 |
+| `task_worth_amount` | `N_task` | The most a record on other tasks is worth for one task, for an amount | 1 |
+| `duration_miss` | `D` | The typical remaining miss of a prediction, as a spread of `ln(actual / prediction)` | 1.3 |
+| `scatter_share` | | The share of `D^2` that is run-to-run scatter on one task | 0.5 |
+
+`model_worth`, `task_worth_amount` and `duration_miss` are positive, and `scatter_share`
+lies in `(0, 1]`. They give the run-to-run scatter `tau = D * sqrt(scatter_share)`, the
+number of runs a prediction is worth `N_start = 1 / (1/worth + 1/N_task)`, and the
+minimum spread of a belief `tau / sqrt(N_start)`. With the defaults `tau = 0.919`,
+`N_start = 0.833` and the minimum spread is 1.007 for active time and every token kind.
+A larger `duration_miss` widens every belief, which raises `credit_p80_usd` and the
+spread of the cost; a larger `scatter_share` makes each recorded run count for less.
 
 Thompson sampling considers every cell of the pool whose posterior cost overlaps the
 pool's mean-best cell: `J - J_best <= uncertainty_multiplier * (sd_best + sd_candidate)`

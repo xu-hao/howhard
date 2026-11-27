@@ -93,8 +93,8 @@ support; a decision's receipt records the participating, normalized support.
 ### Which recorded runs count, and how much
 
 Three readers learn from recorded runs: the outcome counts of each forecast cell, the
-active-time calibration of each forecast cell, and the capability threshold. All three
-read one set of candidate runs, chosen and scored once for the decision.
+active-time and token beliefs of each forecast cell, and the capability threshold. All
+three read one set of candidate runs, chosen and scored once for the decision.
 
 **The candidates.** A candidate is a recorded run with outcome `clean`, `loud` or
 `silent` that belongs to at least one prototype the new task matches. Prototypes only
@@ -163,24 +163,28 @@ stays 0.3. With outcomes loud, loud, clean and clean, `n_loud = 0.7333` and
 | Reader | Runs it counts | Weight |
 | --- | --- | --- |
 | Outcomes | The candidates, for each forecast cell | `w_i` after the limit |
-| Active time | The candidates of the same cell that record an active time | The outcome reader's `w_i` for that run |
+| Active time and tokens | The candidates of the same cell that record an active time | The outcome reader's `w_i` for that run |
 | Capability | The candidates whose cell is in the inventory | `m_i * sim_i * strength_i * a_i`, then the limit over this reader's runs |
 
 `strength_i` is the capability reader's factor for the outcome and its cause
 ([capability filtering](capability.md)); that reader has no `delta`. For example, a loud run with no
 recorded cause, `sim = 0.8` and `a = 0.7071` weighs
 `0.8 * 0.75 * 0.5 * 0.7071 = 0.2121` in the capability reader. The counts feed the
-{ref}`outcome posterior <outcome-posterior>`, and the active-time weights feed the
-duration calibration of {ref}`selection <accepted-result-selection>`.
+{ref}`outcome posterior <outcome-posterior>`, and the active-time reader's runs and
+weights feed the {ref}`beliefs for active time and tokens <amount-beliefs>`: every such
+run updates active time, those that record total `tokens` update the total, and those
+with a complete execution usage update each token kind.
 
 **What the receipt stores.** `semantic.evidence_candidates` holds the time the request
 was prepared (`prepared_at`), both constants (`half_life_days`, `comparison_cap`), the
 number of candidates before the cap (`matched`) and each scored candidate once: `id`,
-`family`, `effort`, `outcome`, `active_seconds`, `ticket`, `run_weight`, `score`,
-`similarity`, `days` and `age_factor`. Each row of `semantic.outcome_observations` is
+`family`, `effort`, `outcome`, `active_seconds`, `tokens`, `token_usage` (the count of
+each token kind, only when the run's execution usage is complete), `ticket`,
+`run_weight`, `score`, `similarity`, `days` and `age_factor`. Each row of `semantic.outcome_observations` is
 one counted run of one forecast cell with its `discount`, `ticket_share`
 (`1 / max(1, W_t)`, or 1 without a ticket) and `weight`; each row of
-`semantic.duration_observations` carries the run's active seconds and that weight; and
+`semantic.duration_observations` carries the run's active seconds, `tokens`,
+`token_usage` and that weight; and
 each row of `capability.evidence` carries its `strength`, `ticket_share` and `weight`.
 Loading a `howhard-decision-v11` receipt recomputes every similarity, age factor,
 ticket share, weight and count from these values and refuses a mismatch, or more than

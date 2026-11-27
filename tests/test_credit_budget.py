@@ -1,7 +1,8 @@
 """Candidate quota-credit validation and actual session-cost accounting.
 
 Issue #75 tracks hard credit-budget feasibility; issue #95 separates credit burn from
-actual session money cost.
+actual session money cost; issue #132 checks credit on the larger of its average and its
+80% point. With no stated range a cell's 80% point is P80 times its average.
 """
 
 from copy import deepcopy
@@ -18,6 +19,9 @@ from howhard.report import report
 from howhard.validation import HowHardError
 from test_execution_accounting import card, counts
 from test_semantic import FixtureLLM
+
+# exp(0.8416 * s - s^2 / 2) at the minimum spread s = 1.007 of a token belief.
+P80 = 1.40561
 
 
 def decide_with_forecasts(engine, candidates, rows, *, seed=7):
@@ -219,7 +223,8 @@ def test_selection_excludes_cheaper_cell_with_insufficient_5h_or_7d_credit(tmp_p
             "credit_budget": {"available_credit_usd": 0.5, "session_5h_remaining_credit_usd": 0.5, "weekly_7d_remaining_credit_usd": 1.0},
         },
     ]
-    # 10,000 tokens -> cheap needs 0.1 USD (> 0.05 available); ok needs 0.2 USD (<= 0.5 available).
+    # 10,000 tokens -> cheap needs 0.1 USD on average (> 0.05 available); ok needs 0.2 USD on
+    # average and 0.28 USD at its 80% point (<= 0.5 available).
     result = decide_with_forecasts(
         engine,
         candidates,
@@ -236,6 +241,7 @@ def test_selection_excludes_cheaper_cell_with_insufficient_5h_or_7d_credit(tmp_p
     assert not by_model["route-cheap/model"]["credit_ok"]
     assert by_model["route-cheap/model"]["admissible"]
     assert by_model["route-ok/model"]["needed_credit_usd"] == pytest.approx(0.2)
+    assert by_model["route-ok/model"]["credit_p80_usd"] == pytest.approx(0.2 * P80, rel=1e-5)
     assert by_model["route-ok/model"]["available_credit_usd"] == pytest.approx(0.5)
     assert by_model["route-ok/model"]["credit_ok"]
     assert result["why"] == [
@@ -244,17 +250,19 @@ def test_selection_excludes_cheaper_cell_with_insufficient_5h_or_7d_credit(tmp_p
             "family": by_model["route-cheap/model"]["family"],
             "effort": "low",
             "reason": "insufficient-credit",
-            "message": "excluded: needed_credit_usd 0.1 > available_credit_usd 0.05",
+            "message": "excluded: credit_p80_usd 0.140561 > available_credit_usd 0.05",
         }
     ]
     receipt = load(engine.config, result["decision_id"])
     assert receipt["chosen"]["model"] == "route-ok/model"
 
 
-def test_rate_card_candidates_enforce_credit_budget_and_exact_equality_is_schedulable(tmp_path):
+def test_rate_card_candidates_enforce_credit_budget_on_the_average_and_the_80_percent_point(tmp_path):
     engine = Engine(directory=tmp_path)
     usage = counts(input=100000, output=50000, cache_read=0, cache_write=0, cache_write_5m=0, cache_write_1h=0)
     # input and output rates yield needed_credit_usd = 0.6; the default multiplier makes session_cost_usd equal.
+    # route-tight lacks even the average. route-average covers its average of 0.8 but not its
+    # 80% point of 1.12; route-enough covers both.
     candidates = [
         {
             "model": "route-tight",
@@ -262,27 +270,38 @@ def test_rate_card_candidates_enforce_credit_budget_and_exact_equality_is_schedu
             "rate_card": card(model="route-tight"),
             "credit_budget": {"available_credit_usd": 0.59, "session_5h_remaining_credit_usd": 0.59, "weekly_7d_remaining_credit_usd": 3.0},
         },
-        {
-            "model": "route-exact",
-            "effort": "high",
-            "rate_card": card(model="route-exact", rates=counts(input=4, output=8, cache_read=0.2, cache_write=3, cache_write_5m=2.5, cache_write_1h=4)),
-            "credit_budget": {"available_credit_usd": 0.8, "session_5h_remaining_credit_usd": 0.8, "weekly_7d_remaining_credit_usd": 2.0},
-        },
+        *(
+            {
+                "model": model,
+                "effort": "high",
+                "rate_card": card(model=model, rates=counts(input=4, output=8, cache_read=0.2, cache_write=3, cache_write_5m=2.5, cache_write_1h=4)),
+                "credit_budget": {"available_credit_usd": available, "session_5h_remaining_credit_usd": available, "weekly_7d_remaining_credit_usd": 2.0},
+            }
+            for model, available in (("route-average", 0.8), ("route-enough", 1.2))
+        ),
     ]
     result = decide_with_forecasts(
         engine,
         candidates,
         [
             ("route-tight", "low", 0.98, 0.01, 0.01, 150000, 10, usage),
-            ("route-exact", "high", 0.98, 0.01, 0.01, 150000, 15, usage),
+            ("route-average", "high", 0.98, 0.01, 0.01, 150000, 15, usage),
+            ("route-enough", "high", 0.98, 0.01, 0.01, 150000, 15, usage),
         ],
     )
-    assert result["chosen"]["model"] == "route-exact"
+    assert result["chosen"]["model"] == "route-enough"
     by_model = {c["model"]: c for c in result["cells"]}
     assert not by_model["route-tight"]["credit_ok"]
-    assert by_model["route-exact"]["needed_credit_usd"] == pytest.approx(0.8)
-    assert by_model["route-exact"]["credit_ok"]
-    assert result["why"][0]["reason"] == "insufficient-credit"
+    for model in ("route-average", "route-enough"):
+        assert by_model[model]["needed_credit_usd"] == pytest.approx(0.8)
+        assert by_model[model]["credit_p80_usd"] == pytest.approx(0.8 * P80, rel=1e-5)
+    assert not by_model["route-average"]["credit_ok"]
+    assert by_model["route-enough"]["credit_ok"]
+    assert result["why"][0] == {
+        "model": "route-tight", "family": by_model["route-tight"]["family"], "effort": "low",
+        "reason": "insufficient-credit",
+        "message": "excluded: credit_p80_usd 0.843365 > available_credit_usd 0.59",
+    }
 
 
 @pytest.mark.parametrize("policy", ["flag-review", "lowest-bound"])
@@ -362,10 +381,11 @@ def test_raises_howhard_error_when_no_candidate_has_sufficient_credit(tmp_path):
             "credit_budget": {"available_credit_usd": 0.08, "session_5h_remaining_credit_usd": 0.5, "weekly_7d_remaining_credit_usd": 0.08},
         },
     ]
-    # 10,000 tokens -> route-a needs 0.1 USD (> 0.04), route-b needs 0.25 USD (> 0.08).
+    # 10,000 tokens -> route-a needs 0.1 USD (> 0.04), route-b needs 0.25 USD (> 0.08). The
+    # message names the smallest checked amount: route-a's 80% point.
     with pytest.raises(
         HowHardError,
-        match=r"candidates: no candidate has sufficient remaining credit to schedule task \(minimum needed_credit_usd 0\.1 USD, maximum available_credit_usd 0\.08 USD\)",
+        match=r"candidates: no candidate has sufficient remaining credit to schedule task \(minimum credit_p80_usd 0\.140561 USD, maximum available_credit_usd 0\.08 USD\)",
     ):
         decide_with_forecasts(
             engine,
@@ -391,7 +411,8 @@ def test_omitted_credit_budget_preserves_existing_selection_and_reporting(tmp_pa
             ("route-b/model", "high", 0.98, 0.01, 0.01, 10000, 3600, None),
         ],
     )
-    assert result["chosen"]["model"] == "route-a/model"
+    # The hour-long cell costs more on average; which cell a seed samples is not at issue here.
+    assert result["exploration"]["mean_best"]["model"] == "route-a/model"
     for row in result["cells"]:
         assert row["credit_budget"] is None
         assert row["available_credit_usd"] is None
@@ -425,14 +446,14 @@ def test_session_cost_drives_sorting_and_selection_while_credit_stays_explicit(t
         {"model": "route-high-credit/model", "effort": "low",
          "rate_card": card(model="route-high-credit/model", rates=counts(input=20, output=0, cache_read=0, cache_write=0, cache_write_5m=0, cache_write_1h=0)),
          "cost_per_credit": 0.1,
-         "credit_budget": {"available_credit_usd": 0.25,
-                           "session_5h_remaining_credit_usd": 0.25,
+         "credit_budget": {"available_credit_usd": 0.5,
+                           "session_5h_remaining_credit_usd": 0.5,
                            "weekly_7d_remaining_credit_usd": 1.0}},
         {"model": "route-low-credit/model", "effort": "low",
          "rate_card": card(model="route-low-credit/model", rates=counts(input=5, output=0, cache_read=0, cache_write=0, cache_write_5m=0, cache_write_1h=0)),
          "cost_per_credit": 1.0,
-         "credit_budget": {"available_credit_usd": 0.25,
-                           "session_5h_remaining_credit_usd": 0.25,
+         "credit_budget": {"available_credit_usd": 0.5,
+                           "session_5h_remaining_credit_usd": 0.5,
                            "weekly_7d_remaining_credit_usd": 1.0}},
     ]
     result = decide_with_forecasts(
@@ -461,8 +482,9 @@ def test_session_cost_drives_sorting_and_selection_while_credit_stays_explicit(t
     displayed = render(result)
     assert "session_cost_usd (cost)" in displayed
     assert "needed_credit_usd (credit)" in displayed
-    assert "0.0200  0.2000" in displayed
-    assert "0.0500  0.0500" in displayed
+    assert "credit_p80_usd (80% credit)" in displayed
+    assert "0.0200  0.2000  0.2811" in displayed
+    assert "0.0500  0.0500  0.0703" in displayed
 
 
 def test_credit_budget_compares_list_price_credit_not_scaled_session_cost(tmp_path):
@@ -473,7 +495,7 @@ def test_credit_budget_compares_list_price_credit_not_scaled_session_cost(tmp_pa
          "credit_budget": {"available_credit_usd": 0.15}},
         {"model": "route-available/model", "effort": "low", "usd_per_mtok": 5.0,
          "cost_per_credit": 1.0,
-         "credit_budget": {"available_credit_usd": 0.05}},
+         "credit_budget": {"available_credit_usd": 0.08}},
     ]
     result = decide_with_forecasts(
         engine,

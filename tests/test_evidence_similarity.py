@@ -141,7 +141,8 @@ def test_matched_run_counts_at_similarity_times_age_and_other_runs_count_nowhere
     assert set(scored(receipt)) == {"match", "loud"}
     match = scored(receipt)["match"]
     assert match == {"id": "match", "family": "opus", "effort": "high", "outcome": "clean",
-                     "active_seconds": 100.0, "ticket": None, "run_weight": 1.0, "score": 1.386,
+                     "active_seconds": 100.0, "tokens": None, "token_usage": None,
+                     "ticket": None, "run_weight": 1.0, "score": 1.386,
                      "similarity": pytest.approx(.8, abs=1e-4), "days": pytest.approx(7, abs=1e-3),
                      "age_factor": pytest.approx(.7071, abs=1e-4)}
     outcomes, durations, capability = readers(receipt)
@@ -153,7 +154,7 @@ def test_matched_run_counts_at_similarity_times_age_and_other_runs_count_nowhere
                                  "discount": 1.0, "ticket_share": 1.0,
                                  "weight": match["run_weight"] * match["similarity"] * match["age_factor"]}
     assert durations["match"] == {"id": "match", "family": "opus", "effort": "high", "active_seconds": 100.0,
-                                  "weight": outcomes["match"]["weight"]}
+                                  "tokens": None, "token_usage": None, "weight": outcomes["match"]["weight"]}
     assert capability["match"]["strength"] == 1.0
     assert capability["match"]["weight"] == pytest.approx(.5657, abs=1e-4)
     # A loud run with no recorded cause: 0.8 * 0.75 * 0.5 * 0.7071 in the capability reader.

@@ -43,6 +43,15 @@ def prepare(config, task, risk=None, context=None, native_candidates=None):
     return result, cells
 
 
+def checked_credit(row):
+    """The amount the credit check compares with the available credit, and its field name.
+
+    It is the larger of the average credit and its 80% point.
+    """
+    field = "credit_p80_usd" if row["credit_p80_usd"] > row["needed_credit_usd"] else "needed_credit_usd"
+    return row[field], field
+
+
 def choose(prepared, config, seed, parts):
     result, cells = prepared
     result = deepcopy(result)
@@ -59,11 +68,11 @@ def choose(prepared, config, seed, parts):
         raise HowHardError("candidates: no selectable cells")
     schedulable = [row for row in available if row.get("credit_ok", True)]
     if not schedulable:
-        min_needed = min(row["needed_credit_usd"] for row in available)
+        min_checked, field = min(checked_credit(row) for row in available)
         max_avail = max(row["available_credit_usd"] for row in available)
         raise HowHardError(
             f"candidates: no candidate has sufficient remaining credit to schedule task "
-            f"(minimum needed_credit_usd {min_needed:.6g} USD, maximum available_credit_usd {max_avail:.6g} USD)"
+            f"(minimum {field} {min_checked:.6g} USD, maximum available_credit_usd {max_avail:.6g} USD)"
         )
     from .success import admission_pool
     sampling = result["semantic"]["sampling"]
@@ -104,9 +113,10 @@ def choose(prepared, config, seed, parts):
             continue
         explanation = {k: row[k] for k in ("model", "family", "effort")}
         if not row.get("credit_ok", True):
+            checked, field = checked_credit(row)
             explanation.update(
                 reason="insufficient-credit",
-                message=f"excluded: needed_credit_usd {row['needed_credit_usd']:.6g} > available_credit_usd {row['available_credit_usd']:.6g}",
+                message=f"excluded: {field} {checked:.6g} > available_credit_usd {row['available_credit_usd']:.6g}",
             )
         elif row not in pool:
             if pool_kind == "trusted-and-on-trial":

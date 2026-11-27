@@ -31,7 +31,8 @@ the host's actual tools execute the task.
    and labels that limit. When a priced candidate also has a known remaining credit
    envelope, attach optional `credit_budget` (`available_credit_usd` and optional
    `session_5h_remaining_credit_usd`, `weekly_7d_remaining_credit_usd`) so cells whose
-   `needed_credit_usd` exceeds available credit are excluded before selection.
+   needed credit exceeds available credit, on average (`needed_credit_usd`) or at its
+   80% point (`credit_p80_usd`), are excluded before selection.
 3. Run commands from the current project. `howhard paths --json` exposes the
    capture/state roots. Fresh Git worktrees share repository state automatically while
    each task captures its current checkout. Explicit store selection remains available.

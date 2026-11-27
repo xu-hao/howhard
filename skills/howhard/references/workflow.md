@@ -12,7 +12,7 @@ converts forecast credit to actual session money cost and defaults to `1.0`. Whe
 quota credit windows are known for a uniformly priced inventory, optional `credit_budget`
 (`available_credit_usd` plus optional `session_5h_remaining_credit_usd` and
 `weekly_7d_remaining_credit_usd`) enforces hard scheduling feasibility (`credit_ok`) against
-`needed_credit_usd`. Optional `agent` is a short label (letters, digits, `_`, `-`) for
+the larger of `needed_credit_usd` and its 80% point `credit_p80_usd`. Optional `agent` is a short label (letters, digits, `_`, `-`) for
 the agent product that would run the cell; it is stored with the cell, never verified,
 and a candidate without one belongs to one unnamed agent. Selection uses `session_cost_usd`; neither rate source represents
 actual session money cost when `cost_per_credit` differs from `1.0`. Omitted/null rate means unknown, including

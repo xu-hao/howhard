@@ -154,7 +154,7 @@ original run's forecasts against its effective result once, replacing its earlie
 rather than adding another independent run. Effective `interrupted` outcomes (such as
 `usage_limit`, `provider_error`, `host_error` or `cancelled`) are operational
 interruptions rather than model task failures: they are excluded from stage-1/stage-2
-predictive scoring and active-duration calibration, while remaining durable in the store,
+predictive scoring and the active-time and token beliefs, while remaining durable in the store,
 counted in `report`, and visible in `execution:RUN_ID` and `outcome_history`. Amending a
 misclassified `loud` execution to `interrupted` removes its earlier predictive penalty on
 replay. Original measurements and registry evidence
@@ -306,16 +306,17 @@ The threshold posterior applies the censored likelihood of the decision's
 {ref}`evidence candidates <evidence-candidates>` to the weighted
 stage-1 prior; it has no independent observation store or feedback path.
 
-Fine selection charges expected same-cell retries to an accepted result and calibrates
-active duration from expert `seconds` forecasts plus shrunk `effective_active_seconds`
-log-residuals of the cell's own evidence candidates, pricing the log-normal right-tail
-expectation `exp(mu + sigma^2 / 2)`. Its admission tiers use each expert's joint
+Fine selection charges expected same-cell retries to an accepted result. Active time
+and each token kind have one {ref}`belief per cell <amount-beliefs>`: the experts'
+forecasts are merged on the log scale, with their disagreement and stated ranges as the
+stated spread, and the cell's own {ref}`evidence candidates <evidence-candidates>` update
+it. `T` and the run cost are the beliefs' averages. Its admission tiers use each expert's joint
 accepted-result posterior `Beta(alpha_silent, alpha_clean)`: the share within epsilon.
-Sampling draws from the sampled expert's per-cell Dirichlet posterior alongside
-log-normal active-duration draws. Posterior cost overlap (including log-normal and
-between-expert duration variance) gates exploration, optionally capped by an explicit
+Sampling draws from the sampled expert's per-cell Dirichlet posterior, and each cell's
+active time from its belief. Posterior cost overlap (including the active-time
+variance) gates exploration, optionally capped by an explicit
 risk-class `explore_within`; a chosen cell that is not trusted is flagged for review. Receipts
-preserve the formula, constants, calibration and explanation.
+preserve the formula, constants, beliefs and explanation.
 A consistency disagreement compares the raw stage-2 clean forecast (before outcome updates) with stage-1 `P_clear`; it
 does not substitute the accepted-result risk ratio or silently alter the chosen cell.
 See [capability filtering](capability.md) and {ref}`selection <accepted-result-selection>`.

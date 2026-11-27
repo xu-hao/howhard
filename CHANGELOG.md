@@ -70,6 +70,32 @@
   receipts keep their recorded cap, policy and widening labels, and keep loading,
   observing, replaying and reporting.
 
+- Beliefs for active time and each token kind, and a credit check on the 80% point
+  (#132). A `howhard-decision-v11` cell holds one log-normal belief for active time and
+  one per token kind (or one for total `tokens` when its forecasts do not state usage by
+  kind). The experts' forecasts of a value are merged on the log scale, and their
+  disagreement and the stated ranges `seconds_ci` and `token_usage_ci` set the belief's
+  spread, never below the minimum (1.007 by default). Runs of the same cell update the
+  beliefs, each at the weight the outcome counts give it: active time from every scored
+  evidence candidate of the cell that recorded a time, a token kind from those with a
+  `complete` `execution_usage`, and the total from those that recorded `tokens`. Each
+  scored candidate and each row of `semantic.duration_observations` carries the run's
+  `tokens` and `token_usage`. `T`,
+  `needed_credit_usd` and `session_cost_usd` are the beliefs' averages; this replaces the
+  per-expert active-time calibration for v11 decisions. Each cell reports `active_time`,
+  `token_beliefs`, `credit_variance` and `credit_p80_usd`, and `credit_ok` now requires
+  `max(needed_credit_usd, credit_p80_usd) <= available_credit_usd`, so a run must fit the
+  remaining credit four times out of five and not only on average. A cell that passed
+  the credit check on its average alone can now be refused; the `insufficient-credit`
+  explanation and the no-schedulable-candidate error name the amount that was checked.
+  The plain output of `pick` and `summary` adds a `credit_p80_usd` column. Optional
+  `[sampling]` keys `model_worth` (5), `task_worth_amount` (1), `duration_miss` (1.3) and
+  `scatter_share` (0.5) are stored in the receipt's policy. Loading a v11 receipt
+  recomputes its beliefs, `T`, the credit numbers and `credit_ok`; `v10`, `v9`, `v8` and
+  `v7` receipts keep their own active-time calibration and credit check and load,
+  observe, replay and report as before. Hosts are asked to record usage by token kind and
+  active time apart from waiting.
+
 ## 5.0.0 — 2026-11-24
 
 - Dynamic synthesized `(task, context)` prototypes with materialized per-cell priors and

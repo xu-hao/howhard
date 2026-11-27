@@ -76,11 +76,21 @@ def rate_card(value):
     return value
 
 
-def price(counts, card):
+def price(counts, card, *, by_kind=False):
+    """Price token counts at a rate card; ``by_kind`` returns each kind's amount, not their sum."""
     rate_card(card)
     if any(counts[k] is None or (counts[k] != 0 and card['rates'][k] is None) for k in CATEGORIES):
         return None
+    if by_kind:
+        return {k: counts[k] * (card['rates'][k] or 0) / 1e6 for k in CATEGORIES}
     return sum(counts[k] * (card['rates'][k] or 0) for k in CATEGORIES) / 1e6
+
+
+def usage_by_kind(usage):
+    """Token counts by kind over a complete execution usage envelope; ``None`` otherwise."""
+    if usage is None or usage['status'] != 'complete':
+        return None
+    return {k: sum(segment['tokens'][k] for segment in usage['segments']) for k in CATEGORIES}
 
 
 def money(value, *, billed=False):

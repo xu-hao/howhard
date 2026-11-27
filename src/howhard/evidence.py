@@ -18,8 +18,8 @@ from .storage import effective_active_seconds
 from .validation import HowHardError, keys, number, text
 
 OUTCOMES = ("clean", "loud", "silent")
-CANDIDATE_FIELDS = ("id", "family", "effort", "outcome", "active_seconds", "ticket", "run_weight",
-                    "score", "similarity", "days", "age_factor")
+CANDIDATE_FIELDS = ("id", "family", "effort", "outcome", "active_seconds", "tokens", "token_usage", "ticket",
+                    "run_weight", "score", "similarity", "days", "age_factor")
 TOLERANCE = 1e-10
 
 
@@ -67,6 +67,7 @@ def _observed(row):
 def collect(engine, payload, proto_state):
     """Choose and score the candidates once, on the caller's captured rows and outside any storage lock."""
     from . import prototypes
+    from .accounting import usage_by_kind
     from .retrieval import records, task_text
     policy = engine.config.data["sampling"]
     half_life, cap = policy["half_life_days"], policy["comparison_cap"]
@@ -92,8 +93,11 @@ def collect(engine, payload, proto_state):
     candidates = []
     for row, score in zip(rows, scores):
         days = max(0.0, (prepared - _observed(row)).total_seconds() / 86400.0)
+        # What the run recorded for the beliefs of its own cell: active time, total tokens, and
+        # usage by kind when its execution usage is complete.
         candidates.append({"id": row["id"], "family": row["family"], "effort": row["resolved_effort"],
                            "outcome": row["outcome"], "active_seconds": effective_active_seconds(row),
+                           "tokens": row.get("tokens"), "token_usage": usage_by_kind(row.get("execution_usage")),
                            "ticket": row["ticket"], "run_weight": float(row["weight"]),
                            "score": float(score), "similarity": similarity(score),
                            "days": days, "age_factor": age_factor(days, half_life)})
@@ -133,6 +137,17 @@ def validate(state, *, where="decision.semantic.evidence_candidates"):
         seen.add(item["id"])
         if item["active_seconds"] is not None:
             number(item["active_seconds"], f"{where}.candidate.active_seconds", nonnegative=True)
+        if item["tokens"] is not None:
+            number(item["tokens"], f"{where}.candidate.tokens", nonnegative=True)
+        if item["token_usage"] is not None:
+            # Usage by kind is kept only from a complete execution usage, which measures every kind.
+            from .accounting import tokens as token_counts
+            try:
+                counts = token_counts(item["token_usage"])
+            except HowHardError as exc:
+                raise HowHardError(f"{where}.candidate.{exc}") from exc
+            if any(count is None for count in counts.values()):
+                raise HowHardError(f"{where}.candidate.token_usage: expected a count for every kind")
         if item["ticket"] is not None and not isinstance(item["ticket"], str):
             raise HowHardError(f"{where}.candidate.ticket: expected string or null")
         number(item["run_weight"], f"{where}.candidate.run_weight", positive=True)

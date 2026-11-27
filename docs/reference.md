@@ -22,7 +22,9 @@ J = (C_run + lambda_per_hour * T + C_loud * P_loud + C_silent * P_silent)
 `C_run` is the expected actual session money cost (`session_cost_usd`). The candidate's
 `rate_card` or `usd_per_mtok` gives raw public API list-price quota credit, reported as
 `needed_credit_usd`; `cost_per_credit` converts that credit amount to session cost and
-defaults to `1.0` for pay-as-you-go. A free tier can set it to `0.0`.
+defaults to `1.0` for pay-as-you-go. A free tier can set it to `0.0`. `T` is the expected
+active hours of one run. `T` and `needed_credit_usd` are the averages of the cell's
+{ref}`beliefs for active time and tokens <amount-beliefs>`.
 
 The caller supplies any nonempty number of distinct actual cells through `--candidates FILE` or Python
 `native_candidates`. External routers can explicitly select a saved list from
@@ -160,10 +162,150 @@ Every range is optional and is a central 95% range `[lo, hi]`.
   prices, and a stored forecast is reused after prices change.
 
 Stated ranges are stored unchanged in the receipt's forecast panels
-(`semantic.worlds`). `seconds_ci` and `token_usage_ci` are validated and stored only:
-the duration calibration, cost and sampling described here do not read them, so a row
-with these ranges selects exactly as the same row without them. `loud_ci` and
-`silent_ci` are read as described above.
+(`semantic.worlds`). `loud_ci` and `silent_ci` are read as described above.
+`seconds_ci` and `token_usage_ci` are read into the beliefs below: a stated range can
+widen a belief and never narrow it.
+
+(amount-beliefs)=
+### Beliefs for active time and tokens
+
+Active time and each token kind have one belief per cell, held on the log scale. A
+belief starts at the forecast, is as wide as the forecast is unsure, and is updated by
+the cell's own recorded runs. Rates keep the {ref}`outcome posterior <outcome-posterior>`.
+
+**One forecast per value.** Several memory experts may forecast one cell. Their forecasts
+of a value are merged before its belief is built.
+
+```text
+m_g   = sum_k w_k * m_k
+s_g^2 = sum_k w_k * (s_k^2 + (m_k - m_g)^2)
+```
+
+- `k`, `w_k`: an expert in `semantic.beliefs.experts` and its weight. Weights sum to 1.
+- `m_k`: the log of expert k's forecast: `seconds`, or one kind of `token_usage`.
+- `s_k`: `(ln hi - ln lo) / 3.92` from the expert's stated range (`seconds_ci`,
+  `token_usage_ci`), or 0 with no range.
+- `m_g`, `s_g`: the log of the merged forecast, and its stated spread.
+
+Forecasts are averaged on the log scale, and disagreement counts as stated uncertainty.
+Amounts and range ends are held at 1 or more before logs are taken. For example, experts
+with weights 0.75 and 0.25 forecast 3,000 and 6,000 seconds with no ranges. The merged
+forecast is 3,568 seconds with stated spread 0.30.
+
+**The active-time belief.**
+
+```text
+ln T ~ Normal(m, s^2)
+s = max(s_g, tau / sqrt(N_start))        tau = D * sqrt(scatter_share)
+N_start = 1 / (1/worth + 1/N_task)
+m = ln(prediction) - s^2 / 2
+```
+
+- `T`: the expected active seconds of one run of this cell on this task.
+- `prediction`: where the belief starts: the merged forecast.
+- `s_g`: the stated spread of the merge above.
+- `D`: the typical remaining miss, as a spread of `ln(actual / prediction)`
+  (`sampling.duration_miss`, 1.3).
+- `tau`: the run-to-run scatter on one task. `scatter_share` is the share of `D^2` that
+  is scatter; at its default of 0.5, `tau = D / sqrt(2)`.
+- `worth`: how many runs the record says about this family's own level
+  (`sampling.model_worth`, 5).
+- `N_task`: the most a record on other tasks is worth for one task
+  (`sampling.task_worth_amount`, 1).
+- `N_start`: how many runs the prediction is worth.
+- `m`, `s`: the centre and spread. Subtracting `s^2 / 2` makes the belief's average
+  equal the prediction.
+
+The belief averages to the prediction. A stated range can widen it and never narrow it.
+For example, the prediction is 3,600 seconds with no stated range, worth is 5 and D is
+1.3. Then `N_start = 0.833`, `tau = 0.919`, `s = 1.007` and `m = 7.682`: an average of
+1 hour and a median of 0.60 hours. A stated range of 600 to 60,000 seconds gives 1.175,
+which is used. With the defaults the minimum spread is 1.007 for active time and for
+every token kind.
+
+Runs of the same cell then update the belief.
+
+```text
+1/s'^2 = 1/s^2 + W / tau^2
+m'     = m + s'^2 * sum_i w_i * (y_i - m) / tau^2
+E[T]   = exp(m' + s'^2 / 2)
+```
+
+- `i`, `w_i`, `W`: a same-cell run in `semantic.duration_observations`, its weight, and
+  the sum of the weights.
+- `y_i`: the log of run i's active seconds.
+- `m'`, `s'`: the centre and spread after the runs.
+- `E[T]`: the belief's average. In hours it is `T` in the cost.
+
+Each counted run pulls the centre toward its own time and narrows the belief, by its
+weight. For example, two runs with weights 0.5 and 0.3 recorded 1,800 and 5,400 seconds.
+Then `W = 0.8`, `s' = 0.719`, `m' = 7.792` and `E[T] = 3,137` seconds.
+
+The runs are the cell's own {ref}`evidence candidates <evidence-candidates>` that record
+an active time. Each counts at the weight the outcome counts give that run, `w_i` after
+the per-ticket limit: similarity to the new task, half as much for every
+`half_life_days` of age, and at most one run's weight per ticket. A run of another cell
+never counts. A run's time is `effective_active_seconds`: its `active_seconds`, or its
+total `seconds` when no active time was recorded, so a total that includes waiting counts
+as active time. `interrupted` runs are excluded.
+
+**Token beliefs.** Each of the six token kinds gets a belief of the same form, with the
+same `tau` and `N_start`, updated the same way and at the same weights from those
+same-cell runs whose `execution_usage` is `complete`. Each scored candidate, and each row
+of `duration_observations` counted from it, carries what its run recorded: `tokens` (the
+total, or null) and `token_usage` (the count of each kind over a complete usage envelope,
+or null). A run without complete usage leaves the kinds unchanged.
+
+- Zero: a kind that every expert forecasts at zero, with no non-zero upper end, is
+  exactly zero and has no spread. No run moves it.
+- Priced per total token: a cell whose forecasts do not all state `token_usage` has one
+  belief, for total `tokens`, with no stated range, updated from each run's recorded
+  `tokens`. When every expert states usage by kind, each kind has its belief; a cell
+  with `usd_per_mtok` prices all of them at the one rate.
+
+**Credit: average, spread and check.**
+
+```text
+c_a       = price_a * E[tokens_a] / 1e6
+E[K]      = sum_a c_a
+Var(K)    = sum_a sum_b c_a * c_b * (exp(rho_ab * s_a * s_b) - 1)
+sigma_K^2 = ln(1 + Var(K) / E[K]^2)
+K_80      = E[K] * exp(0.8416 * sigma_K - sigma_K^2 / 2)
+credit_ok <=> max(E[K], K_80) <= available credit
+```
+
+- `a`, `b`: token kinds (or the one total).
+- `price_a`: the cell's rate for kind a per million tokens, at decision time.
+- `E[tokens_a]`, `s_a`: the average and spread of kind a's belief after its update.
+- `rho_ab`: how kinds a and b move together. It is 1: the kinds are treated as moving
+  together, because no run records how they co-vary.
+- `K`: the credit one run needs, with average `E[K]` and variance `Var(K)`.
+- `sigma_K`: the spread of a log-normal with that average and variance.
+- `K_80`: its 80% point. 0.8416 is the 80% point of the standard normal.
+- `available credit`: `credit_budget.available_credit_usd`. With no budget the check
+  passes.
+
+A run must fit the remaining credit four times out of five, not only on average. The
+larger of the two is taken because a belief with `sigma_K` above 1.68 has its 80% point
+below its average, and the check must not get easier as a belief gets wider.
+
+For example, input costs 2 and output 10 dollars per million tokens. Input is forecast
+at 1,000,000 tokens with no range (spread 1.007), and output at 100,000 with a range of
+10,000 to 1,000,000 (spread 1.175). Then `c = 2.00` and `1.00`, `E[K] = 3.00`,
+`Var(K) = 19.06`, `sigma_K = 1.066` and `K_80 = 4.17`. With 4.00 of credit available the
+cell fails, although its average fits. With 5.00 it passes.
+
+`needed_credit_usd` is `E[K]`, `credit_variance` is `Var(K)` and `credit_p80_usd` is
+`K_80`. `session_cost_usd` is `E[K] * cost_per_credit`, and `C_run` equals it. An
+unpriced cell keeps its token beliefs and null credit fields.
+
+Each row of `selection.cells` stores its beliefs:
+
+| Field | Content |
+| --- | --- |
+| `active_time` | `forecast_seconds` (merged forecast), `stated_spread` (`s_g`), `worth`, `N_start`, `D`, `prior_centre` and `prior_spread` (`m`, `s`), `centre` and `spread` (`m'`, `s'`), `evidence_weight` (`W`), `expected_seconds` (`E[T]`) |
+| `token_beliefs` | The same record for each of the six kinds, or one record under `tokens`, with `forecast_tokens` and `expected_tokens`. A kind that is exactly zero has null centres and zero spreads. |
+| `credit_variance`, `credit_p80_usd` | `Var(K)` and `K_80`, beside `needed_credit_usd` |
 
 `P_clean`, `P_loud` and `P_silent` report `{mean, lower, upper}` from the
 support-weighted mixture of the experts' Beta marginals `Beta(alpha_i, sum(alpha) - alpha_i)`:
@@ -281,27 +423,25 @@ cell). The three constants are frozen with the rest of the policy in
 
 A sample is drawn for every decision, so `semantic.sampling.enabled` is always true.
 `pick` samples one expert by its weight and draws outcome probabilities from that
-expert's per-cell Dirichlet posterior `alpha`, and calibrates active duration `T`
-alongside outcomes. Forecasted `seconds` represents expected **active** execution
-duration excluding external queue wait. For each cell, empirical log-duration residuals
-from the cell's own {ref}`evidence candidates <evidence-candidates>` that record an
-active time (`effective_active_seconds`, each at the weight the outcome counts give that
-run, so zero-evidence cells preserve the expert forecast)
-calibrate log-normal parameters `(mu, sigma)` and price the right-tail expectation
-`E[T] = exp(mu + sigma^2 / 2)` in `T` and `J`. `cost_sd` is the delta-method retry-cost
-standard deviation from the posterior Dirichlet covariance
-`(diag(m) - m m^T) / (sum(alpha) + 1)` and log-normal active-duration variance, raised to
-the between-expert spread of per-expert posterior costs when larger. Thompson sampling
+expert's per-cell Dirichlet posterior `alpha`. Forecasted `seconds` represents expected
+**active** execution duration excluding external queue wait. `T` and `C_run` in `J` are
+the averages of the cell's {ref}`beliefs <amount-beliefs>`, which are merged over the
+experts and so do not depend on the sampled expert. `cost_sd` is the delta-method
+retry-cost standard deviation: the posterior Dirichlet covariance
+`(diag(m) - m m^T) / (sum(alpha) + 1)` plus the active-time term
+`(lambda_per_hour / (1 - P_loud))^2 * E[T]^2 * (exp(s'^2) - 1)`, raised to the
+between-expert spread of per-expert posterior costs when larger. Run cost is exact in
+`cost_sd` and in the draw: its spread enters the credit check only. Thompson sampling
 considers every cell of the pool whose posterior cost overlaps the pool's mean-best
 cell: `J - J_best <= uncertainty_multiplier * (sd_best + sd_cell)`. Only an explicit
 risk-class `explore_within` additionally caps that gap at `explore_within * |J_best|`.
-Thompson sampling draws log-normal active duration in `parts["time"]` when duration
-variance is present. Receipts retain the scored `evidence_candidates`, the
+Thompson sampling draws each cell's active time from `ln T ~ Normal(m', s'^2)` in
+`parts["time"]`. Receipts retain the scored `evidence_candidates`, the
 `outcome_observations` and `duration_observations` counted from them, each sampled cell's
 `outcome_posterior` (`prior`, `prior_concentration`, `counts`, `evidence_weight`,
-`alpha`), concentrations, duration calibration parameters, each cell's `pi`, `tier` and
+`alpha`), concentrations, each cell's beliefs, `pi`, `tier` and
 `admission_risk`, the seed and the reason for a sampled non-best choice. `summary`
-returns the same posterior means, intervals and tiers without sampling a selection. A
+returns the same posterior means, intervals, beliefs and tiers without sampling a selection. A
 fixed seed reproduces selection given frozen forecasts and the request's scored evidence
 candidates; it does not make inference deterministic. A receipt records the time its
 request was prepared, because the age of every counted run is measured to that moment,
@@ -322,9 +462,16 @@ permit exploration outside it. Each cheaper alternative is explained in `why`:
 otherwise `sampled-cost` with signed cost components.
 
 New receipts use `howhard-decision-v11` (`howhard-semantic-v8`, reader prompt
-`semantic-reader-v8`, interval kind `dirichlet-posterior-mixture`). Frozen
-`howhard-decision-v10` receipts use the same posterior without a host name, agent
-labels, ranges on active time and token kinds, or tiers. Frozen
+`semantic-reader-v8`, interval kind `dirichlet-posterior-mixture`). Loading a v11
+receipt recomputes every belief from its stored forecasts, expert weights,
+`duration_observations` and sampling policy, then `T`, the three credit numbers,
+`session_cost_usd` and `credit_ok`; a receipt whose stored values differ is refused.
+Frozen `howhard-decision-v10` receipts use the same outcome posterior without a host
+name, agent labels, ranges on active time and token kinds, tiers or beliefs: they keep the
+per-expert active-time calibration they were made with (each expert's forecast worth one
+run against the same-cell runs, log spread capped at 2, averaged over the experts), price
+each expert's forecast directly, and check `needed_credit_usd <= available_credit_usd`.
+Frozen
 `howhard-decision-v9` receipts keep undecayed `kappa_0 * p_0 + counts` posteriors, while
 frozen `howhard-decision-v8` and `howhard-decision-v7` receipts keep their original weighted
 forecast envelopes, upper-envelope admission and sampling policy shape; all load,
@@ -349,7 +496,7 @@ unknown values stay null, and `cost_policy` labels the partial risk/time compari
 Fully priced inventories with a uniform rate basis use the full objective. Candidate
 `usd_per_mtok` and `rate_card` rates measure list-price quota credit; they do not
 establish actual host money cost when that differs. `cost_per_credit` supplies that
-conversion. Tokens include cached/uncached input and output; T is calibrated active hours.
+conversion. Tokens include cached/uncached input and output; T is expected active hours.
 Actual `tokens`, `seconds`, optional `active_seconds` and `queue_wait_seconds`, and
 `cost_usd` remain null unless measured. When both `active_seconds` and `queue_wait_seconds`
 are supplied and `seconds` is omitted, `seconds` is derived as their sum; when all three
@@ -367,15 +514,24 @@ present, `available_credit_usd` must match their minimum within `1e-6`. Any cand
 `credit_budget` must also supply `rate_card` or `usd_per_mtok`, and an inventory that uses
 `credit_budget` requires uniform pricing across all candidates so `needed_credit_usd` is
 known on a single credit basis. Each evaluated cell reports `session_cost_usd`,
-`cost_per_credit`, `needed_credit_usd`,
-`credit_budget`, `available_credit_usd` and `credit_ok` (`needed_credit_usd <= available_credit_usd`
-when `credit_budget` is present, or `true` when omitted), while
+`cost_per_credit`, `needed_credit_usd`, `credit_variance`, `credit_p80_usd`,
+`credit_budget`, `available_credit_usd` and `credit_ok`. With a `credit_budget`,
+`credit_ok` is `max(needed_credit_usd, credit_p80_usd) <= available_credit_usd`: the run
+must fit the remaining credit on average and four times out of five (see
+{ref}`credit: average, spread and check <amount-beliefs>`). With no budget it is `true`.
 `tier` and `admissible` describe accepted-result silent risk only. Only schedulable
 cells (`credit_ok == true`) enter either pool of the
 {ref}`admission tiers <admission-tiers>`, so an excluded cell or a cell without enough
 credit is never chosen while a trusted or on-trial cell has enough credit. Selection is
 refused when no evaluated cell is schedulable, and cheaper unschedulable alternatives
-are labeled `insufficient-credit` in `why`.
+are labeled `insufficient-credit` in `why`. Both messages name the amount that was
+checked: `credit_p80_usd` when it exceeds `needed_credit_usd`, otherwise
+`needed_credit_usd`.
+
+Recorded usage sharpens these beliefs. A run that records active time apart from waiting
+updates the active-time belief with the time the cell actually worked, and a run with a
+complete execution usage envelope updates the belief of every token kind it records. A
+run that records only a total time or a total token count updates what it can.
 
 (portable-execution-accounting)=
 ## Portable execution accounting

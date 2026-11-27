@@ -141,7 +141,7 @@ def render(result):
         if result["needs_review"]:
             lines.append("The chosen cell is not trusted: independent review is advised before release.")
     lines.append(f"Task: {result['task_type']}  Risk: {result['risk_class']}  Constants: {json.dumps(result['constants'], sort_keys=True)}")
-    lines.append("family/effort  P_clean [95%]  P_loud [95%]  P_silent [95%]  P_silent accepted [95%]  session_cost_usd (cost)  needed_credit_usd (credit)  time h  J* USD  sampled J*  tier (pi; accepted-risk quantile)")
+    lines.append("family/effort  P_clean [95%]  P_loud [95%]  P_silent [95%]  P_silent accepted [95%]  session_cost_usd (cost)  needed_credit_usd (credit)  credit_p80_usd (80% credit)  time h  J* USD  sampled J*  tier (pi; accepted-risk quantile)")
     for row in result["cells"]:
         fields = [f"{row['family']}/{row['effort']}"]
         for name in ("P_clean", "P_loud", "P_silent", "P_silent_accepted"):
@@ -149,6 +149,7 @@ def render(result):
             fields.append(f"{p['mean']:.3f} [{p['lower']:.3f}, {p['upper']:.3f}]")
         fields.extend((f"{row['session_cost_usd']:.4f}" if row["session_cost_usd"] is not None else "unknown",
                        f"{row['needed_credit_usd']:.4f}" if row["needed_credit_usd"] is not None else "unknown",
+                       f"{row['credit_p80_usd']:.4f}" if row["credit_p80_usd"] is not None else "unknown",
                        f"{row['T']:.4f}", f"{row['J']:.4f}",
                        f"{row['sampled_J']:.4f}" if "sampled_J" in row else "—",
                        f"{row['tier']} ({row['pi']:.3f}; {row['admission_risk']:.3f})"))

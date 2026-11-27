@@ -114,7 +114,7 @@ def load(config, source, *, for_scoring=False):
     def priced(c):
         return all(v is not None for v in c["rate_card"]["rates"].values()) if "rate_card" in c else c.get("usd_per_mtok") is not None
     from .semantic import validate_receipt as validate_semantic
-    validate_semantic(value["semantic"], decision_format=value["format"])
+    validate_semantic(value["semantic"], decision_format=value["format"], selection=value["selection"])
     if "request_snapshot" in value and value["request_snapshot"]["memory_revision"] != value["semantic"]["memory_revision"]:
         raise HowHardError("request_snapshot: memory revision differs from frozen semantic inputs")
     forecast_pairs = {(c["family"], c["effort"]) for c in value["semantic"]["worlds"]["llm"]}
@@ -155,7 +155,7 @@ def load(config, source, *, for_scoring=False):
                             decision_format=value["format"], constants=value["selection"].get("constants"))
         from .success import validate_selection
         validate_selection(value["selection"], value["semantic"], value["capability"], value["cost_policy"],
-                           decision_format=value["format"], chosen=value["chosen"])
+                           decision_format=value["format"], chosen=value["chosen"], inventory=inventory)
         by_pair = {(c["model"], c["effort"]): c for c in inventory}
         for row in value["selection"]["cells"]:
             candidate = by_pair.get((row["model"], row["effort"]))

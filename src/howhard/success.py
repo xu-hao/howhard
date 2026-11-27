@@ -1,7 +1,8 @@
-"""Accepted-result retry costs and per-cell Dirichlet outcome posteriors."""
+"""Accepted-result retry costs, per-cell Dirichlet outcome posteriors and amount beliefs."""
 
 from copy import deepcopy
 import math
+import sys
 
 import numpy as np
 
@@ -11,7 +12,8 @@ from .validation import HowHardError, keys, number
 
 DEFAULTS = {"min_concentration": 2., "max_concentration": 1000000., "prior_strength": 8.,
             "uncertainty_multiplier": 1., "admission_quantile": .8, "trial_probability": .2,
-            "all_excluded_factor": .5, "half_life_days": 14., "comparison_cap": 256}
+            "all_excluded_factor": .5, "half_life_days": 14., "comparison_cap": 256,
+            "model_worth": 5., "task_worth_amount": 1., "duration_miss": 1.3, "scatter_share": .5}
 # Frozen v7/v8 receipts recorded this policy shape; it is read-only history.
 LEGACY_DEFAULTS = ("min_concentration", "max_concentration", "prior_strength", "explore_within", "uncertainty_multiplier")
 # Frozen v9/v10 receipts aged evidence by count (outcome_recency), not by time, and had no
@@ -21,7 +23,12 @@ COUNT_AGED_DEFAULTS = ("min_concentration", "max_concentration", "prior_strength
 POOLS = ("trusted-and-on-trial", "all-excluded")
 INTERVAL = (.025, .975)
 CI_Z_WIDTH = 3.92  # A central 95% interval spans about 3.92 standard deviations.
+P80_Z = 0.8416  # The 80% point of the standard normal.
+# exp() overflows a float just above 709. Only a stated range wider than a factor of e^100
+# reaches this; its variance then saturates instead of overflowing.
+EXP_CAP = 700.
 POSTERIOR_FIELDS = ("prior", "prior_concentration", "counts", "evidence_weight", "alpha")
+# Frozen v8 to v10 receipts calibrated active time with these; see calibrate_duration.
 DURATION_PRIOR_STRENGTH = 1.0
 MAX_DURATION_LOG_SD = 2.0
 EMPIRICAL_TAU = 2.0
@@ -30,6 +37,7 @@ EMPIRICAL_BASE = (0.88, 0.08, 0.04)
 
 
 def calibrate_duration(forecast_seconds, pair, duration_observations):
+    """Active-time calibration of frozen v8 to v10 receipts; v11 uses ``amount_belief``."""
     forecast = number(forecast_seconds, "duration.forecast_seconds", nonnegative=True)
     matching = [obs for obs in duration_observations if (obs["family"], obs["effort"]) == pair and obs["weight"] > 0]
     weight = math.fsum(obs["weight"] for obs in matching)
@@ -50,6 +58,123 @@ def calibrate_duration(forecast_seconds, pair, duration_observations):
     expected = math.exp(mu + 0.5 * sigma_sq)
     return {"forecast_seconds": forecast, "expected_seconds": expected,
             "mu": mu, "sigma": sigma, "evidence_weight": weight}
+
+
+def log_amount(value):
+    """The log of an amount or a range end, held at 1 or more."""
+    return math.log(max(1., value))
+
+
+def merge_forecasts(forecasts):
+    """Merge the experts' forecasts of one value: ``[(weight, forecast, range or None)]``.
+
+    Forecasts are averaged on the log scale and disagreement counts as stated
+    uncertainty. Returns the log of the merged forecast and its stated spread.
+    """
+    logs = [(w, log_amount(v), (log_amount(r[1]) - log_amount(r[0])) / CI_Z_WIDTH if r is not None else 0.)
+            for w, v, r in forecasts]
+    centre = math.fsum(w * m for w, m, _ in logs)
+    return centre, math.sqrt(math.fsum(w * (s ** 2 + (m - centre) ** 2) for w, m, s in logs))
+
+
+def amount_belief(forecasts, runs, policy, unit, *, zero=False):
+    """Log-normal belief for active time or one token count, after same-cell runs.
+
+    ``forecasts`` is ``[(expert weight, forecast, stated range or None)]`` and ``runs``
+    is ``[(weight, recorded amount)]``. The belief starts at the merged forecast with
+    spread ``max(stated spread, tau / sqrt(N_start))`` and a centre that makes its
+    average equal the forecast; each run then pulls the centre toward its own amount
+    and narrows the belief by its weight. With ``zero``, a value every expert forecasts
+    at zero with no non-zero upper end is exactly zero and has no spread.
+    """
+    worth, miss = policy["model_worth"], policy["duration_miss"]
+    n_start = 1 / (1 / worth + 1 / policy["task_worth_amount"])
+    if zero and all(v == 0 and (r is None or r[1] == 0) for _, v, r in forecasts):
+        return {"forecast_" + unit: 0., "stated_spread": 0., "worth": worth, "N_start": n_start, "D": miss,
+                "prior_centre": None, "prior_spread": 0., "centre": None, "spread": 0.,
+                "evidence_weight": 0., "expected_" + unit: 0.}
+    tau = miss * math.sqrt(policy["scatter_share"])
+    log_forecast, stated = merge_forecasts(forecasts)
+    prior_spread = max(stated, tau / math.sqrt(n_start))
+    prior_centre = log_forecast - prior_spread ** 2 / 2
+    runs = [(w, log_amount(v)) for w, v in runs if w > 0]
+    weight = math.fsum(w for w, _ in runs)
+    centre, spread = prior_centre, prior_spread
+    if runs:
+        variance = 1 / (1 / prior_spread ** 2 + weight / tau ** 2)
+        centre = prior_centre + variance * math.fsum(w * (y - prior_centre) for w, y in runs) / tau ** 2
+        spread = math.sqrt(variance)
+    return {"forecast_" + unit: math.exp(log_forecast), "stated_spread": stated, "worth": worth,
+            "N_start": n_start, "D": miss, "prior_centre": prior_centre, "prior_spread": prior_spread,
+            "centre": centre, "spread": spread, "evidence_weight": weight,
+            "expected_" + unit: math.exp(centre + spread ** 2 / 2)}
+
+
+def cell_beliefs(forecasts, pair, duration_observations, policy):
+    """Beliefs for one cell: ``active_time`` and ``token_beliefs``.
+
+    ``forecasts`` is ``[(expert weight, that expert's forecast row for the cell)]``.
+    Every token kind has a belief when every expert states usage by kind; otherwise
+    total ``tokens`` has the one belief. Runs are the cell's own rows from the
+    active-time reader; a kind is updated by the runs that record usage by kind, and
+    the total by the runs that record ``tokens``.
+    """
+    from .accounting import CATEGORIES
+    runs = [obs for obs in duration_observations if (obs["family"], obs["effort"]) == pair]
+    active = amount_belief([(w, row["seconds"], row.get("seconds_ci")) for w, row in forecasts],
+                           [(obs["weight"], obs["active_seconds"]) for obs in runs], policy, "seconds")
+    if all("token_usage" in row for _, row in forecasts):
+        measured = [obs for obs in runs if obs["token_usage"] is not None]
+        tokens = {kind: amount_belief(
+            [(w, row["token_usage"][kind], row.get("token_usage_ci", {}).get(kind)) for w, row in forecasts],
+            [(obs["weight"], obs["token_usage"][kind]) for obs in measured], policy, "tokens", zero=True)
+            for kind in CATEGORIES}
+    else:
+        tokens = {"tokens": amount_belief(
+            [(w, row["tokens"], None) for w, row in forecasts],
+            [(obs["weight"], obs["tokens"]) for obs in runs if obs["tokens"] is not None], policy, "tokens", zero=True)}
+    return {"active_time": active, "token_beliefs": tokens}
+
+
+def run_credit(token_beliefs, rate_card, credit_rate):
+    """Average, variance and 80% point of the credit one run needs, at the cell's prices.
+
+    Each belief's average is priced at its rate. The kinds move together (``rho = 1``)
+    because no run records how they co-vary, and the 80% point is that of the
+    log-normal with the same average and variance. An unpriced cell returns ``None``.
+    """
+    from .accounting import CATEGORIES, price
+    expected = {kind: belief["expected_tokens"] for kind, belief in token_beliefs.items()}
+    if rate_card is not None:
+        if expected.keys() != set(CATEGORIES):
+            raise HowHardError("decision.semantic: category rate card requires token_usage forecasts")
+        if any(rate_card["rates"][kind] is None for kind in CATEGORIES):
+            return None
+        costs = price(expected, rate_card, by_kind=True)
+    elif credit_rate is None:
+        return None
+    else:
+        costs = {kind: credit_rate * count / 1e6 for kind, count in expected.items()}
+    mean = math.fsum(costs.values())
+    if mean <= 0:
+        return 0., 0., 0.
+    shares = [(cost / mean, token_beliefs[kind]["spread"]) for kind, cost in costs.items() if cost > 0]
+    # Var(K) / E[K]^2 = sum_a sum_b p_a p_b (exp(s_a s_b) - 1) with p_a = c_a / E[K].
+    relative = math.fsum(pa * pb * math.expm1(min(sa * sb, EXP_CAP)) for pa, sa in shares for pb, sb in shares)
+    sigma_sq = math.log1p(relative)
+    p80 = mean * math.exp(P80_Z * math.sqrt(sigma_sq) - sigma_sq / 2)
+    return mean, min(sys.float_info.max, mean * mean * relative), p80
+
+
+def credit_fits(needed_credit, credit_p80, available_credit):
+    """A run must fit the remaining credit four times out of five, not only on average.
+
+    The larger of the two is checked: a very wide belief has its 80% point below its
+    average, and the check must not get easier as a belief gets wider.
+    """
+    if available_credit is None:
+        return True
+    return needed_credit is not None and max(needed_credit, credit_p80) <= available_credit
 
 
 def validate_policy(policy, *, legacy=False, count_aged=False):
@@ -87,6 +212,10 @@ def validate_policy(policy, *, legacy=False, count_aged=False):
         raise HowHardError("sampling.trial_probability: expected a probability in [0, admission_quantile]")
     if policy["all_excluded_factor"] > 1:
         raise HowHardError("sampling.all_excluded_factor: expected a factor in [0, 1]")
+    if min(policy[k] for k in ("model_worth", "task_worth_amount", "duration_miss")) <= 0:
+        raise HowHardError("sampling: model_worth, task_worth_amount and duration_miss must be positive")
+    if not 0 < policy["scatter_share"] <= 1:
+        raise HowHardError("sampling.scatter_share: expected a share in (0, 1]")
     return policy
 
 
@@ -303,55 +432,60 @@ def envelope(values, mean):
     return {"mean": mean, "lower": min(mean, quantile(.025)), "upper": max(mean, quantile(.975))}
 
 
-def calibration(result, state, expert, cell, row, *, legacy_v9=False):
-    """Per-cell Dirichlet posterior: a bounded forecast prior plus only this cell's own outcomes."""
-    from .semantic import panel_lookup, forecast_session_cost
+def calibration(result, state, expert, cell, row):
+    """Per-cell Dirichlet posterior and the first-order spread of the cost to an accepted result.
+
+    Active time and run cost are the cell's own beliefs, already merged over the experts:
+    ``T`` and ``C_run`` are their averages, the time term of the spread is
+    ``E[T]^2 * (exp(s'^2) - 1)``, and run cost is exact.
+    """
+    from .semantic import panel_lookup
     pair = cell["family"], cell["effort"]
     policy = result["sampling_policy"]
     outcome_obs = state.get("outcome_observations", [])
-    posterior = outcome_posterior(row, pair, outcome_obs, policy, legacy_v9=legacy_v9)
+    posterior = outcome_posterior(row, pair, outcome_obs, policy)
     probabilities = np.asarray(posterior["mean"])
     concentration = posterior["concentration"]
-    duration_obs = state.get("duration_observations", [])
-    dur = calibrate_duration(row["seconds"], pair, duration_obs)
-    expert_durations = {}
-    for e in state["beliefs"]["experts"]:
-        prediction = panel_lookup(state["worlds"][e["key"]])[pair]
-        expert_durations[e["key"]] = calibrate_duration(prediction["seconds"], pair, duration_obs)
-    mean_mu = sum(e["weight"] * expert_durations[e["key"]]["mu"] for e in state["beliefs"]["experts"])
-    between_log_var = sum(e["weight"] * (expert_durations[e["key"]]["mu"] - mean_mu) ** 2
-                          for e in state["beliefs"]["experts"])
-    dur["between_experts_log_variance"] = between_log_var
+    summary = panel_lookup(result["cells"])[pair]
     # Delta-method uncertainty for the same-cell retry objective, including
-    # Dirichlet outcome covariance and log-normal active-duration right-tail variance.
-    run = forecast_session_cost(row, cell) if cell["money_included"] else 0.
+    # Dirichlet outcome covariance and log-normal active-time variance.
+    run = summary["session_cost_usd"] if cell["money_included"] else 0.
     constants = result["constants"]
-    hours = dur["expected_seconds"] / 3600
+    hours = summary["T"]
     expected = cost(run, hours, probabilities[1], probabilities[2], constants)
     d = denominator(probabilities[1])
     gradient = np.array([0., (constants["C_loud"]+expected)/d, constants["C_silent"]/d])
     covariance = (np.diag(probabilities)-np.outer(probabilities, probabilities))/(concentration+1)
     outcome_variance = max(0., float(gradient @ covariance @ gradient))
-    sigma_cost_sq = min(MAX_DURATION_LOG_SD ** 2, max(dur["sigma"] ** 2, between_log_var))
-    hours_variance = (math.exp(sigma_cost_sq) - 1.0) * (hours ** 2)
+    hours_variance = min(sys.float_info.max, hours ** 2 * math.expm1(min(summary["active_time"]["spread"] ** 2, EXP_CAP)))
     variance = outcome_variance + ((constants["lambda_per_hour"] / d) ** 2) * hours_variance
     expert_costs = []
     for e in state["beliefs"]["experts"]:
         prediction = panel_lookup(state["worlds"][e["key"]])[pair]
-        money = forecast_session_cost(prediction, cell) if cell["money_included"] else 0.
-        e_hours = expert_durations[e["key"]]["expected_seconds"] / 3600
-        mean = outcome_posterior(prediction, pair, outcome_obs, policy, legacy_v9=legacy_v9)["mean"]
-        expert_costs.append((e["weight"], cost(money, e_hours, mean[1], mean[2], constants)))
+        mean = outcome_posterior(prediction, pair, outcome_obs, policy)["mean"]
+        expert_costs.append((e["weight"], cost(run, hours, mean[1], mean[2], constants)))
     mean_cost = sum(w*j for w, j in expert_costs)
     variance = max(variance, sum(w*(j-mean_cost)**2 for w, j in expert_costs))
     return {"family": cell["family"], "effort": cell["effort"], "expert": expert["key"],
             "outcome_posterior": {k: posterior[k] for k in POSTERIOR_FIELDS},
             "probabilities": probabilities.tolist(), "concentration": concentration,
-            "duration": dur, "cost_sd": math.sqrt(variance)}
+            "cost_sd": min(sys.float_info.max, math.sqrt(variance))}
 
 
-def validate_selection(selection, semantic, capability, cost_policy, *, decision_format=DECISION_FORMAT, chosen=None):
-    """Validate frozen objective/cap meanings without reinterpreting older receipts."""
+def same_number(actual, expected, tolerance=1e-10):
+    """Whether a stored number equals its recomputed value; ``None`` matches only ``None``."""
+    if actual is None or expected is None:
+        return actual is None and expected is None
+    return type(actual) in (int, float) and abs(actual - expected) <= tolerance * max(1., abs(expected))
+
+
+def validate_selection(selection, semantic, capability, cost_policy, *, decision_format=DECISION_FORMAT, chosen=None,
+                       inventory=()):
+    """Validate frozen objective/cap meanings without reinterpreting older receipts.
+
+    ``inventory`` is the receipt's native candidate list: a v11 receipt's credit numbers
+    are recomputed from the token beliefs at those prices.
+    """
     # v11 sorts cells into tiers and retires the cap-unmet policy; older receipts keep theirs.
     tiered = decision_format == DECISION_FORMAT
     keys(selection, ["objective", "retry_policy", "constants", "sampling_policy", "cells", "exploration", "cap_met", "needs_review",
@@ -361,7 +495,10 @@ def validate_selection(selection, semantic, capability, cost_policy, *, decision
     legacy = decision_format in (LEGACY_DECISION_V7, LEGACY_DECISION_V8)
     validate_policy(selection["sampling_policy"], legacy=legacy,
                     count_aged=decision_format in (LEGACY_DECISION_V9, LEGACY_DECISION_V10))
+    # v11 gives active time and tokens beliefs, and checks credit on its 80% point.
+    amounts = decision_format == DECISION_FORMAT
     policy = selection["sampling_policy"]
+    candidates = {(c["model"], c["effort"]): c for c in inventory}
     constants = selection["constants"]
     keys(constants, ["C_loud", "C_silent", "lambda_per_hour", "epsilon"], ["explore_within"], "selection.constants")
     for k, v in constants.items():
@@ -377,7 +514,9 @@ def validate_selection(selection, semantic, capability, cost_policy, *, decision
         raise HowHardError("decision.selection.cells: expected array")
     for row in selection["cells"]:
         keys(row, ["model", "family", "effort", "P_clean", "P_loud", "P_silent", "C_run", "session_cost_usd", "cost_per_credit", "needed_credit_usd", "cost_basis", "T", "expected_attempts", "J", "P_silent_accepted", "admissible", "sampled_J", "credit_budget", "available_credit_usd", "credit_ok"]
-             + ([] if legacy else ["admission_risk"]) + (["pi", "tier"] if tiered else []), where="selection cell")
+             + ([] if legacy else ["admission_risk"]) + (["pi", "tier"] if tiered else [])
+             + (["active_time", "token_beliefs", "credit_variance", "credit_p80_usd"] if amounts else []),
+             where="selection cell")
         for field in ("T", "expected_attempts", "J", "sampled_J"):
             number(row[field], "selection."+field, nonnegative=True)
         cost_per_credit = number(row["cost_per_credit"], "selection.cost_per_credit", nonnegative=True)
@@ -403,9 +542,17 @@ def validate_selection(selection, semantic, capability, cost_policy, *, decision
         expected_available = row["credit_budget"]["available_credit_usd"] if row["credit_budget"] is not None else None
         if row["available_credit_usd"] != expected_available:
             raise HowHardError("decision.selection: available_credit_usd does not match credit_budget")
-        expected_ok = True if row["available_credit_usd"] is None else (
-            needed_credit is not None and needed_credit <= row["available_credit_usd"]
-        )
+        if amounts:
+            for field in ("credit_variance", "credit_p80_usd"):
+                if (row[field] is None) != (needed_credit is None):
+                    raise HowHardError(f"decision.selection: {field} must be known exactly when needed_credit_usd is")
+                if row[field] is not None:
+                    number(row[field], "selection."+field, nonnegative=True)
+            expected_ok = credit_fits(needed_credit, row["credit_p80_usd"], row["available_credit_usd"])
+        else:
+            expected_ok = True if row["available_credit_usd"] is None else (
+                needed_credit is not None and needed_credit <= row["available_credit_usd"]
+            )
         if type(row["credit_ok"]) is not bool or row["credit_ok"] != expected_ok:
             raise HowHardError("decision.selection: inconsistent credit_ok status")
         for field in ("P_clean", "P_loud", "P_silent", "P_silent_accepted"):
@@ -454,7 +601,18 @@ def validate_selection(selection, semantic, capability, cost_policy, *, decision
             elif row["admissible"] != (risk <= constants["epsilon"]):
                 raise HowHardError("decision.selection: accepted-result risk/cap mismatch")
             loud, silent = row["P_loud"]["mean"], row["P_silent"]["mean"]
-        if decision_format == LEGACY_DECISION_V7:
+        if amounts:
+            beliefs = cell_beliefs([(e["weight"], panels[e["key"]][pair]) for e in experts], pair,
+                                   semantic["duration_observations"], policy)
+            expected_hours = beliefs["active_time"]["expected_seconds"] / 3600
+            candidate = candidates.get((row["model"], row["effort"]))
+            if candidate is None:
+                raise HowHardError("decision.selection: cell does not match native candidate inventory")
+            expected_credit = run_credit(beliefs["token_beliefs"], candidate.get("rate_card"), candidate.get("usd_per_mtok"))
+            for field, value in zip(("needed_credit_usd", "credit_variance", "credit_p80_usd"), expected_credit or (None,) * 3):
+                if not same_number(row[field], value):
+                    raise HowHardError(f"decision.selection: {field} does not match the token beliefs at the cell's prices")
+        elif decision_format == LEGACY_DECISION_V7:
             expected_hours = sum(e["weight"]*panels[e["key"]][pair]["seconds"] for e in experts)/3600
         else:
             duration_obs = semantic["duration_observations"]
