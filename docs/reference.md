@@ -1095,7 +1095,8 @@ each candidate's similarity, days, weight on record, cell, agent, outcome, activ
 and ticket, so the candidates are weighed again at any half-life and discount without
 the reranker. The corrected prediction is rebuilt from the routed runs observed before
 the decision, each as amended then, without the receipt's candidates; the guesses,
-hosts and agent labels come from the receipts. The caught share is rebuilt from the
+hosts and agent labels come from the receipts, and a run under a receipt older than v11
+takes the host and agent names imported for it, as they stand now. The caught share is rebuilt from the
 failed routed runs observed before the decision. At a receipt's own constants every
 rebuilt belief equals the stored one, with one exception. The rebuild leaves out of the
 ladders only the candidates a receipt stores. When a decision's prototypes matched more

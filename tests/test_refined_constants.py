@@ -334,7 +334,8 @@ def test_a_rescoring_at_the_receipts_own_constants_rebuilds_its_beliefs(tmp_path
     """Each scored run is predicted from what was observed before its decision, amendments included.
 
     The record has two hosts, two agents, similar runs counted at their discounts, a run amended
-    between two decisions, and runs under a v10 receipt, which count as history only.
+    between two decisions, and runs under a v10 receipt with imported names, which count as
+    history only.
     """
     (tmp_path / "howhard.toml").write_text('[capability]\nreserved_forecast_cells = 0\n' + SETTINGS)
     monkeypatch.setattr("howhard.evidence.datetime", Clock)
@@ -357,6 +358,9 @@ def test_a_rescoring_at_the_receipts_own_constants_rebuilds_its_beliefs(tmp_path
     legacy = {**first, "decision_id": digest(older)}
     append(engine, [row("v10-1", legacy, at(0) + timedelta(hours=4), "clean", active=60.),
                     row("v10-2", legacy, at(0) + timedelta(hours=5), "loud", active=200.)])
+    # The v10 receipt names no host or agent: its runs take the names imported for them.
+    engine.import_names({"hosts": {digest(older): "host-one"},
+                         "agents": {"opus": "alpha", "sonnet": "alpha", "haiku": "beta"}})
     at(1)
     second = route(engine, "Repair rollback retries", inventory, host="host-two")
     append(engine, [row("b-1", second, at(1) + timedelta(hours=1), "silent", ticket="t-3", active=80.),

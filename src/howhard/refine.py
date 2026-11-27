@@ -214,20 +214,22 @@ class Record:
         from .prediction import scale, stored_forecast
         from .storage import effective_active_seconds, effective_rows
         from .success import log_amount
+        from .names import family_agent, host as named_host
         config = engine.config
         self.rows_digest = digest(engine.raw_rows)
-        forecasts, hosts = engine.receipt_forecasts, engine.receipt_hosts
-        scoring = {}
+        # Names an operator imported for runs whose receipt stores none, as they stand now.
+        names = getattr(engine, "names", None)
+        forecasts, hosts, scoring = engine.receipt_forecasts, {}, {}
 
         def receipt(decision_id):
+            """What a stored decision gives: its forecasts, its host and forecast cells, and its scoring inputs."""
             if decision_id not in scoring:
                 value = load(config, decision_id, for_scoring=True) if exists(config, decision_id) else None
                 scoring[decision_id] = value and _scoring_info(value)
                 if decision_id not in forecasts:
                     forecasts[decision_id] = None if value is None else stored_forecast(value)
-                if decision_id not in hosts:
-                    hosts[decision_id] = None if value is None else (value.get("host"), frozenset(
-                        (c["family"], c["effort"]) for c in value["semantic"]["worlds"]["llm"]))
+                hosts[decision_id] = None if value is None else (named_host(value, decision_id, names), frozenset(
+                    (c["family"], c["effort"]) for c in value["semantic"]["worlds"]["llm"]))
             return forecasts[decision_id], hosts[decision_id], scoring[decision_id]
 
         # Each run with its amendments, in the order the record holds them.
@@ -258,8 +260,12 @@ class Record:
             if guessed is None and not in_caught:
                 continue
             self.root_index[root_id] = index
-            host = stored["host"] if stored is not None else named[0]
-            agent = stored["agents"].get((original["model"], original["effort"])) if stored is not None else None
+            # A v11 receipt names the run's host and agent; an older one takes the imported names.
+            host = named[0]
+            if stored is not None and stored["named"]:
+                agent = stored["agents"].get((original["model"], original["effort"]))
+            else:
+                agent = family_agent(pair[0], names)
             path_ = (host, agent, pair[0], pair[1])
             prefix_codes = [codes[d].setdefault(path_[:d], len(codes[d])) for d in range(5)]
             ticket = -1 if original["ticket"] is None else tickets.setdefault(original["ticket"], len(tickets))
