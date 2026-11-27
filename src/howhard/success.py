@@ -18,8 +18,8 @@ from .validation import HowHardError, keys, number
 
 DEFAULTS = {"uncertainty_multiplier": 1., "admission_quantile": .8, "trial_probability": .2,
             "all_excluded_factor": .5, "half_life_days": 14., "comparison_cap": 256,
-            "model_worth": 5., "task_worth_amount": 1., "duration_miss": 1.3, "scatter_share": .5,
-            "task_worth_silent": 32., "task_worth_loud": 16.}
+            "model_worth": 5., "rung_worth": 40., "task_worth_amount": 1., "duration_miss": 1.3,
+            "scatter_share": .5, "task_worth_silent": 32., "task_worth_loud": 16.}
 # The Dirichlet posterior's three constants. Outcome beliefs on the log-odds scale do not read
 # them: a configuration that still sets one loads with a notice, and only v7-v10 receipts store them.
 RETIRED = ("prior_strength", "min_concentration", "max_concentration")
@@ -102,26 +102,24 @@ def merge_forecasts(forecasts):
     return centre, math.sqrt(math.fsum(w * (s ** 2 + (m - centre) ** 2) for w, m, s in logs))
 
 
-def amount_belief(forecasts, runs, policy, unit, *, zero=False):
+def amount_belief(start, runs, policy, unit):
     """Log-normal belief for active time or one token count, after same-cell runs.
 
-    ``forecasts`` is ``[(expert weight, forecast, stated range or None)]`` and ``runs``
-    is ``[(weight, recorded amount)]``. The belief starts at the merged forecast with
-    spread ``max(stated spread, tau / sqrt(N_start))`` and a centre that makes its
-    average equal the forecast; each run then pulls the centre toward its own amount
-    and narrows the belief by its weight. With ``zero``, a value every expert forecasts
-    at zero with no non-zero upper end is exactly zero and has no spread.
+    ``start`` is the value's entry of the cell's corrected prediction (``prediction.value``)
+    and ``runs`` is ``[(weight, recorded amount)]``. The belief starts at the prediction with
+    the spread ``s`` that entry gives and a centre that makes its average equal the
+    prediction; each run then pulls the centre toward its own amount and narrows the belief
+    by its weight, against the run-to-run scatter ``tau = D * sqrt(scatter_share)``. A value
+    predicted at exactly zero stays zero and has no spread.
     """
-    worth, miss = policy["model_worth"], policy["duration_miss"]
-    n_start = 1 / (1 / worth + 1 / policy["task_worth_amount"])
-    if zero and all(v == 0 and (r is None or r[1] == 0) for _, v, r in forecasts):
-        return {"forecast_" + unit: 0., "stated_spread": 0., "worth": worth, "N_start": n_start, "D": miss,
-                "prior_centre": None, "prior_spread": 0., "centre": None, "spread": 0.,
+    record = {"forecast_" + unit: start["guess"], "prediction_" + unit: start["prediction"],
+              "stated_spread": start["s_stated"], "worth": start["worth"], "N_start": start["N_start"], "D": start["D"]}
+    if start["prediction"] == 0:
+        return {**record, "prior_centre": None, "prior_spread": 0., "centre": None, "spread": 0.,
                 "evidence_weight": 0., "expected_" + unit: 0.}
-    tau = miss * math.sqrt(policy["scatter_share"])
-    log_forecast, stated = merge_forecasts(forecasts)
-    prior_spread = max(stated, tau / math.sqrt(n_start))
-    prior_centre = log_forecast - prior_spread ** 2 / 2
+    tau = start["D"] * math.sqrt(policy["scatter_share"])
+    prior_spread = start["s"]
+    prior_centre = math.log(start["prediction"]) - prior_spread ** 2 / 2
     runs = [(w, log_amount(v)) for w, v in runs if w > 0]
     weight = math.fsum(w for w, _ in runs)
     centre, spread = prior_centre, prior_spread
@@ -129,35 +127,30 @@ def amount_belief(forecasts, runs, policy, unit, *, zero=False):
         variance = 1 / (1 / prior_spread ** 2 + weight / tau ** 2)
         centre = prior_centre + variance * math.fsum(w * (y - prior_centre) for w, y in runs) / tau ** 2
         spread = math.sqrt(variance)
-    return {"forecast_" + unit: math.exp(log_forecast), "stated_spread": stated, "worth": worth,
-            "N_start": n_start, "D": miss, "prior_centre": prior_centre, "prior_spread": prior_spread,
+    return {**record, "prior_centre": prior_centre, "prior_spread": prior_spread,
             "centre": centre, "spread": spread, "evidence_weight": weight,
             "expected_" + unit: math.exp(centre + spread ** 2 / 2)}
 
 
-def cell_beliefs(forecasts, pair, duration_observations, policy):
+def cell_beliefs(values, pair, duration_observations, policy):
     """Beliefs for one cell: ``active_time`` and ``token_beliefs``.
 
-    ``forecasts`` is ``[(expert weight, that expert's forecast row for the cell)]``.
-    Every token kind has a belief when every expert states usage by kind; otherwise
-    total ``tokens`` has the one belief. Runs are the cell's own rows from the
-    active-time reader; a kind is updated by the runs that record usage by kind, and
-    the total by the runs that record ``tokens``.
+    ``values`` is the cell's entry of the corrected prediction. Every token kind has a
+    belief when every expert states usage by kind; otherwise total ``tokens`` has the one
+    belief. Runs are the cell's own rows from the active-time reader; a kind is updated by
+    the runs that record usage by kind, and the total by the runs that record ``tokens``.
     """
     from .accounting import CATEGORIES
     runs = [obs for obs in duration_observations if (obs["family"], obs["effort"]) == pair]
-    active = amount_belief([(w, row["seconds"], row.get("seconds_ci")) for w, row in forecasts],
-                           [(obs["weight"], obs["active_seconds"]) for obs in runs], policy, "seconds")
-    if all("token_usage" in row for _, row in forecasts):
+    active = amount_belief(values["seconds"], [(obs["weight"], obs["active_seconds"]) for obs in runs], policy, "seconds")
+    if "tokens" not in values:
         measured = [obs for obs in runs if obs["token_usage"] is not None]
-        tokens = {kind: amount_belief(
-            [(w, row["token_usage"][kind], row.get("token_usage_ci", {}).get(kind)) for w, row in forecasts],
-            [(obs["weight"], obs["token_usage"][kind]) for obs in measured], policy, "tokens", zero=True)
-            for kind in CATEGORIES}
+        tokens = {kind: amount_belief(values[kind], [(obs["weight"], obs["token_usage"][kind]) for obs in measured],
+                                      policy, "tokens") for kind in CATEGORIES}
     else:
         tokens = {"tokens": amount_belief(
-            [(w, row["tokens"], None) for w, row in forecasts],
-            [(obs["weight"], obs["tokens"]) for obs in runs if obs["tokens"] is not None], policy, "tokens", zero=True)}
+            values["tokens"], [(obs["weight"], obs["tokens"]) for obs in runs if obs["tokens"] is not None],
+            policy, "tokens")}
     return {"active_time": active, "token_beliefs": tokens}
 
 
@@ -239,8 +232,8 @@ def validate_policy(policy, *, legacy=False, count_aged=False):
         raise HowHardError("sampling.trial_probability: expected a probability in [0, admission_quantile]")
     if policy["all_excluded_factor"] > 1:
         raise HowHardError("sampling.all_excluded_factor: expected a factor in [0, 1]")
-    if min(policy[k] for k in ("model_worth", "task_worth_amount", "duration_miss")) <= 0:
-        raise HowHardError("sampling: model_worth, task_worth_amount and duration_miss must be positive")
+    if min(policy[k] for k in ("model_worth", "rung_worth", "task_worth_amount", "duration_miss")) <= 0:
+        raise HowHardError("sampling: model_worth, rung_worth, task_worth_amount and duration_miss must be positive")
     if not 0 < policy["scatter_share"] <= 1:
         raise HowHardError("sampling.scatter_share: expected a share in (0, 1]")
     for key in ("task_worth_silent", "task_worth_loud"):
@@ -395,7 +388,8 @@ def merged_forecast(panels, experts, pair):
     """One forecast per rate for a cell: the experts' guesses merged on the log-odds scale.
 
     ``m = sum w_k m_k`` and ``s_stated^2 = sum w_k (s_k^2 + (m_k - m)^2)``, so experts that
-    disagree make the forecast less certain. The prediction is ``logistic(m)``, held.
+    disagree make the forecast less certain. The merged guess is ``logistic(m)``, held; the
+    record then corrects it into the prediction a belief starts from (``prediction.value``).
     """
     guesses = [(e["weight"], rate_guesses(panels[e["key"]][pair])) for e in experts]
     merged = {}
@@ -405,11 +399,6 @@ def merged_forecast(panels, experts, pair):
         merged[rate] = {"prediction": min(PREDICTION_HOLD[1], max(PREDICTION_HOLD[0], _sigmoid(centre))),
                         "stated_spread": math.sqrt(max(0., variance))}
     return merged
-
-
-def start_worth(rate, policy):
-    """``N_start``: how many runs the prediction is worth for this rate."""
-    return 1. / (1. / policy["model_worth"] + 1. / policy[RATES[rate][0]])
 
 
 def start_spread(prediction, stated_spread, n_start):
@@ -461,17 +450,16 @@ def belief_variance(belief):
     return max(0., float(b @ GRID_P ** 2) - float(b @ GRID_P) ** 2)
 
 
-def rate_belief(rate, forecast, counts, policy, *, epsilon=None):
-    """One rate's belief: the start from its merged forecast, reshaped by the counted runs.
+def rate_belief(rate, start, counts, *, epsilon=None):
+    """One rate's belief: the start from its corrected prediction, reshaped by the counted runs.
 
+    ``start`` is the rate's entry of the cell's corrected prediction (``prediction.value``) and
     ``counts`` is ``[n_yes, n_no]``. The start counts as ``N_start`` runs and each counted run
-    as its weight, so the forecast never fades out. With ``epsilon``, the accepted-defect share
-    also carries ``pi``, the share of the belief at or below it.
+    as its weight, so the prediction never fades out. With ``epsilon``, the accepted-defect
+    share also carries ``pi``, the share of the belief at or below it.
     """
-    n_start = start_worth(rate, policy)
-    belief = {"prediction": forecast["prediction"], "stated_spread": forecast["stated_spread"], "n_start": n_start,
-              "spread": start_spread(forecast["prediction"], forecast["stated_spread"], n_start),
-              "counts": [float(n) for n in counts]}
+    belief = {"prediction": start["prediction"], "stated_spread": start["s_stated"], "n_start": start["N_start"],
+              "spread": start["s"], "counts": [float(n) for n in counts]}
     centre, b, total = _belief_grid(belief)
     mean = float(b @ GRID_P)
     lower, upper = (belief_point(belief, q) for q in INTERVAL)
@@ -485,16 +473,16 @@ def rate_belief(rate, forecast, counts, policy, *, epsilon=None):
     return belief
 
 
-def outcome_beliefs(panels, experts, pair, outcome_observations, policy, *, epsilon=None):
+def outcome_beliefs(values, pair, outcome_observations, *, epsilon=None):
     """The cell's two independent beliefs: ``loud`` for theta_l and ``silent`` for S.
 
-    The accepted-defect share counts silent against clean runs; the loud rate counts loud
-    against clean and silent ones. Only this cell's counted runs enter.
+    ``values`` is the cell's entry of the corrected prediction. The accepted-defect share
+    counts silent against clean runs; the loud rate counts loud against clean and silent
+    ones. Only this cell's counted runs enter.
     """
-    forecast = merged_forecast(panels, experts, pair)
     clean, loud, silent = outcome_counts(pair, outcome_observations)
-    return {"loud": rate_belief("loud", forecast["loud"], (loud, clean + silent), policy),
-            "silent": rate_belief("silent", forecast["silent"], (silent, clean), policy, epsilon=epsilon)}
+    return {"loud": rate_belief("loud", values["loud"], (loud, clean + silent)),
+            "silent": rate_belief("silent", values["silent"], (silent, clean), epsilon=epsilon)}
 
 
 def belief_probabilities(beliefs):
@@ -609,17 +597,16 @@ def calibration(result, state, expert, cell):
     """A cell's frozen draw inputs: its two outcome beliefs and the first-order spread of its cost.
 
     Every input is the cell's own belief, already merged over the experts: the two rates
-    from one merged forecast each plus only this cell's counted runs, and active time and
+    from one corrected prediction each plus only this cell's counted runs, and active time and
     run cost as their averages ``T`` and ``C_run``. Experts that disagree widen those
     beliefs, so the spread has no separate between-expert term. The time term of the
     spread is ``E[T]^2 * (exp(s'^2) - 1)``, and run cost is exact.
     """
+    from .prediction import by_cell
     from .semantic import panel_lookup
     pair = cell["family"], cell["effort"]
-    policy = result["sampling_policy"]
     constants = result["constants"]
-    panels = {key: panel_lookup(panel) for key, panel in state["worlds"].items()}
-    beliefs = outcome_beliefs(panels, state["beliefs"]["experts"], pair, state.get("outcome_observations", []), policy,
+    beliefs = outcome_beliefs(by_cell(state["prediction"])[pair], pair, state.get("outcome_observations", []),
                               epsilon=constants["epsilon"])
     probabilities = belief_probabilities(beliefs)
     loud, silent = probabilities[1], probabilities[2]
@@ -677,6 +664,11 @@ def validate_selection(selection, semantic, capability, cost_policy, *, decision
     from .semantic import OUTCOMES, panel_lookup
     panels = {key: panel_lookup(panel) for key, panel in semantic["worlds"].items()}
     experts = semantic["beliefs"]["experts"]
+    if tiered:
+        # Every belief of a v11 cell starts from the cell's corrected prediction, which must
+        # follow from its stored sums under this selection's own policy.
+        from .prediction import validate as validate_prediction
+        predicted = validate_prediction(semantic["prediction"], panels, experts, set(panels["llm"]), policy)
     known = {(c["family"], c["effort"]): c for c in capability["cells"]}
     seen = set()
     if not isinstance(selection["cells"], list):
@@ -750,9 +742,9 @@ def validate_selection(selection, semantic, capability, cost_policy, *, decision
                 raise HowHardError("decision.selection: accepted-result risk/cap mismatch")
         else:
             if tiered:
-                # Recompute the cell's two beliefs from the frozen forecasts and counted runs.
+                # Recompute the cell's two beliefs from the frozen prediction and counted runs.
                 intervals = belief_intervals(outcome_beliefs(
-                    panels, experts, pair, semantic["outcome_observations"], policy, epsilon=constants["epsilon"]), policy)
+                    predicted[pair], pair, semantic["outcome_observations"], epsilon=constants["epsilon"]), policy)
             else:
                 intervals, _ = posterior_intervals(
                     panels,
@@ -781,8 +773,7 @@ def validate_selection(selection, semantic, capability, cost_policy, *, decision
                 raise HowHardError("decision.selection: accepted-result risk/cap mismatch")
             loud, silent = row["P_loud"]["mean"], row["P_silent"]["mean"]
         if amounts:
-            beliefs = cell_beliefs([(e["weight"], panels[e["key"]][pair]) for e in experts], pair,
-                                   semantic["duration_observations"], policy)
+            beliefs = cell_beliefs(predicted[pair], pair, semantic["duration_observations"], policy)
             expected_hours = beliefs["active_time"]["expected_seconds"] / 3600
             candidate = candidates.get((row["model"], row["effort"]))
             if candidate is None:

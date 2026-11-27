@@ -22,7 +22,8 @@ from howhard.decisions import load
 from howhard.payload_store import put
 from howhard.report import report
 from howhard.storage import locked
-from howhard.success import cost, merged_forecast, outcome_beliefs
+from howhard.prediction import assemble, by_cell
+from howhard.success import DEFAULTS, cost, merged_forecast, outcome_beliefs
 from howhard.validation import HowHardError
 from legacy_receipts import to_v7, to_v8, to_v9, to_v10
 from test_capability_filter import SimilarityDouble, filtering
@@ -268,19 +269,20 @@ def test_experts_merge_into_one_forecast_per_rate_and_disagreement_widens_it():
         assert alone["stated_spread"] < merged["silent"]["stated_spread"]
 
     # Counted runs: with n_c = 4 and n_s = 0, E[S] = 0.053 and pi = 0.85.
-    policy = {"model_worth": 5., "task_worth_silent": 32., "task_worth_loud": 16., "admission_quantile": .8}
-    example = {"llm": {pair: EXAMPLE}}
+    example = {"llm": {pair: {**EXAMPLE, "tokens": 1000, "seconds": 3600}}}
     runs = [{"family": "worker", "effort": "high", "outcome": "clean", "weight": 1.}] * 4
     forecaster = [{"key": "llm", "weight": 1.}]
-    start = outcome_beliefs(example, forecaster, pair, [], policy, epsilon=EPSILON)
-    after = outcome_beliefs(example, forecaster, pair, runs, policy, epsilon=EPSILON)
+    # With no run on record on other tasks, each belief starts from the merged forecast itself.
+    values = by_cell(assemble({"kinds": {}, "cells": {}}, example, forecaster, [("cell", pair)], DEFAULTS))[pair]
+    assert values["silent"]["prediction"] == merged_forecast(example, forecaster, pair)["silent"]["prediction"]
+    start = outcome_beliefs(values, pair, [], epsilon=EPSILON)
+    after = outcome_beliefs(values, pair, runs, epsilon=EPSILON)
     assert start["silent"]["mean"] == pytest.approx(.100, abs=5e-4) and start["silent"]["pi"] == pytest.approx(.70, abs=5e-3)
     assert after["silent"]["counts"] == [0., 4.] and after["loud"]["counts"] == [0., 4.]
     assert after["silent"]["mean"] == pytest.approx(.053, abs=5e-4) and after["silent"]["pi"] == pytest.approx(.85, abs=5e-3)
     # The start itself is untouched by the runs: the forecast keeps its weight of N_start runs,
     # for four counted runs and for four hundred.
-    many = outcome_beliefs(example, forecaster, pair, runs * 96 + [{**runs[0], "outcome": "silent"}] * 16, policy,
-                           epsilon=EPSILON)
+    many = outcome_beliefs(values, pair, runs * 96 + [{**runs[0], "outcome": "silent"}] * 16, epsilon=EPSILON)
     assert many["silent"]["counts"] == [16., 384.] and many["loud"]["counts"] == [0., 400.]
     for counted in (after, many):
         for rate in ("loud", "silent"):
