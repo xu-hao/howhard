@@ -132,7 +132,8 @@ hours. {math}`C_{\mathrm{run}}` prices the averages of the token beliefs at the
 candidate's rates; section 7 gives its spread. A token kind that every expert forecasts
 at zero, with no non-zero upper end, is exactly zero. A belief is updated by the runs
 that record its value: a run with a complete usage record and no active time moves the
-token beliefs and leaves the active-time belief unchanged.
+token beliefs and leaves the active-time belief unchanged, and a run that records only
+a total token count moves the belief for total tokens alone.
 
 ### Why the retry factor matters
 

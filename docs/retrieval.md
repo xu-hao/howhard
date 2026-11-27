@@ -190,7 +190,7 @@ weighs `0.8 * 0.5 * 0.25 = 0.10`, and a run under another agent with `sim = 0.4`
 | Reader | Runs it counts | Weight |
 | --- | --- | --- |
 | Outcomes | Every candidate, whatever cell ran it, for each forecast cell | `w_i` with `delta`, after the limit for that cell |
-| Active time and tokens | The candidates of the same cell that record an active time or a complete execution usage | `m_i * sim_i * a_i`, then the limit over the cell's own runs |
+| Active time and tokens | The candidates of the same cell that record an active time, a complete execution usage or a total `tokens` count | `m_i * sim_i * a_i`, then the limit over the cell's own runs |
 | Capability | The candidates whose cell is in the inventory | `m_i * sim_i * strength_i * a_i`, then the limit over this reader's runs |
 
 Only the outcome reader has `delta`: runs of other cells leave a cell's active-time and
@@ -203,7 +203,8 @@ weights feed the {ref}`beliefs for active time and tokens <amount-beliefs>`: tho
 record an active time update active time, those that record total `tokens` update the
 total, and those with a complete execution usage update each token kind. A run with a
 complete execution usage and no active time therefore moves the token beliefs and
-leaves the active-time belief unchanged.
+leaves the active-time belief unchanged, and a run that records only a total `tokens`
+count moves the total-`tokens` belief alone.
 
 **What the receipt stores.** `semantic.evidence_candidates` holds the time the request
 was prepared (`prepared_at`), both constants (`half_life_days`, `comparison_cap`), the

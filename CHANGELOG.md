@@ -319,7 +319,9 @@
   same-cell run that records a `complete` `execution_usage` and no active time, at the
   weight a run of its own cell carries: such a run has a row in
   `semantic.duration_observations` with `active_seconds` null, moves the token beliefs
-  and leaves the active-time belief unchanged. v11 decisions stored by earlier
+  and leaves the active-time belief unchanged. A same-cell run that records only a total
+  `tokens` count, with neither an active time nor complete usage, has a row as well and
+  moves the total-`tokens` belief alone. v11 decisions stored by earlier
   unreleased builds no longer load. `v10`, `v9`, `v8` and `v7` receipts keep the cost at
   the posterior means and their recorded draw, are not replayed, and keep loading,
   observing, replaying and reporting.

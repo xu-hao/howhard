@@ -557,9 +557,12 @@ whose `execution_usage` is `complete`, whether or not the run records an active 
 `duration_observations` counted from it, carries what its run recorded:
 `active_seconds` (or null), `tokens` (the total, or null) and `token_usage` (the count of
 each kind over a complete usage envelope, or null). A same-cell candidate has a row when
-it records an active time or complete usage. A run without complete usage leaves the
+it records an active time, complete usage or a total `tokens` count, and each belief
+reads only the rows that record its value. A run without complete usage leaves the
 kinds unchanged, and a run with complete usage and no active time moves the token
-beliefs and leaves the active-time belief unchanged.
+beliefs and leaves the active-time belief unchanged. A run that records only a total
+`tokens` count, with neither an active time nor complete usage, moves the total-`tokens`
+belief alone: not the active-time belief, and no token-kind belief.
 
 - Zero: a kind that every expert forecasts at zero, with no non-zero upper end, is
   exactly zero and has no spread. No run moves it.

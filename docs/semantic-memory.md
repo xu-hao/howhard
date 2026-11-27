@@ -325,7 +325,8 @@ and each token kind have one {ref}`belief per cell <amount-beliefs>`: the expert
 forecasts are merged on the log scale, with their disagreement and stated ranges as the
 stated spread, and the cell's own {ref}`evidence candidates <evidence-candidates>` update
 it. A belief is updated by the runs that record its value, so a run with complete usage
-and no active time moves the token beliefs alone. The cost is averaged over the cell's
+and no active time moves the token beliefs alone, and a run that records only a total
+`tokens` count moves the total-`tokens` belief alone. The cost is averaged over the cell's
 beliefs: its loud rate, its accepted-defect share, its active time and the credit of one
 run. Its admission tiers use the cell's
 belief for the accepted-defect share: the share of that belief within epsilon.

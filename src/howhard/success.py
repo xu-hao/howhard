@@ -148,7 +148,8 @@ def cell_beliefs(values, pair, duration_observations, policy):
     by the runs that record its value: active time by the runs with an active time, a kind
     by the runs that record usage by kind, and the total by the runs that record ``tokens``.
     A run with usage by kind and no active time therefore moves the token beliefs and leaves
-    active time alone.
+    active time alone, and a run that records only a total ``tokens`` count moves the
+    total-tokens belief alone.
     """
     from .accounting import CATEGORIES
     runs = [obs for obs in duration_observations if (obs["family"], obs["effort"]) == pair]

@@ -642,14 +642,16 @@ def outcome_observations(candidates):
 
 
 def duration_observations(candidates, pairs):
-    """Runs of each forecast cell itself that record an active time or usage by kind: ``m * sim * a``, limited per ticket.
+    """Runs of each forecast cell itself that record an amount: ``m * sim * a``, limited per ticket.
 
     Active time and tokens count runs of the same cell only: no related cell's run enters, and
     the per-ticket limit runs over the cell's own candidate runs. Each row carries what its
     run recorded for the amount beliefs: ``active_seconds``, total ``tokens``, and
-    ``token_usage`` by kind when the run's execution usage is complete. A run with complete
-    usage and no active time has ``active_seconds`` null: it moves the token beliefs and
-    leaves the active-time belief unchanged.
+    ``token_usage`` by kind when the run's execution usage is complete. A run has a row when
+    it records any of the three, and each belief reads only the rows that record its value.
+    A run with complete usage and no active time has ``active_seconds`` null: it moves the
+    token beliefs and leaves the active-time belief unchanged. A run that records only a
+    total ``tokens`` count moves the total-tokens belief alone.
     """
     from . import evidence
     result = []
@@ -659,7 +661,7 @@ def duration_observations(candidates, pairs):
         shares = evidence.ticket_shares([(item["ticket"], value) for item, value in own])
         for (item, value), share in zip(own, shares):
             active = item["active_seconds"]
-            if active is not None or item["token_usage"] is not None:
+            if active is not None or item["token_usage"] is not None or item["tokens"] is not None:
                 result.append({"id": item["id"], "family": pair[0], "effort": pair[1],
                                "active_seconds": None if active is None else float(active), "tokens": item["tokens"],
                                "token_usage": deepcopy(item["token_usage"]), "weight": value * share})

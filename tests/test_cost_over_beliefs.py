@@ -529,7 +529,63 @@ def test_run_with_complete_usage_and_no_active_time_moves_the_token_beliefs_and_
             load(engine.config, bad)
 
 
-def test_run_with_neither_an_active_time_nor_complete_usage_moves_no_amount_belief(tmp_path):
+def test_run_with_only_a_total_token_count_moves_the_total_tokens_belief_alone(tmp_path):
+    engine = engine_at(tmp_path)
+    # Priced per total token with no usage by kind: the cell has one token belief, for total tokens.
+    cells = [{"model": A, "effort": "high", "usd_per_mtok": 10.}]
+    row = {"clean": .98, "loud": .01, "silent": .01, "tokens": 10_000, "seconds": 3600}
+    _, _, before = decide(engine, cells, {(A, "high"): row})
+    # The run records a total token count, and neither an active time, a total time nor usage by kind.
+    engine.observe("task", A, "high", "clean", native=True, task_text=stated(.5), id="total-only", tokens=1000)
+    _, _, after = decide(engine, cells)
+
+    candidate = after["semantic"]["evidence_candidates"]["candidates"][0]
+    assert (candidate["active_seconds"], candidate["tokens"], candidate["token_usage"]) == (None, 1000, None)
+    [observed] = after["semantic"]["duration_observations"]
+    weight = after["semantic"]["outcome_observations"][0]["weight"]
+    assert (observed["active_seconds"], observed["tokens"], observed["token_usage"]) == (None, 1000, None)
+    assert observed["weight"] == weight == pytest.approx(.5, rel=1e-4)
+    stored, start = cell(after, A), cell(before, A)
+    assert stored["active_time"] == start["active_time"] and stored["active_time"]["evidence_weight"] == 0.
+    assert list(stored["token_beliefs"]) == ["tokens"]
+    belief, tau = stored["token_beliefs"]["tokens"], 1.3 * math.sqrt(.5)
+    assert belief["evidence_weight"] == weight
+    variance = 1 / (1 / belief["prior_spread"] ** 2 + weight / tau ** 2)
+    assert belief["spread"] == pytest.approx(math.sqrt(variance)) and belief["spread"] < start["token_beliefs"]["tokens"]["spread"]
+    assert belief["centre"] == pytest.approx(
+        belief["prior_centre"] + variance * weight * (math.log(1000) - belief["prior_centre"]) / tau ** 2)
+    assert stored["needed_credit_usd"] < start["needed_credit_usd"] == pytest.approx(.1)
+
+    # The receipt validation recomputes the same row from the scored candidates.
+    receipt = load(engine.config, after["decision_id"])
+    for change, match in (
+            (lambda r: r["semantic"]["duration_observations"].clear(), "duration_observations"),
+            (lambda r: r["semantic"]["duration_observations"][0].update(tokens=5000), "duration_observations"),
+            (lambda r: r["selection"]["cells"][0]["token_beliefs"]["tokens"].update(evidence_weight=0.), r"token_beliefs\.tokens")):
+        bad = deepcopy(receipt)
+        change(bad)
+        with pytest.raises(HowHardError, match=match):
+            load(engine.config, bad)
+    # An older receipt read active time alone, so this run has no row there.
+    assert load(engine.config, to_v10(receipt))["semantic"]["duration_observations"] == []
+
+
+def test_total_token_count_moves_no_token_kind_belief_when_usage_is_forecast_by_kind(tmp_path):
+    engine = engine_at(tmp_path)
+    cells = [priced(A)]
+    _, _, before = decide(engine, cells, {(A, "high"): by_kind(counts(input=6000, output=2000, cache_read=4000))})
+    engine.observe("task", A, "high", "clean", native=True, task_text=stated(.5), id="total-only", tokens=1000)
+    _, _, after = decide(engine, cells)
+    # The run has its reader row, and no belief of this cell reads a total token count.
+    [observed] = after["semantic"]["duration_observations"]
+    assert (observed["active_seconds"], observed["tokens"], observed["token_usage"]) == (None, 1000, None)
+    assert set(cell(after, A)["token_beliefs"]) == set(counts())
+    assert cell(after, A)["token_beliefs"] == cell(before, A)["token_beliefs"]
+    assert cell(after, A)["active_time"] == cell(before, A)["active_time"]
+    load(engine.config, after["decision_id"])
+
+
+def test_run_that_records_no_amount_has_no_reader_row_and_moves_no_amount_belief(tmp_path):
     engine = engine_at(tmp_path)
     cells = [priced(A)]
     _, _, before = decide(engine, cells, {(A, "high"): by_kind(counts(input=6000, output=2000, cache_read=4000))})
