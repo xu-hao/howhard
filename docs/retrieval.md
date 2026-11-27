@@ -58,10 +58,16 @@ at most 200, and the cross-encoder orders the final eight. Scores are ordering s
 not calibrated relevance probabilities: there is no arbitrary confidence cutoff.
 Empty candidate pools return no results. Model/index failures are explicit errors.
 
+These eight results are what the reader is shown. Which recorded runs are counted as
+evidence, and how much each weighs, is decided separately and does not depend on them:
+see {ref}`which recorded runs count <evidence-candidates>`. The same cross-encoder
+scores those runs, so a request with matched history loads it even when the corpus fits
+the eight-result budget.
+
 Native runtime initialization stays lazy: dense search initializes ONNX Runtime before
 loading USearch, whose globally loaded native symbols can otherwise crash a later ONNX
-import. This also protects an ONNX reranker paired with a custom embedder. Requests whose
-corpus fits the eight-result budget load neither runtime, and callers need no manual
+import. This also protects an ONNX reranker paired with a custom embedder. A search whose
+corpus fits the eight-result budget loads neither runtime, and callers need no manual
 pre-imports. Initialization order does not change the configured stages or ranking.
 
 ## Evidence and weights
@@ -82,6 +88,104 @@ The decision normalizes learned support over the independent forecast and the me
 that actually supply overrides. Unrelated library growth cannot dilute their influence.
 Unselected memories receive no credit. `memory beliefs` still reports library-wide
 support; a decision's receipt records the participating, normalized support.
+
+(evidence-candidates)=
+### Which recorded runs count, and how much
+
+Three readers learn from recorded runs: the outcome counts of each forecast cell, the
+active-time calibration of each forecast cell, and the capability threshold. All three
+read one set of candidate runs, chosen and scored once for the decision.
+
+**The candidates.** A candidate is a recorded run with outcome `clean`, `loud` or
+`silent` that belongs to at least one prototype the new task matches. Prototypes only
+choose the candidates: a prototype's score and a run's membership weight enter no
+weight. A task that matches no prototype has no candidate, and nothing is counted;
+there is no fallback search. `interrupted` runs are never candidates.
+
+At most `comparison_cap` (256) candidates are scored, most recent first by
+`observed_at`; the rest count nowhere. A count keeps the result independent of machine
+load and bounds one decision's local model work. Each candidate is compared with the
+new task once, when the request is prepared, on the rows captured for that request and
+outside the storage lock.
+
+**The weight of one run.**
+
+```text
+sim_i = 1 / (1 + exp(-r_i))
+a_i   = 0.5^(days_i / h)
+w_i   = m_i * sim_i * delta(c_i, c) * a_i
+```
+
+- `i`: a candidate run.
+- `r_i`: the reranker's score for the new task's text against run `i`'s own task text.
+  Both texts are the task, its category and the project text and characteristics, as
+  described above.
+- `sim_i`: that score on a scale from 0 to 1.
+- `days_i`: days from the run's `observed_at` to the time the request was prepared,
+  never below 0.
+- `h`: the half-life, `half_life_days` = 14.
+- `a_i`: the age factor.
+- `m_i`: the run's weight on record, the `weight` configured for its model (1 unless set).
+- `c_i`, `c`: the cell that ran `i` and the cell being judged.
+- `delta(c_i, c)`: the relatedness discount, 1 for the same cell and 0 for any other.
+- `w_i`: the run's weight for cell `c` before the per-ticket limit.
+
+In plain words: a run counts more when its task reads like the new one, and half as
+much for every 14 days of age. There is no cut-off: a run with a negative score still
+counts, at a small weight. A run counts the same whichever host it ran under.
+
+For example, a run of the same cell with `r = 1.386`, recorded 7 days before the
+request, with `m = 1`: `sim = 0.8`, `a = 0.5^(7/14) = 0.7071` and
+`w = 0.8 * 0.7071 = 0.5657`.
+
+**The per-ticket limit and the counts.**
+
+```text
+W_t = sum of w_i over the candidate runs of ticket t
+w_i <- w_i / max(1, W_t)
+n_k = sum of w_i over the candidate runs with outcome k
+```
+
+- `t`: a ticket, the row's `ticket` label. A row with no ticket is not limited.
+- `W_t`: the total weight of ticket `t`'s candidate runs for cell `c`.
+- `n_k`: the counted amount of outcome `k`, for `clean`, `loud` and `silent`.
+
+In plain words: all runs of one ticket together count for at most one run, because
+retries follow failures.
+
+For example, three runs of one ticket weigh 0.6, 0.5 and 0.4. `W_t = 1.5`, so they
+become 0.4, 0.3333 and 0.2667, which sum to 1. A run of another ticket weighs 0.3 and
+stays 0.3. With outcomes loud, loud, clean and clean, `n_loud = 0.7333` and
+`n_clean = 0.5667`.
+
+**The three readers.**
+
+| Reader | Runs it counts | Weight |
+| --- | --- | --- |
+| Outcomes | The candidates, for each forecast cell | `w_i` after the limit |
+| Active time | The candidates of the same cell that record an active time | The outcome reader's `w_i` for that run |
+| Capability | The candidates whose cell is in the inventory | `m_i * sim_i * strength_i * a_i`, then the limit over this reader's runs |
+
+`strength_i` is the capability reader's factor for the outcome and its cause
+([capability filtering](capability.md)); that reader has no `delta`. For example, a loud run with no
+recorded cause, `sim = 0.8` and `a = 0.7071` weighs
+`0.8 * 0.75 * 0.5 * 0.7071 = 0.2121` in the capability reader. The counts feed the
+{ref}`outcome posterior <outcome-posterior>`, and the active-time weights feed the
+duration calibration of {ref}`selection <accepted-result-selection>`.
+
+**What the receipt stores.** `semantic.evidence_candidates` holds the time the request
+was prepared (`prepared_at`), both constants (`half_life_days`, `comparison_cap`), the
+number of candidates before the cap (`matched`) and each scored candidate once: `id`,
+`family`, `effort`, `outcome`, `active_seconds`, `ticket`, `run_weight`, `score`,
+`similarity`, `days` and `age_factor`. Each row of `semantic.outcome_observations` is
+one counted run of one forecast cell with its `discount`, `ticket_share`
+(`1 / max(1, W_t)`, or 1 without a ticket) and `weight`; each row of
+`semantic.duration_observations` carries the run's active seconds and that weight; and
+each row of `capability.evidence` carries its `strength`, `ticket_share` and `weight`.
+Loading a `howhard-decision-v11` receipt recomputes every similarity, age factor,
+ticket share, weight and count from these values and refuses a mismatch, or more than
+`comparison_cap` candidates. Every scored candidate is a dependency of the prepared
+request, so amending one makes the request stale.
 
 ## Replace stages independently
 

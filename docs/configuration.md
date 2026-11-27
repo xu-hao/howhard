@@ -221,7 +221,8 @@ max_concentration = 1000000.0
 prior_strength = 8.0
 uncertainty_multiplier = 1.0
 admission_quantile = 0.80
-outcome_recency = 0.95
+half_life_days = 14.0
+comparison_cap = 256
 ```
 
 The full inventory has no size bound. If the span of the clearing and timely intervals
@@ -234,14 +235,22 @@ Require `0 < min_clear_probability < reliability_probability < 1` and observatio
 in `(0,0.5)`. Probability/strength margins are in `[0,1]`; order penalty is nonnegative.
 Concentration bounds satisfy `1 <= min_concentration <= prior_strength` and
 `min_concentration <= max_concentration`; uncertainty multiplier is positive,
-`admission_quantile` lies in `[0.5, 1)` and `outcome_recency` in `(0, 1]`.
+`admission_quantile` lies in `[0.5, 1)`, `half_life_days` is positive and `comparison_cap`
+is a positive integer.
 `prior_strength` caps the pseudo-observations any forecast prior contributes to a cell's
 [Dirichlet outcome posterior](outcome-posterior); optional forecast credible intervals
 can lower it to `min_concentration` but never raise it. `max_concentration` caps the
-posterior after observed outcomes are added. `outcome_recency` discounts each older observation of the same cell across up to
-24 task-similar executions retrieved per forecasted cell (`outcome_evidence_limit`
-in `data/semantic.toml`), and `admission_quantile` is the posterior quantile of
-accepted-result silent risk compared with epsilon.
+posterior after observed outcomes are added. `admission_quantile` is the posterior
+quantile of accepted-result silent risk compared with epsilon.
+
+`half_life_days` and `comparison_cap` govern which recorded runs count as evidence and
+how much ({ref}`evidence candidates <evidence-candidates>`). A run's weight halves for
+every `half_life_days` between its `observed_at` and the time the request was prepared,
+in the outcome counts, the active-time calibration and the capability threshold alike.
+At most `comparison_cap` candidate runs are compared with the new task per decision,
+most recent first; the rest count nowhere. Both are optional. The former
+`sampling.outcome_recency` is accepted and ignored: a file that sets it loads with one
+notice on standard error, and standard output is unchanged.
 
 Thompson sampling considers every admissible cell whose posterior cost overlaps the
 mean-best cell: `J - J_best <= uncertainty_multiplier * (sd_best + sd_candidate)` using

@@ -5,14 +5,18 @@ import math
 
 import numpy as np
 
-from .context import DECISION_FORMAT, LEGACY_DECISION_V7, LEGACY_DECISION_V8, LEGACY_DECISION_V9
+from .context import DECISION_FORMAT, LEGACY_DECISION_V7, LEGACY_DECISION_V8, LEGACY_DECISION_V9, LEGACY_DECISION_V10
 from .llm import SETTINGS
 from .validation import HowHardError, keys, number
 
 DEFAULTS = {"min_concentration": 2., "max_concentration": 1000000., "prior_strength": 8.,
-            "uncertainty_multiplier": 1., "admission_quantile": .8, "outcome_recency": .95}
+            "uncertainty_multiplier": 1., "admission_quantile": .8,
+            "half_life_days": 14., "comparison_cap": 256}
 # Frozen v7/v8 receipts recorded this policy shape; it is read-only history.
 LEGACY_DEFAULTS = ("min_concentration", "max_concentration", "prior_strength", "explore_within", "uncertainty_multiplier")
+# Frozen v9/v10 receipts aged evidence by count (outcome_recency), not by time; read-only history.
+COUNT_AGED_DEFAULTS = ("min_concentration", "max_concentration", "prior_strength", "uncertainty_multiplier",
+                       "admission_quantile", "outcome_recency")
 INTERVAL = (.025, .975)
 CI_Z_WIDTH = 3.92  # A central 95% interval spans about 3.92 standard deviations.
 POSTERIOR_FIELDS = ("prior", "prior_concentration", "counts", "evidence_weight", "alpha")
@@ -46,11 +50,12 @@ def calibrate_duration(forecast_seconds, pair, duration_observations):
             "mu": mu, "sigma": sigma, "evidence_weight": weight}
 
 
-def validate_policy(policy, *, legacy=False):
+def validate_policy(policy, *, legacy=False, count_aged=False):
+    """Validate the sampling policy; ``legacy`` reads v7/v8 receipts and ``count_aged`` v9/v10 ones."""
     if not legacy and isinstance(policy, dict) and "explore_within" in policy:
         raise HowHardError("sampling.explore_within: removed; Thompson eligibility uses posterior overlap. "
                            "Set explore_within on a risk class to cap the mean-cost exploration band explicitly")
-    keys(policy, list(LEGACY_DEFAULTS if legacy else DEFAULTS), where="sampling")
+    keys(policy, list(LEGACY_DEFAULTS if legacy else COUNT_AGED_DEFAULTS if count_aged else DEFAULTS), where="sampling")
     for key, value in policy.items():
         number(value, "sampling."+key, nonnegative=True)
     if not 1 <= policy["min_concentration"] <= policy["max_concentration"] or policy["prior_strength"] <= 0:
@@ -65,8 +70,14 @@ def validate_policy(policy, *, legacy=False):
         raise HowHardError("sampling: require min_concentration <= prior_strength (the bounded forecast prior range)")
     if not .5 <= policy["admission_quantile"] < 1:
         raise HowHardError("sampling.admission_quantile: expected a probability in [0.5, 1)")
-    if not 0 < policy["outcome_recency"] <= 1:
-        raise HowHardError("sampling.outcome_recency: expected a decay factor in (0, 1]")
+    if count_aged:
+        if not 0 < policy["outcome_recency"] <= 1:
+            raise HowHardError("sampling.outcome_recency: expected a decay factor in (0, 1]")
+        return policy
+    if policy["half_life_days"] <= 0:
+        raise HowHardError("sampling.half_life_days: expected a positive number of days")
+    if type(policy["comparison_cap"]) is not int or policy["comparison_cap"] < 1:
+        raise HowHardError("sampling.comparison_cap: expected a positive integer")
     return policy
 
 
@@ -305,7 +316,8 @@ def validate_selection(selection, semantic, capability, cost_policy, *, decision
     if selection["objective"] != "cost-to-accepted-result" or selection["retry_policy"] != "same-cell-until-non-loud":
         raise HowHardError("decision.selection: unsupported objective/retry policy")
     legacy = decision_format in (LEGACY_DECISION_V7, LEGACY_DECISION_V8)
-    validate_policy(selection["sampling_policy"], legacy=legacy)
+    validate_policy(selection["sampling_policy"], legacy=legacy,
+                    count_aged=decision_format in (LEGACY_DECISION_V9, LEGACY_DECISION_V10))
     policy = selection["sampling_policy"]
     constants = selection["constants"]
     keys(constants, ["C_loud", "C_silent", "lambda_per_hour", "epsilon"], ["explore_within"], "selection.constants")

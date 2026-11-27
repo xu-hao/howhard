@@ -158,8 +158,15 @@ Call the resulting threshold prior {math}`\pi_0(h)`.
 
 ### Weighted likelihood update
 
-Only retrieved executions with an actual candidate present in the inventory
-contribute threshold likelihoods. Let {math}`r_i` be an executed candidate's
+The evidence for one decision is a single set of candidate runs: recorded runs with
+outcome `clean`, `loud` or `silent` that belong to at least one prototype the new task
+matches. Prototypes only choose the candidates; no prototype score and no membership
+weight enters a weight. A task that matches no prototype has no candidate. At most 256
+candidates, the most recent by observation time, are compared with the new task, once,
+when the request is prepared.
+
+Only candidates whose executed cell is present in the inventory contribute threshold
+likelihoods. Let {math}`r_i` be an executed candidate's
 position in the proposed order, and {math}`z_i=1` for a clean outcome and zero
 for a loud or silent outcome. Given observation noise {math}`\eta`, define:
 
@@ -179,8 +186,32 @@ The update is:
 \left[q_i(h)^{z_i}(1-q_i(h))^{1-z_i}\right]^{w_i}.
 ```
 
-Each {math}`w_i` multiplies the stored evidence weight, sigmoid-transformed
-retrieval relevance, severity/cause strength and a recency discount. Failures
+Each weight is a product of four factors, followed by a limit per ticket:
+
+```{math}
+\mathrm{sim}_i=\frac{1}{1+e^{-\rho_i}},\qquad
+a_i=0.5^{\,d_i/h},\qquad
+w_i=m_i\,\mathrm{sim}_i\,s_i\,a_i,\qquad
+w_i\leftarrow\frac{w_i}{\max(1,W_t)},\quad W_t=\sum_{j\in t}w_j.
+```
+
+Here {math}`\rho_i` is the cross-encoder's score for the new task's text against run
+{math}`i`'s own task text, and {math}`\mathrm{sim}_i` is that score on a scale from 0
+to 1. {math}`d_i` is the number of days from the run's observation to the time the
+request was prepared, never below zero, and {math}`h` is the half-life, 14 days, so the
+age factor {math}`a_i` halves a run's weight for every 14 days of age. {math}`m_i` is
+the stored evidence weight of the run's model, 1 unless configured. {math}`s_i` is the
+severity/cause strength: 1 for a clean run, 0.75 for a loud and 1 for a silent failure
+attributed to capability, and half of that when the cause is unknown. {math}`t` is the
+run's ticket and {math}`W_t` the total weight of that ticket's counted runs; a run
+with no ticket is not limited.
+
+In plain words: a run counts more when its task reads like the new one and less as it
+ages; there is no similarity cut-off, so a run with a negative score still counts at a
+small weight; and all runs of one ticket together count for at most one run, because
+retries follow failures. For example, a loud run with no recorded cause,
+{math}`\mathrm{sim}=0.8`, recorded 7 days before the request, weighs
+{math}`0.8\times0.75\times0.5\times0.7071=0.2121`. Failures
 explicitly attributed to capability retain their severity strength; unknown
 causes contribute less. Supported assertions that a failure was not capability
 caused can remove its threshold contribution without removing the outcome.
@@ -297,18 +328,23 @@ Dirichlet prior with concentration {math}`\kappa_0\le\kappa_{\max}` (the configu
 {math}`p_s` lowers {math}`\kappa_0` by moment matching,
 {math}`\kappa=p(1-p)/\sigma^2-1` with {math}`\sigma` equal to the interval width
 divided by 3.92, but never raises it: a forecaster cannot claim the authority of many
-real runs. Up to 24 task-similar (`score > 0`) historical runs are retrieved independently for each forecasted
-cell—preventing frequently executed cells from crowding out rarer ones—and update the
-prior conjugately while decaying cold-start prior concentration linearly over empirical
+real runs. The same candidate runs that feed the capability threshold update the prior
+conjugately: for each forecasted cell, the candidates that ran on that cell count with
+{math}`w_i=m_i\,\mathrm{sim}_i\,\delta(c_i,c)\,a_i` and the same limit per ticket,
+where {math}`\delta(c_i,c)` is 1 when run {math}`i`'s cell {math}`c_i` is the cell
+{math}`c` being judged and 0 otherwise, so frequently executed cells cannot crowd out
+rarer ones. The counts {math}`n_c,n_l,n_s` are the sums of those weights over the clean,
+loud and silent candidates, and they update the prior
+while decaying cold-start prior concentration linearly over empirical
 weight {math}`W_{\mathrm{emp}}=n_c+n_l+n_s` (`\tau_{\mathrm{emp}}=2.0`) toward a unit
 empirical base prior {math}`b_0=(0.88,0.08,0.04)`,
 {math}`\alpha=\kappa_0\max(0,1-W_{\mathrm{emp}}/2)p_0+\min(1,W_{\mathrm{emp}}/2)b_0+(n_c,n_l,n_s)`.
 Once {math}`W_{\mathrm{emp}}\ge 2`, cold-start zero-shot guesses have exact zero weight so
 pessimistic priors on unfamiliar model IDs cannot permanently suppress empirical winners.
-Counts are weighted by
-relevance, model evidence weight and an exponential recency decay (0.95 per newer
-observation of the same cell in chronological journal order), so a regression or a
-recovery moves the posterior promptly. A cell with no
+Because each count halves for every 14 days of age, a regression or a
+recovery moves the posterior as older runs fade. Active time is calibrated from the
+same cell's candidates that record an active time, each at the weight the outcome
+counts give that run. A cell with no
 observations keeps its prior variance regardless of how much evidence other cells have;
 global expert support weights experts but is not a per-cell sample size.
 
@@ -432,9 +468,10 @@ The components have distinct statistical meanings:
 | --- | --- | --- |
 | Independent LLM judgments | Cold-start task-specific prototype orders and forecasts | LLM judgment needs empirical validation |
 | Capability threshold | Generalized Bayesian update with weighted noisy likelihoods | Scalar order and heuristic transfer from related tasks |
+| Evidence weights | Task similarity, a 14-day half-life and at most one run's weight per ticket, over the runs of matched prototypes | Similarity is a heuristic transfer strength; the half-life and the 256-run cap are defaults, not fitted values |
 | Cross-model ordering | Constrained local posterior/MAP search | Approximate search over rankings |
 | Memory support | Tempered, recency-weighted predictive evidence | Forecast support does not establish truth or causality |
-| Outcome posterior | Per-cell Dirichlet–multinomial update with continuous prior decay (`tau_emp = 2`) | Prior decay scale, base floor and recency decay are fixed modelling choices |
+| Outcome posterior | Per-cell Dirichlet–multinomial update with continuous prior decay (`tau_emp = 2`) | Prior decay scale, base floor and the 14-day evidence half-life are fixed modelling choices |
 | Risk admission | 80% quantile of the mixture accepted-defect posterior | No calibrated coverage guarantee |
 | Selection sampling | Thompson sampling within posterior cost overlap | Delta-method overlap is approximate |
 | Outcome amendments | Correction and replay of an earlier execution | Requires supported attribution and preserved provenance |

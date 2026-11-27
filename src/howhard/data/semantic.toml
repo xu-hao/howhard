@@ -2,8 +2,8 @@ format = "howhard-semantic-v8"
 prompt_version = "semantic-reader-v8"
 writer_version = "semantic-writer-v1"
 memory_limit = 8
-evidence_limit = 8
-outcome_evidence_limit = 24 # Maximum similar executions retained per forecast cell.
+evidence_limit = 8 # Precedents shown to the reader; also the capability evidence bound of v7-v10 receipts.
+outcome_evidence_limit = 24 # Per-cell bound on counted runs that v9 and v10 receipts are checked against.
 retrieval_rounds = 2
 timeout_seconds = 180
 claude_model = "sonnet"
@@ -11,7 +11,7 @@ max_budget_usd = 0.5
 
 [belief]
 temperature = 0.5 # Temper predictive evidence; these are approximate expert weights.
-recency = 0.98 # Discount older predictive exposures so experience can adapt to drift.
+recency = 0.98 # Discount each older predictive exposure of an expert so experience can adapt to drift.
 resource_weight = 0.25 # Usage accuracy also contributes to predictive support.
 resource_noise_sd = 1.5 # Broad fixed log-usage likelihood for approximate evidence weighting.
 probability_floor = 0.0001 # Bound the influence of an overconfident forecast.

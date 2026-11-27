@@ -47,7 +47,8 @@ def test_configured_reranker_is_fixed_across_initial_and_agent_searches(project,
     pending = engine.prepare("Y", "Task", native_candidates=inventory())
     engine.retrieve(pending["request_id"], [{"tool": "memory.search", "query": "Task"},
                                              {"tool": "evidence.search", "query": "Task"}])
-    assert [n for _, n in calls] == [18, 9, 9]
+    # The shown precedents (runs and lessons), the nine evidence candidates, then both agent searches.
+    assert [n for _, n in calls] == [18, 9, 9, 9]
     assert all(ranker is engine.retrieval.reranker for ranker, _ in calls)
 
 

@@ -19,6 +19,32 @@
   Requests prepared under `howhard-agent-request-v6` must be prepared again. The v11
   shape stays open until the release that freezes it.
 
+- Evidence by direct similarity (#129). The outcome counts, the active-time calibration
+  and the capability threshold now read one set of candidate runs per decision: the
+  recorded `clean`, `loud` and `silent` runs that belong to a prototype the new task
+  matches. Prototypes only choose the candidates; a task that matches no prototype
+  counts nothing, and there is no fallback search. Each candidate is compared with the
+  new task once, when the request is prepared and outside the storage lock, and weighs
+  `weight * similarity * 0.5^(days / half_life_days)`, where `similarity` is
+  `1 / (1 + exp(-score))` of the run's own task text (a negative score still counts, at
+  a small weight) and `days` runs from the run's `observed_at` to the prepare time. All
+  runs of one `ticket` together count for at most one run; a run with no ticket is not
+  limited. A cell's outcome counts and active-time weights come from that cell's own
+  runs; the capability threshold keeps its outcome and cause strengths. New optional
+  `[sampling]` settings `half_life_days = 14` and `comparison_cap = 256` (the most
+  recent candidates scored per decision) replace count-based ageing and the per-cell
+  bounds of 8 and 24 counted runs. `sampling.outcome_recency` is accepted and ignored: a
+  file that sets it loads with one notice on standard error. A v11 receipt stores
+  `semantic.evidence_candidates` (prepare time, both constants, the number of
+  candidates before the cap and each scored candidate once), each outcome observation's
+  `discount`, `ticket_share` and `weight`, and each capability observation's `strength`,
+  `ticket_share` and `weight`; loading it recomputes every similarity, age factor,
+  ticket share, weight and count and refuses a mismatch or more than `comparison_cap`
+  candidates. Every scored candidate is a dependency of the prepared request. `v10`,
+  `v9`, `v8` and `v7` receipts keep loading, observing, replaying and reporting with
+  their own evidence shapes and limits. An `Engine(retrieval=...)` object must provide
+  `reranker.score(query, documents)`, as `RetrievalPipeline` does.
+
 ## 5.0.0 — 2026-11-24
 
 - Dynamic synthesized `(task, context)` prototypes with materialized per-cell priors and

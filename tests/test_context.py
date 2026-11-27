@@ -5,6 +5,7 @@ import json
 import pytest
 
 from howhard import Engine
+from howhard.decisions import load
 from howhard.validation import HowHardError
 from conftest import inventory, MODELS, cell
 from howhard.context import capture_project, FORMAT
@@ -33,7 +34,11 @@ def test_context_reproducible_and_memoized_by_actual_context(project):
     engine = Engine(project())
     args = dict(task_text="repair transaction rollback", project_context={"files": 42, "coverage": .8}, seed=17)
     a = engine.pick("Y", **args, native_candidates=inventory())
-    assert a["decision_id"] == engine.pick("Y", **args, native_candidates=inventory())["decision_id"]
+    again = engine.pick("Y", **args, native_candidates=inventory())
+    # The same inputs give the same receipt, apart from the time each request was prepared.
+    first, second = (load(engine.config, result["decision_id"]) for result in (a, again))
+    assert first["semantic"]["evidence_candidates"].pop("prepared_at") <= second["semantic"]["evidence_candidates"].pop("prepared_at")
+    assert first == second
     b = engine.pick("Y", **{**args, "task_text": "repair spelling"}, native_candidates=inventory())
     assert a["decision_id"] != b["decision_id"]
     assert a["context"]["task_text"] == args["task_text"]

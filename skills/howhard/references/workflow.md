@@ -139,7 +139,8 @@ money. The full objective uses `C_run = session_cost_usd` and is
 inventories with a uniform credit-rate basis include worker money using each candidate's
 `cost_per_credit`. Mixed bases omit it uniformly. `needs_review` still requires independent review;
 each forecast row is a bounded per-cell Dirichlet prior updated only by that cell's own
-recency-weighted observed outcomes, and the risk cap compares the 80% posterior quantile
+recorded outcomes on similar tasks, weighted by task similarity and age with all runs of
+one ticket counting for at most one run, and the risk cap compares the 80% posterior quantile
 of accepted-result defects, `P_silent/(1-P_loud)`, with epsilon (`admission_risk`).
 Reported `P_*` bounds are 95% posterior credible intervals, including for an `llm`-only
 forecast. Exploration (Thompson sampling) covers cells whose posterior cost overlaps the

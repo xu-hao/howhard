@@ -1,6 +1,7 @@
 """Task-conditioned capability filtering through public boundaries (issue #66)."""
 
 from copy import deepcopy
+import hashlib
 import json
 import math
 
@@ -59,10 +60,18 @@ class ProtocolDouble:
 
 class SimilarityDouble:
     """Absolute relevance fixture; no provider or pretrained model calls."""
+    @property
+    def reranker(self):
+        return self
+
+    def score(self, query, documents):
+        return [12 if 'rollback' in text and 'rollback' in query else -18 for text in documents]
+
     def search(self, records, query, limit=8, **kwargs):
         chosen = records[:limit]
+        scores = self.score(query, [r["text"] for r in chosen])
         return {"records": deepcopy(chosen), "trace": {"seconds": 0,
-                "selected": [{"key": r["key"], "score": 12 if 'rollback' in r['text'] and 'rollback' in query else -18} for r in chosen]}}
+                "selected": [{"key": r["key"], "score": score} for r, score in zip(chosen, scores)]}}
 
 
 def start(engine, cells, **options):
@@ -413,7 +422,7 @@ def test_overpowered_tail_band_stays_bounded_across_inventory_sizes(tmp_path):
 
 @pytest.mark.parametrize("case", ["underpowered-prefix", "split-thresholds"])
 def test_large_learned_band_accepts_a_tight_refilter(tmp_path, monkeypatch, case):
-    from howhard import capability
+    from howhard import capability, evidence
 
     cells = [{"model": f"agent-{i // 14}/model-{i:03d}", "effort": "high"} for i in range(56)]
     if case == "underpowered-prefix":
@@ -426,11 +435,21 @@ def test_large_learned_band_accepts_a_tight_refilter(tmp_path, monkeypatch, case
         samples = [(39, 9000, 800, .95)] * 2 + [(55, 4400, 4200, .32)]
         tighter = (39, 43)
     order = [capability.cell_key(cell) for cell in cells]
-    observed = [{"id": f"run-{i}", "key": order[pos], "outcome": "clean", "cause": None,
-                 "active_seconds": active, "forecast_active_seconds": forecast, "score": 10.,
-                 "similarity": 1., "weight": weight}
-                for i, (pos, active, forecast, weight) in enumerate(samples)]
-    monkeypatch.setattr(capability, "observations", lambda *args, **kwargs: observed)
+    # Synthetic scored candidates of today with the given similarity, and the capability
+    # observations the reader makes of them, each with a forecast of its active time.
+    scored = [{"id": f"run-{i}", "family": "native-" + hashlib.sha256(cells[pos]["model"].encode()).hexdigest(),
+               "effort": cells[pos]["effort"], "outcome": "clean", "active_seconds": float(active), "ticket": None,
+               "run_weight": 1., "score": math.log(weight / (1 - weight)),
+               "similarity": evidence.similarity(math.log(weight / (1 - weight))), "days": 0., "age_factor": 1.}
+              for i, (pos, active, forecast, weight) in enumerate(samples)]
+    observed = [{"id": item["id"], "key": order[pos], "outcome": "clean", "cause": None,
+                 "active_seconds": item["active_seconds"], "forecast_active_seconds": forecast,
+                 "strength": 1., "ticket_share": 1., "weight": item["similarity"]}
+                for item, (pos, active, forecast, weight) in zip(scored, samples)]
+    monkeypatch.setattr(evidence, "collect", lambda *args, **kwargs: {
+        "prepared_at": "2026-11-01T00:00:00+00:00", "half_life_days": 14., "comparison_cap": 256,
+        "matched": len(scored), "candidates": deepcopy(scored)})
+    monkeypatch.setattr(capability, "observations", lambda *args, **kwargs: deepcopy(observed))
 
     engine = Engine(directory=tmp_path)
     pending = start(engine, cells)

@@ -91,18 +91,39 @@ zero weight at `W_emp >= 2.0`, leaving only the unit empirical base smoothing `b
 the cell's own weighted counts so pessimistic guesses on unfamiliar or post-cutoff model
 identifiers never depress observed winners permanently.
 
-`n_*` are recency-weighted counts from per-cell `outcome_observations`: for each
-forecasted `(family, effort)` cell (and any widened cell), up to
-`outcome_evidence_limit` (packaged default `24`) task-similar (`score > 0`) `clean`/`loud`/`silent`
-executions (`interrupted` runs are excluded) are retrieved
-independently from that cell's own historical runs and scored with the configured
-reranker (`similarity = sigmoid(score)`), each weighted by
-`evidence_weight * similarity * outcome_recency ** age`. `age` counts newer recorded
-non-`interrupted` observations of that same cell in chronological journal order, so heavy history on
-another cell cannot crowd out this cell's evidence, a regression or recovery dominates
-promptly, and unrelated workload does not erase a cell's history. A never-observed
-cell keeps its prior variance no matter how many runs other cells have; an expert's
-global `evidence_count` affects only its predictive weight, never a cell's sample size.
+`n_*` are the counted amounts of each outcome in the cell's `outcome_observations`.
+The runs are the decision's {ref}`evidence candidates <evidence-candidates>`: recorded
+`clean`, `loud` and `silent` runs that belong to a prototype the new task matches
+(`interrupted` runs are excluded), at most `comparison_cap` of them, most recent first.
+For each forecasted `(family, effort)` cell (and any widened cell):
+
+```text
+w_i = m_i * sim_i * delta(c_i, c) * a_i
+W_t = sum of w_i over the candidate runs of ticket t
+w_i <- w_i / max(1, W_t)
+n_k = sum of w_i over the candidate runs with outcome k
+```
+
+- `i`: a candidate run; `c_i` is the cell that ran it and `c` the cell being judged.
+- `m_i`: the run's weight on record, the `weight` configured for its model (1 unless set).
+- `sim_i`: `1 / (1 + exp(-r_i))`, where `r_i` is the reranker's score for the new task's
+  text against the run's own task text.
+- `delta(c_i, c)`: 1 for the same cell and 0 for any other, so only a cell's own runs count.
+- `a_i`: the age factor `0.5^(days_i / half_life_days)`, where `days_i` runs from the
+  run's `observed_at` to the time the request was prepared and is never below 0.
+- `t`, `W_t`: a ticket (the row's `ticket` label) and the total weight of its candidate
+  runs for cell `c`. A row with no ticket is not limited.
+- `n_k`: the counted amount of outcome `k`, for `clean`, `loud` and `silent`.
+
+In plain words: a run counts more when its task reads like the new one, half as much
+for every 14 days of age, and all runs of one ticket together count for at most one
+run. For example, a run of the same cell with `r = 1.386` recorded 7 days before the
+request weighs `0.8 * 0.7071 = 0.5657`; three runs of one ticket weighing 0.6, 0.5 and
+0.4 become 0.4, 0.3333 and 0.2667. Heavy history on another cell cannot crowd out this
+cell's evidence, a regression or recovery dominates as older runs age, and a task that
+matches no prototype counts nothing. A never-observed cell keeps its prior variance no
+matter how many runs other cells have; an expert's global `evidence_count` affects only
+its predictive weight, never a cell's sample size.
 
 A forecast row may add `silent_ci` and/or `loud_ci` as `[lo, hi]` with
 `0 <= lo <= value <= hi <= 1`, a central 95% credible interval for that probability.
@@ -160,8 +181,9 @@ model assumption, not a calibrated coverage guarantee. `J` uses the posterior me
 expert's per-cell Dirichlet posterior `alpha`, and calibrates active duration `T`
 alongside outcomes. Forecasted `seconds` represents expected **active** execution
 duration excluding external queue wait. For each cell, empirical log-duration residuals
-from retrieved similar executions (`effective_active_seconds`, shrunk by
-similarity/recency evidence weight so zero-evidence cells preserve the expert forecast)
+from the cell's own {ref}`evidence candidates <evidence-candidates>` that record an
+active time (`effective_active_seconds`, each at the weight the outcome counts give that
+run, so zero-evidence cells preserve the expert forecast)
 calibrate log-normal parameters `(mu, sigma)` and price the right-tail expectation
 `E[T] = exp(mu + sigma^2 / 2)` in `T` and `J`. `cost_sd` is the delta-method retry-cost
 standard deviation from the posterior Dirichlet covariance
@@ -171,12 +193,16 @@ considers every admissible, schedulable cell whose posterior cost overlaps the m
 cell: `J - J_best <= uncertainty_multiplier * (sd_best + sd_cell)`. Only an explicit
 risk-class `explore_within` additionally caps that gap at `explore_within * |J_best|`.
 Thompson sampling draws log-normal active duration in `parts["time"]` when duration
-variance is present. Receipts retain `outcome_observations`, each sampled cell's
+variance is present. Receipts retain the scored `evidence_candidates`, the
+`outcome_observations` and `duration_observations` counted from them, each sampled cell's
 `outcome_posterior` (`prior`, `prior_concentration`, `counts`, `evidence_weight`,
 `alpha`), concentrations, duration calibration parameters, each cell's `admission_risk`,
 the seed and the reason for a sampled non-best choice. `summary` returns the same
 posterior means and intervals without sampling a selection. A fixed seed reproduces
-selection given frozen forecasts; it does not make inference deterministic.
+selection given frozen forecasts and the request's scored evidence candidates; it does
+not make inference deterministic. A receipt records the time its request was prepared,
+because the age of every counted run is measured to that moment, so two decisions
+prepared at different times are different receipts even when nothing else differs.
 
 Loud attempts are retried on the same cell until a non-loud result is accepted.
 `1/(1-P_loud)` charges the expected attempts; `C_loud` is extra detection/rework overhead
