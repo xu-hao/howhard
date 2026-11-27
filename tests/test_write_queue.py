@@ -13,7 +13,7 @@ import time
 
 import pytest
 
-from howhard import Engine, WriteDependencyError
+from howhard import Engine, WriteDependencyError, WriteTimeout
 from howhard.storage import locked
 from howhard.validation import HowHardError
 
@@ -112,6 +112,22 @@ def _memory_client(directory, connection):
     connection.send("written")
 
 
+def _memory_commit_client(directory, connection):
+    """An admitted memory mutation held inside its SQLite commit until told to finish."""
+    engine = Engine(directory=directory)
+    with locked(engine.config, operation="test memory commit"):
+        db = sqlite3.connect(engine.memory.path, timeout=0)
+        try:
+            db.execute("BEGIN EXCLUSIVE")
+            db.execute("UPDATE versions SET body = 'Committed by the admitted writer'")
+            connection.send("committing")
+            connection.recv()
+            db.commit()
+        finally:
+            db.close()
+    connection.send("released")
+
+
 @contextmanager
 def client(target, *args):
     context = mp.get_context("spawn")
@@ -181,6 +197,44 @@ def test_fifo_admission_is_observable_and_readers_bypass_waiters(tmp_path):
             assert process.exitcode == 0
     assert [e["operation"]["title"] for e in engine.memory.history(None)] == ["Existing", "0", "1", "2"]
     assert engine.write_status()["entries"] == []
+
+
+@pytest.mark.parametrize("read", ["snapshot", "read"])
+def test_memory_read_waits_for_an_admitted_commit_instead_of_failing(tmp_path, read):
+    release = []
+
+    def checked_while_waiting():
+        # A reader checks cancellation while it waits for a data lock; let the writer commit then.
+        while release:
+            release.pop()()
+        return False
+
+    engine = Engine(directory=tmp_path, write_cancel=checked_while_waiting)
+    memory = engine.memory.add("Lesson", "Original body")
+    with client(_memory_commit_client, tmp_path) as (process, connection):
+        assert receive(connection) == "committing"
+        release.append(lambda: connection.send("commit"))
+        body = (engine.memory.snapshot()["memories"][0]["body"] if read == "snapshot"
+                else engine.memory.read(memory["id"])["body"])
+        assert not release, "the read never waited for the admitted writer"
+        assert body == "Committed by the admitted writer"
+        assert receive(connection) == "released"
+        process.join(10)
+        assert process.exitcode == 0
+
+
+def test_memory_read_behind_a_held_commit_ends_with_a_typed_timeout(tmp_path):
+    engine = Engine(directory=tmp_path, write_timeout=.2)
+    engine.memory.add("Lesson", "Original body")
+    with client(_memory_commit_client, tmp_path) as (process, connection):
+        assert receive(connection) == "committing"
+        with pytest.raises(WriteTimeout):
+            engine.memory.snapshot()
+        connection.send("commit")
+        assert receive(connection) == "released"
+        process.join(10)
+        assert process.exitcode == 0
+    assert engine.memory.list()[0]["body"] == "Committed by the admitted writer"
 
 
 @pytest.mark.parametrize("termination", ["timeout", "cancel", "interrupt", "crash"])
