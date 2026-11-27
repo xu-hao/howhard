@@ -33,7 +33,8 @@ from howhard.success import (
 def without_reserved_slots(directory):
     """Configure the store in ``directory`` to forecast exactly its band, as older receipts did.
 
-    Call it before creating the engine that mints the receipts an older one is derived from.
+    Call it before creating the engine that mints the receipts an older one is derived from, or
+    whose fixture is about the band's own cells.
     """
     (directory / "howhard.toml").write_text(
         '[capability]\nreserved_forecast_cells = 0\n[task_types]\ntask = "standard"\n')
