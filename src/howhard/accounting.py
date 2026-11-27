@@ -12,8 +12,9 @@ from .validation import HowHardError, keys, number, text
 CATEGORIES = ('input', 'output', 'cache_read', 'cache_write', 'cache_write_5m', 'cache_write_1h')
 USAGE_FORMAT = 'howhard-execution-usage-v1'
 RATE_FORMAT = 'howhard-rate-card-v1'
-ADAPTERS = ('codex-exec-v1', 'codex-session-v1', 'claude-sdk-v1', 'claude-session-v1')
-SUPPORTED_HOSTS = {'codex-exec-v1': ('0.166.0',), 'codex-session-v1': ('0.166.0',), 'claude-sdk-v1': ('2.1.318',), 'claude-session-v1': ('2.1.318',)}
+ADAPTERS = ('codex-exec-v1', 'codex-session-v1', 'claude-sdk-v1', 'claude-session-v1', 'agy-print-v1', 'agy-transcript-v1')
+SUPPORTED_HOSTS = {'codex-exec-v1': ('0.166.0',), 'codex-session-v1': ('0.166.0',), 'claude-sdk-v1': ('2.1.318',), 'claude-session-v1': ('2.1.318',),
+                   'agy-print-v1': ('1.5.18',), 'agy-transcript-v1': ('1.5.18',)}
 MAX_SOURCE = 32 * 1024 * 1024
 MAX_SPAN = 16 * 1024 * 1024
 
@@ -273,6 +274,36 @@ def _claude(u, *, sdk=False):
     return dict(input=inp, output=out, cache_read=read, cache_write=write, cache_write_5m=five, cache_write_1h=hour)
 
 
+def _agy_int(value, key, where, *, optional=False):
+    count = value.get(key)
+    if count is None and optional:
+        return None
+    if type(count) is not int or count < 0 or count > 2**63 - 1:
+        raise HowHardError(where + '.' + key + ': expected nonnegative integer')
+    return count
+
+
+def _agy(u, where):
+    """Antigravity 1.5.18 counts: input excludes cache reads; output includes thinking."""
+    if not isinstance(u, dict):
+        raise HowHardError(where + ': expected usage object')
+    inp, out, read = (_agy_int(u, k, where) for k in ('input_tokens', 'output_tokens', 'cache_read_tokens'))
+    thinking = _agy_int(u, 'thinking_tokens', where, optional=True) or 0
+    if thinking > out:
+        raise HowHardError(where + ': thinking_tokens exceed inclusive output_tokens')
+    reported = _agy_int(u, 'total_tokens', where, optional=True)
+    if reported is not None and reported != inp + out:
+        raise HowHardError(where + ': total_tokens does not match input_tokens + output_tokens')
+    return dict(input=inp, output=out, cache_read=read, cache_write=0, cache_write_5m=0, cache_write_1h=0)
+
+
+def _agy_model(reported, model, where):
+    """Accept the bare Antigravity slug for a manifest model optionally namespaced ``agy/`` or ``agy:``."""
+    names = {model} | {model[len(prefix):] for prefix in ('agy/', 'agy:') if model.startswith(prefix)}
+    if reported not in names:
+        raise HowHardError(where + ': model does not match manifest model')
+
+
 def collect(manifest):
     keys(manifest, ['format', 'execution_id', 'host_version', 'adapter', 'source', 'session_id', 'scope', 'start', 'end', 'completed', 'provider', 'model', 'service_tier'],
          ['included_sessions', 'included_agents', 'rate_card', 'baseline', 'coordinate_id', 'agent_id', 'seconds', 'active_seconds', 'queue_wait_seconds'], where='usage manifest')
@@ -373,6 +404,13 @@ def collect(manifest):
         _codex(baseline)
         previous = baseline
         result['provenance']['baseline_sha256'] = hashlib.sha256(json.dumps(baseline, sort_keys=True).encode()).hexdigest()
+    if adapter == 'agy-print-v1' and baseline is not None:
+        keys(baseline, ['conversation_id', 'usage'], where='Antigravity baseline')
+        if baseline['conversation_id'] != session or not isinstance(baseline['usage'], dict):
+            raise HowHardError('Antigravity baseline: same-conversation measured starting usage required')
+        prior = _agy(baseline['usage'], 'Antigravity baseline.usage') if baseline['usage'] else dict.fromkeys(CATEGORIES, 0)
+        result['provenance']['baseline_sha256'] = hashlib.sha256(json.dumps(baseline, sort_keys=True).encode()).hexdigest()
+    agy_init, agy_results, agy_steps, agy_indices = False, 0, {}, set()
     codex_seen_gap = False
     for event in events:
         if adapter == 'codex-exec-v1':
@@ -483,6 +521,65 @@ def collect(manifest):
             terminal = subtype in ('success', 'error_max_turns', 'error_max_budget_usd')
             if terminal and event.get('is_error', False) != (subtype != 'success'):
                 raise HowHardError('Claude result: contradictory terminal failure metadata')
+        elif adapter == 'agy-print-v1':
+            kind = event.get('event')
+            if not isinstance(kind, str):
+                raise HowHardError('Antigravity stream: event type required')
+            if kind == 'init':
+                if event.get('conversation_id') != session or not isinstance(event.get('init'), dict):
+                    raise HowHardError('Antigravity init: conversation identity mismatch')
+                reported_model = event['init'].get('model')
+                if reported_model is not None:
+                    _agy_model(text(reported_model, 'Antigravity init.model'), manifest['model'], 'Antigravity init')
+                agy_init = True
+            elif kind == 'step_update':
+                update = event.get('step_update')
+                if not isinstance(update, dict) or (update.get('conversation_id') is not None and update['conversation_id'] != session):
+                    raise HowHardError('Antigravity step_update: conversation identity mismatch')
+                terminal = False
+            elif kind == 'result':
+                res = event.get('result')
+                if not isinstance(res, dict) or res.get('conversation_id') != session:
+                    raise HowHardError('Antigravity result: conversation identity mismatch')
+                agy_results += 1
+                if agy_results > 1:
+                    raise HowHardError('Antigravity result: one bounded invocation result required; do not sum cumulative session totals')
+                turns = res.get('num_turns')
+                if turns is not None and (type(turns) is not int or turns < 0):
+                    raise HowHardError('Antigravity result.num_turns: expected nonnegative integer')
+                current = _agy(res.get('usage'), 'Antigravity result.usage')
+                if baseline is None:
+                    if start != 0 or not agy_init or turns != 1:
+                        terminal = False
+                        continue  # Cumulative totals from an unverified starting point are not invocation usage.
+                else:
+                    current = {k: current[k] - prior[k] for k in CATEGORIES}
+                    if any(v < 0 for v in current.values()):
+                        raise HowHardError('Antigravity cumulative usage reset; split execution at reset')
+                records.append((str(start) + ':result', manifest['model'], manifest['service_tier'], current, None, total(current)))
+                terminal = res.get('status') == 'SUCCESS'
+        elif adapter == 'agy-transcript-v1':
+            kind, index = event.get('type'), event.get('step_index')
+            if not isinstance(kind, str) or type(index) is not int or index < 0:
+                raise HowHardError('Antigravity transcript: step type and nonnegative step_index required')
+            if agy_indices and index < max(agy_indices) and index not in agy_indices:
+                raise HowHardError('Antigravity transcript: step_index out of order')
+            agy_indices.add(index)
+            if kind != 'PLANNER_RESPONSE':
+                continue
+            _agy_model(text(event.get('model'), 'Antigravity step model'), manifest['model'], 'Antigravity step')
+            step_status = text(event.get('status'), 'Antigravity step status')
+            current = _agy(event, 'Antigravity step')
+            ident = 'step-' + str(index)
+            normalized = (ident, manifest['model'], manifest['service_tier'], current, None, total(current))
+            if ident in seen:
+                # A step can be rewritten as it progresses; keep its latest record.
+                records[seen[ident]] = normalized
+            else:
+                seen[ident] = len(records)
+                records.append(normalized)
+            agy_steps[index] = step_status
+            terminal = bool(records) and all(v == 'DONE' for v in agy_steps.values())
         else:
             if event.get('type') != 'assistant':
                 continue

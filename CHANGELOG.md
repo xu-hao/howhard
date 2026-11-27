@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Antigravity usage collectors (#156). `usage collect` and `usage attach` accept
+  `agy-print-v1` for `agy --output-format stream-json` output and `agy-transcript-v1` for
+  a conversation's `transcript.jsonl`, both at Antigravity `1.5.18`. Input excludes cache
+  reads and output already includes thinking. The stream's cumulative `result.usage` is
+  collected directly only for a fresh single-turn span; a resumed span needs an explicit
+  `baseline` and is otherwise unavailable. Transcript `PLANNER_RESPONSE` steps count once
+  per `step_index` and are complete only when all are `DONE`. Both check the conversation
+  and model identity and keep the manifest's `agy/<slug>` model on segments, so a rate
+  card for that name prices them.
 - Memory reads wait for an admitted write (#154). A memory read, including the first
   read of a new store while another client creates its memory schema, now takes the
   same shared data locks as evidence reads. One that meets an admitted mutation's
