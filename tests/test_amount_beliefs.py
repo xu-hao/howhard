@@ -30,6 +30,7 @@ from howhard.validation import HowHardError
 from test_capability_filter import filtering
 from test_evidence_similarity import Scripted
 from test_execution_accounting import artifact, card, codex_events, counts
+from test_outcome_posterior import reference_belief
 
 TASK = "Repair rollback ordering"
 MODEL = "fixture/worker"
@@ -450,8 +451,10 @@ def test_cost_spread_time_term_is_the_belief_variance_and_run_cost_is_exact(tmp_
     assert row["T"] == pytest.approx(1.) and row["C_run"] == pytest.approx(.1)
     d = 1 / row["expected_attempts"]
     assert row["J"] == pytest.approx((.1 + 3600 * 1.) / d)
-    loud = sampled["probabilities"][1]
-    outcome_variance = (row["J"] / d) ** 2 * loud * (1 - loud) / (sampled["concentration"] + 1)
+    # With no failure costs the rates enter through retries alone: (J / (1 - P_loud))^2 * Var(theta_l).
+    loud = sampled["outcome_beliefs"]["loud"]
+    outcome_variance = (row["J"] / d) ** 2 * reference_belief(
+        loud["prediction"], loud["stated_spread"], *loud["counts"], 5., 16.)["variance"]
     time_variance = (3600 / d) ** 2 * row["T"] ** 2 * math.expm1(spread ** 2)
     assert sampled["cost_sd"] == pytest.approx(math.sqrt(outcome_variance + time_variance))
 

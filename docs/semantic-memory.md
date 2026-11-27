@@ -160,26 +160,30 @@ misclassified `loud` execution to `interrupted` removes its earlier predictive p
 replay. Original measurements and registry evidence
 weight still apply; an amendment does not create a new forecast exposure.
 
-Selection samples the LLM and memory experts and retains the cost objective. Each
-expert's forecast row is a bounded Dirichlet prior for its cell (at most
-`prior_strength` pseudo-observations), updated by that cell's own
+Selection samples the LLM and memory experts and retains the cost objective. For each
+cell, the experts' forecast rows are merged by their weights on the log-odds scale into
+one forecast of the loud rate and one of the accepted-defect share, and experts that
+disagree make that forecast less certain. Each forecast starts a belief worth a few
+runs (`N_start`, about 4), which is then reshaped by that cell's own
 `outcome_observations`: the cell's runs among the decision's
 {ref}`evidence candidates <evidence-candidates>`, each weighted by its task similarity
-and age and limited per ticket. Forecasters may attach
-`silent_ci` and/or `loud_ci` 95% credible intervals to a row; wider intervals weaken the
-prior so real outcomes dominate sooner, while a narrow interval cannot strengthen it
-beyond `prior_strength`. Rows without intervals remain valid. A row may also state
+and age and limited per ticket. The forecast never fades out: it keeps the weight of
+`N_start` runs however many are counted. Forecasters may attach
+`silent_ci` and/or `loud_ci` 95% ranges to a row; a wider range widens the start so
+real outcomes dominate sooner, while a narrow range cannot narrow it below what
+`N_start` runs allow. Rows without ranges remain valid. A row may also state
 `seconds_ci` and `token_usage_ci` ranges, which are validated and stored but not read by
-selection ({ref}`forecast contract <forecast-contract>`). Intervals are credible
-intervals of the support-weighted mixture of per-expert Beta posteriors, so a lone `llm`
-forecast still reports its posterior uncertainty. The
-{ref}`admission tiers <admission-tiers>` read the share of the accepted-result risk
-posterior within epsilon, with no fitted statistical
-floor. Tiny-weight pessimistic experts do not automatically veto every cell. The
-posterior is a model assumption, not a calibrated risk guarantee. Results identify the
-interval method and flag a chosen cell that is not trusted. Predictive
+selection ({ref}`forecast contract <forecast-contract>`). Reported ranges are the 2.5%
+and 97.5% points of the two beliefs, so a lone `llm`
+forecast still reports its uncertainty. The
+{ref}`admission tiers <admission-tiers>` read the share of the accepted-defect
+belief within epsilon, with no fitted statistical
+floor. A tiny-weight pessimistic expert moves the merged forecast only by its weight and
+does not veto a cell. The
+belief is a model assumption, not a calibrated risk guarantee. Results identify the
+interval method (`log-odds-grid`) and flag a chosen cell that is not trusted. Predictive
 support (`evidence_count`, `log_score`) weights experts; it never stands in for a cell's
-own sample size. See the {ref}`outcome posterior <outcome-posterior>`.
+own counted runs. See the {ref}`outcome beliefs <outcome-posterior>`.
 
 ## Writer, failures and replay
 
@@ -310,10 +314,10 @@ Fine selection charges expected same-cell retries to an accepted result. Active 
 and each token kind have one {ref}`belief per cell <amount-beliefs>`: the experts'
 forecasts are merged on the log scale, with their disagreement and stated ranges as the
 stated spread, and the cell's own {ref}`evidence candidates <evidence-candidates>` update
-it. `T` and the run cost are the beliefs' averages. Its admission tiers use each expert's joint
-accepted-result posterior `Beta(alpha_silent, alpha_clean)`: the share within epsilon.
-Sampling draws from the sampled expert's per-cell Dirichlet posterior, and each cell's
-active time from its belief. Posterior cost overlap (including the active-time
+it. `T` and the run cost are the beliefs' averages. Its admission tiers use the cell's
+belief for the accepted-defect share: the share of that belief within epsilon.
+Sampling draws each cell's loud rate and accepted-defect share from its two outcome
+beliefs, and its active time from its belief. Posterior cost overlap (including the active-time
 variance) gates exploration, optionally capped by an explicit
 risk-class `explore_within`; a chosen cell that is not trusted is flagged for review. Receipts
 preserve the formula, constants, beliefs and explanation.

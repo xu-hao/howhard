@@ -2,9 +2,9 @@
 
 ``to_v10`` is the base of every older builder: it removes what v11 added (the host's name,
 agent labels, ranges on active time and token kinds, the scored evidence candidates, admission
-tiers, and the beliefs and credit spread) and restores the v10 format names, evidence rows,
-sampling policy, meaning of the silent cap, per-expert active-time calibration, forecast
-pricing and credit check.
+tiers, the outcome beliefs on the log-odds scale, and the amount beliefs and credit spread) and
+restores the v10 format names, evidence rows, sampling policy, Dirichlet outcome posteriors,
+meaning of the silent cap, per-expert active-time calibration, forecast pricing and credit check.
 """
 
 from copy import deepcopy
@@ -16,7 +16,6 @@ from howhard.accounting import CATEGORIES, price
 from howhard.capability import prior_cdf
 from howhard.semantic import OUTCOMES, panel_lookup
 from howhard.success import (
-    COUNT_AGED_DEFAULTS,
     MAX_DURATION_LOG_SD,
     POSTERIOR_FIELDS,
     accepted_risk,
@@ -30,6 +29,8 @@ from howhard.success import (
 
 LEGACY_SAMPLING = {"min_concentration": 8., "max_concentration": 1000000., "prior_strength": 8.,
                    "explore_within": .1, "uncertainty_multiplier": 1.}
+# The three Dirichlet constants a v9 or v10 policy stored, at their packaged values.
+DIRICHLET_SAMPLING = {"min_concentration": 2., "max_concentration": 1000000., "prior_strength": 8.}
 
 
 def legacy_credit(row, candidate):
@@ -42,7 +43,11 @@ def legacy_credit(row, candidate):
 
 
 def legacy_calibration(constants, policy, state, expert, candidate, money_included, pair, *, legacy_v9=False):
-    """A v8 to v10 sampling cell: the sampled expert's own calibrated active time and priced forecast."""
+    """A v8 to v10 sampling cell: the sampled expert's own calibrated active time and priced forecast.
+
+    Its outcome belief is the sampled expert's Dirichlet posterior: a bounded forecast prior plus
+    only this cell's own outcomes, with the retry cost's spread under the Dirichlet covariance.
+    """
     def run_cost(row):
         return legacy_credit(row, candidate) * candidate["cost_per_credit"] if money_included else 0.
 
@@ -91,6 +96,30 @@ def legacy_sampling_cells(receipt, *, legacy_v9=False):
                                receipt["cost_policy"]["worker_money_included"], (cell["family"], cell["effort"]),
                                legacy_v9=legacy_v9)
             for cell in sem["sampling"]["cells"]]
+
+
+def restore_dirichlet(receipt, *, legacy_v9=False):
+    """Rebuild every outcome-dependent number of a selection cell as a v9 or v10 decision stored it."""
+    sem, selection = receipt["semantic"], receipt["selection"]
+    panels = {k: panel_lookup(p) for k, p in sem["worlds"].items()}
+    weights = {e["key"]: e["weight"] for e in sem["beliefs"]["experts"]}
+    constants = selection["constants"]
+    for row in selection["cells"]:
+        pair = row["family"], row["effort"]
+        intervals, _ = posterior_intervals(
+            panels, weights, pair, sem["outcome_observations"], selection["sampling_policy"], legacy_v9=legacy_v9
+        )
+        for field in ("P_clean", "P_loud", "P_silent", "P_silent_accepted"):
+            row[field] = intervals[field]
+        row["admission_risk"] = intervals["admission_risk"]
+        row["admissible"] = row["admission_risk"] <= constants["epsilon"]
+        loud, silent = row["P_loud"]["mean"], row["P_silent"]["mean"]
+        run = row["session_cost_usd"] if receipt["cost_policy"]["worker_money_included"] else 0.0
+        row["expected_attempts"] = 1.0 / denominator(loud)
+        row["J"] = cost(run, row["T"], loud, silent, constants)
+    if sem["sampling"]["enabled"]:
+        sem["sampling"]["cells"] = legacy_sampling_cells(receipt, legacy_v9=legacy_v9)
+        sem["sampling"]["reason"] = "per-cell-dirichlet-posterior"
 
 
 def legacy_capability_prior(flt, policy, *, linear_tail=False):
@@ -169,15 +198,16 @@ def to_v10(receipt, on_cap_unmet="flag-review"):
         del item["strength"], item["ticket_share"]
         item.update(score=scored[item["id"]]["score"], similarity=scored[item["id"]]["similarity"])
 
-    # v10 has no tiers: a cell is admissible or not (trusted is exactly v10 admissible), and the
-    # cap-unmet policy is recorded. Its policy aged evidence by count and had neither the two
-    # tier constants nor the amount-belief keys.
+    # v10 has no tiers: a cell is admissible or not, by its own Dirichlet posterior, and the
+    # cap-unmet policy is recorded. Its policy aged evidence by count, bounded a Dirichlet
+    # concentration, and had neither the two tier constants nor the worths and amount-belief keys.
     selection = receipt["selection"]
     selection["on_cap_unmet"] = on_cap_unmet
     selection["exploration"].pop("pool")
-    selection["sampling_policy"] = {**{k: selection["sampling_policy"][k] for k in COUNT_AGED_DEFAULTS
-                                       if k != "outcome_recency"}, "outcome_recency": .95}
+    selection["sampling_policy"] = {**DIRICHLET_SAMPLING, "outcome_recency": .95,
+                                    **{k: selection["sampling_policy"][k] for k in ("uncertainty_multiplier", "admission_quantile")}}
     sem["sampling"]["policy"] = deepcopy(selection["sampling_policy"])
+    sem["interval_kind"] = "dirichlet-posterior-mixture"
     # v10 calibrated each expert's active time, priced each expert's forecast, and checked the
     # average credit alone.
     panels = {k: panel_lookup(p) for k, p in sem["worlds"].items()}
@@ -197,10 +227,8 @@ def to_v10(receipt, on_cap_unmet="flag-review"):
         row["session_cost_usd"] = row["C_run"] = None if needed is None else needed * row["cost_per_credit"]
         # A fixture whose credit check differs between the two rules needs its own builder.
         assert row["credit_ok"] == (row["available_credit_usd"] is None or needed <= row["available_credit_usd"])
-        run = row["session_cost_usd"] if receipt["cost_policy"]["worker_money_included"] else 0.
-        row["J"] = cost(run, row["T"], row["P_loud"]["mean"], row["P_silent"]["mean"], selection["constants"])
-    if sem["sampling"]["enabled"]:
-        sem["sampling"]["cells"] = legacy_sampling_cells(receipt)
+    # v10 held a Dirichlet posterior per expert in place of the cell's two beliefs.
+    restore_dirichlet(receipt)
     restore_cap(receipt)
     return receipt
 
@@ -221,31 +249,7 @@ def to_v9(receipt):
     sem["prompt_version"] = "semantic-reader-v7"
     sem["duration_observations"] = sem["duration_observations"][:8]
 
-    panels = {k: panel_lookup(p) for k, p in sem["worlds"].items()}
-    experts = sem["beliefs"]["experts"]
-    weights = {e["key"]: e["weight"] for e in experts}
-    selection = receipt["selection"]
-    policy = selection["sampling_policy"]
-    constants = selection["constants"]
-    money_included = receipt["cost_policy"]["worker_money_included"]
-
-    for row in selection["cells"]:
-        pair = row["family"], row["effort"]
-        intervals, _ = posterior_intervals(
-            panels, weights, pair, sem["outcome_observations"], policy, legacy_v9=True
-        )
-        for field in ("P_clean", "P_loud", "P_silent", "P_silent_accepted"):
-            row[field] = intervals[field]
-        row["admission_risk"] = intervals["admission_risk"]
-        row["admissible"] = row["admission_risk"] <= constants["epsilon"]
-        loud, silent = row["P_loud"]["mean"], row["P_silent"]["mean"]
-        run = row["session_cost_usd"] if money_included else 0.0
-        row["expected_attempts"] = 1.0 / denominator(loud)
-        row["J"] = cost(run, row["T"], loud, silent, constants)
-
-    if sem["sampling"]["enabled"]:
-        sem["sampling"]["cells"] = legacy_sampling_cells(receipt, legacy_v9=True)
-
+    restore_dirichlet(receipt, legacy_v9=True)
     restore_cap(receipt)
     return receipt
 

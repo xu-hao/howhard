@@ -123,8 +123,12 @@ def readers(receipt):
 
 
 def counts(receipt, family="opus", effort="high"):
+    """The cell's counted clean, loud and silent weight, as its two outcome beliefs hold it."""
     cell = next(c for c in receipt["semantic"]["sampling"]["cells"] if (c["family"], c["effort"]) == (family, effort))
-    return cell["outcome_posterior"]["counts"]
+    loud, silent = cell["outcome_beliefs"]["loud"]["counts"], cell["outcome_beliefs"]["silent"]["counts"]
+    # The accepted-defect share counts silent against clean; the loud rate counts loud against both.
+    assert loud[1] == pytest.approx(silent[0] + silent[1])
+    return [silent[1], loud[0], silent[0]]
 
 
 def test_matched_run_counts_at_similarity_times_age_and_other_runs_count_nowhere(project):

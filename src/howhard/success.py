@@ -1,6 +1,12 @@
-"""Accepted-result retry costs, per-cell Dirichlet outcome posteriors and amount beliefs."""
+"""Accepted-result retry costs, per-cell outcome beliefs on the log-odds scale and amount beliefs.
+
+A cell holds two independent beliefs, one for its loud rate and one for its accepted-defect
+share, each on one fixed grid of log-odds. The Dirichlet outcome posterior of decision
+formats v9 and v10 stays below as a frozen reader for those receipts.
+"""
 
 from copy import deepcopy
+from functools import lru_cache
 import math
 import sys
 
@@ -10,10 +16,13 @@ from .context import DECISION_FORMAT, LEGACY_DECISION_V7, LEGACY_DECISION_V8, LE
 from .llm import SETTINGS
 from .validation import HowHardError, keys, number
 
-DEFAULTS = {"min_concentration": 2., "max_concentration": 1000000., "prior_strength": 8.,
-            "uncertainty_multiplier": 1., "admission_quantile": .8, "trial_probability": .2,
+DEFAULTS = {"uncertainty_multiplier": 1., "admission_quantile": .8, "trial_probability": .2,
             "all_excluded_factor": .5, "half_life_days": 14., "comparison_cap": 256,
-            "model_worth": 5., "task_worth_amount": 1., "duration_miss": 1.3, "scatter_share": .5}
+            "model_worth": 5., "task_worth_amount": 1., "duration_miss": 1.3, "scatter_share": .5,
+            "task_worth_silent": 32., "task_worth_loud": 16.}
+# The Dirichlet posterior's three constants. Outcome beliefs on the log-odds scale do not read
+# them: a configuration that still sets one loads with a notice, and only v7-v10 receipts store them.
+RETIRED = ("prior_strength", "min_concentration", "max_concentration")
 # Frozen v7/v8 receipts recorded this policy shape; it is read-only history.
 LEGACY_DEFAULTS = ("min_concentration", "max_concentration", "prior_strength", "explore_within", "uncertainty_multiplier")
 # Frozen v9/v10 receipts aged evidence by count (outcome_recency), not by time, and had no
@@ -27,7 +36,23 @@ P80_Z = 0.8416  # The 80% point of the standard normal.
 # exp() overflows a float just above 709. Only a stated range wider than a factor of e^100
 # reaches this; its variance then saturates instead of overflowing.
 EXP_CAP = 700.
+# The frozen Dirichlet posterior of v9 and v10 receipts.
 POSTERIOR_FIELDS = ("prior", "prior_concentration", "counts", "evidence_weight", "alpha")
+# Outcome beliefs: one grid of log-odds for every belief, x_j = -16 + 0.01 j for j = 0 .. 2500.
+GRID_X = np.arange(2501) * .01 - 16.
+GRID_P = 1. / (1. + np.exp(-GRID_X))        # logistic(x_j): the rate each grid point stands for.
+GRID_LOG_YES = -np.log1p(np.exp(-GRID_X))   # ln logistic(x_j)
+GRID_LOG_NO = -np.log1p(np.exp(GRID_X))     # ln (1 - logistic(x_j))
+GRID_ODDS = np.exp(GRID_X)                  # logistic(x_j) / (1 - logistic(x_j))
+for _grid in (GRID_X, GRID_P, GRID_LOG_YES, GRID_LOG_NO, GRID_ODDS):
+    _grid.setflags(write=False)
+FLAT_SPREAD = 1.869                 # The spread of a 95% range of [0.025, 0.975]: the flat belief.
+RANGE_HOLD = (.0001, .9999)         # The ends of a stated 95% range are held in this interval.
+PREDICTION_HOLD = (.0001, .9998)    # The grid's top value is 0.99988, so every held prediction can be met.
+CENTRE_BRACKET, CENTRE_HALVINGS = (-25., 25.), 60
+# Each rate's most a record on other tasks is worth for one task, and the fields it adds to a belief.
+RATES = {"loud": ("task_worth_loud", ("attempts", "odds")), "silent": ("task_worth_silent", ("pi",))}
+BELIEF_FIELDS = ("prediction", "stated_spread", "n_start", "spread", "centre", "counts", "mean", "lower", "upper")
 # Frozen v8 to v10 receipts calibrated active time with these; see calibrate_duration.
 DURATION_PRIOR_STRENGTH = 1.0
 MAX_DURATION_LOG_SD = 2.0
@@ -180,7 +205,8 @@ def credit_fits(needed_credit, credit_p80, available_credit):
 def validate_policy(policy, *, legacy=False, count_aged=False):
     """Validate the sampling policy; ``legacy`` reads v7/v8 receipts and ``count_aged`` v9/v10 ones.
 
-    Only the current policy carries the time-based evidence constants and the two tier constants.
+    Only the current policy carries the time-based evidence constants, the two tier constants and
+    the three worths of the outcome beliefs; only the older ones carry the Dirichlet constants.
     """
     if not legacy and isinstance(policy, dict) and "explore_within" in policy:
         raise HowHardError("sampling.explore_within: removed; Thompson eligibility uses posterior overlap. "
@@ -188,7 +214,8 @@ def validate_policy(policy, *, legacy=False, count_aged=False):
     keys(policy, list(LEGACY_DEFAULTS if legacy else COUNT_AGED_DEFAULTS if count_aged else DEFAULTS), where="sampling")
     for key, value in policy.items():
         number(value, "sampling."+key, nonnegative=True)
-    if not 1 <= policy["min_concentration"] <= policy["max_concentration"] or policy["prior_strength"] <= 0:
+    dirichlet = legacy or count_aged
+    if dirichlet and (not 1 <= policy["min_concentration"] <= policy["max_concentration"] or policy["prior_strength"] <= 0):
         raise HowHardError("sampling: require 1 <= min_concentration <= max_concentration and positive prior_strength")
     if policy["uncertainty_multiplier"] <= 0:
         raise HowHardError("sampling: uncertainty_multiplier must be positive")
@@ -196,7 +223,7 @@ def validate_policy(policy, *, legacy=False, count_aged=False):
         if policy["explore_within"] > 1:
             raise HowHardError("sampling: explore_within must be in [0,1]")
         return policy
-    if policy["min_concentration"] > policy["prior_strength"]:
+    if dirichlet and policy["min_concentration"] > policy["prior_strength"]:
         raise HowHardError("sampling: require min_concentration <= prior_strength (the bounded forecast prior range)")
     if not .5 <= policy["admission_quantile"] < 1:
         raise HowHardError("sampling.admission_quantile: expected a probability in [0.5, 1)")
@@ -216,6 +243,9 @@ def validate_policy(policy, *, legacy=False, count_aged=False):
         raise HowHardError("sampling: model_worth, task_worth_amount and duration_miss must be positive")
     if not 0 < policy["scatter_share"] <= 1:
         raise HowHardError("sampling.scatter_share: expected a share in (0, 1]")
+    for key in ("task_worth_silent", "task_worth_loud"):
+        if policy[key] <= 0:
+            raise HowHardError(f"sampling.{key}: expected a positive number of runs")
     return policy
 
 
@@ -317,7 +347,7 @@ def forecast_probabilities(row):
 
 
 def prior_concentration(row, policy, probabilities=None):
-    """Bounded forecast pseudo-count kappa_0; optional credible intervals can only widen it."""
+    """Frozen reader of v9 and v10 receipts: the bounded forecast pseudo-count kappa_0."""
     p = forecast_probabilities(row) if probabilities is None else probabilities
     kappa = policy["prior_strength"]
     for index, name in ((1, "loud"), (2, "silent")):
@@ -339,8 +369,156 @@ def outcome_counts(pair, outcome_observations):
     return [math.fsum(c) for c in counts]
 
 
+def logit(p):
+    return math.log(p) - math.log1p(-p)
+
+
+def rate_guesses(row):
+    """One expert's guess for each rate on the log-odds scale, with its stated spread.
+
+    The loud rate is ``loud``; the accepted-defect share is ``silent / (clean + silent)``, so
+    ``silent_ci`` is divided by ``clean + silent``. The spread is 0 when no range is stated.
+    """
+    clean, loud, silent = (float(p) for p in forecast_probabilities(row))
+    accepted = clean + silent
+
+    def spread(interval, scale):
+        if interval is None:
+            return 0.
+        lo, hi = (min(RANGE_HOLD[1], max(RANGE_HOLD[0], float(end) / scale)) for end in interval)
+        return max(0., (logit(hi) - logit(lo)) / CI_Z_WIDTH)
+    return {"loud": (logit(loud), spread(row.get("loud_ci"), 1.)),
+            "silent": (logit(silent / accepted), spread(row.get("silent_ci"), accepted))}
+
+
+def merged_forecast(panels, experts, pair):
+    """One forecast per rate for a cell: the experts' guesses merged on the log-odds scale.
+
+    ``m = sum w_k m_k`` and ``s_stated^2 = sum w_k (s_k^2 + (m_k - m)^2)``, so experts that
+    disagree make the forecast less certain. The prediction is ``logistic(m)``, held.
+    """
+    guesses = [(e["weight"], rate_guesses(panels[e["key"]][pair])) for e in experts]
+    merged = {}
+    for rate in RATES:
+        centre = math.fsum(w * guess[rate][0] for w, guess in guesses)
+        variance = math.fsum(w * (guess[rate][1] ** 2 + (guess[rate][0] - centre) ** 2) for w, guess in guesses)
+        merged[rate] = {"prediction": min(PREDICTION_HOLD[1], max(PREDICTION_HOLD[0], _sigmoid(centre))),
+                        "stated_spread": math.sqrt(max(0., variance))}
+    return merged
+
+
+def start_worth(rate, policy):
+    """``N_start``: how many runs the prediction is worth for this rate."""
+    return 1. / (1. / policy["model_worth"] + 1. / policy[RATES[rate][0]])
+
+
+def start_spread(prediction, stated_spread, n_start):
+    """The spread at the start: a stated range can widen it, never narrow it, up to the flat belief."""
+    one_run = 1. / math.sqrt(prediction * (1. - prediction))
+    return min(FLAT_SPREAD, max(stated_spread, one_run / math.sqrt(n_start)))
+
+
+@lru_cache(maxsize=256)
+def _grid_belief(prediction, spread, n_yes, n_no):
+    """Centre of the start, and the belief after the counted runs with its running total, on the grid.
+
+    The start is a bell curve whose grid average equals the prediction. Its centre is found by
+    halving the bracket, keeping the upper half when the average at the midpoint is too low.
+    """
+    def bell(centre):
+        log_q = -(GRID_X - centre) ** 2 / (2. * spread ** 2)
+        return log_q - log_q.max()
+    lo, hi = CENTRE_BRACKET
+    for _ in range(CENTRE_HALVINGS):
+        mid = (lo + hi) / 2.
+        q = np.exp(bell(mid))
+        if float(q @ GRID_P) / float(q.sum()) < prediction:
+            lo = mid
+        else:
+            hi = mid
+    centre = (lo + hi) / 2.
+    log_b = bell(centre) + n_yes * GRID_LOG_YES + n_no * GRID_LOG_NO
+    b = np.exp(log_b - log_b.max())
+    b /= b.sum()
+    total = np.cumsum(b)
+    for array in (b, total):
+        array.setflags(write=False)
+    return centre, b, total
+
+
+def _belief_grid(belief):
+    return _grid_belief(belief["prediction"], belief["spread"], *belief["counts"])
+
+
+def belief_point(belief, q):
+    """The rate at the first grid point whose running total of the belief reaches ``q``."""
+    total = _belief_grid(belief)[2]
+    return float(GRID_P[min(len(GRID_P) - 1, int(np.searchsorted(total, q, side="left")))])
+
+
+def belief_variance(belief):
+    b = _belief_grid(belief)[1]
+    return max(0., float(b @ GRID_P ** 2) - float(b @ GRID_P) ** 2)
+
+
+def rate_belief(rate, forecast, counts, policy, *, epsilon=None):
+    """One rate's belief: the start from its merged forecast, reshaped by the counted runs.
+
+    ``counts`` is ``[n_yes, n_no]``. The start counts as ``N_start`` runs and each counted run
+    as its weight, so the forecast never fades out. With ``epsilon``, the accepted-defect share
+    also carries ``pi``, the share of the belief at or below it.
+    """
+    n_start = start_worth(rate, policy)
+    belief = {"prediction": forecast["prediction"], "stated_spread": forecast["stated_spread"], "n_start": n_start,
+              "spread": start_spread(forecast["prediction"], forecast["stated_spread"], n_start),
+              "counts": [float(n) for n in counts]}
+    centre, b, total = _belief_grid(belief)
+    mean = float(b @ GRID_P)
+    lower, upper = (belief_point(belief, q) for q in INTERVAL)
+    belief.update(centre=centre, mean=mean, lower=min(mean, lower), upper=max(mean, upper))
+    if rate == "loud":
+        # Expected attempts E[1 / (1 - theta_l)] and expected loud failures per accepted result.
+        belief.update(attempts=float(b @ (1. + GRID_ODDS)), odds=float(b @ GRID_ODDS))
+    elif epsilon is not None:
+        within = int(np.searchsorted(GRID_P, epsilon, side="right"))
+        belief["pi"] = min(1., float(total[within - 1])) if within else 0.
+    return belief
+
+
+def outcome_beliefs(panels, experts, pair, outcome_observations, policy, *, epsilon=None):
+    """The cell's two independent beliefs: ``loud`` for theta_l and ``silent`` for S.
+
+    The accepted-defect share counts silent against clean runs; the loud rate counts loud
+    against clean and silent ones. Only this cell's counted runs enter.
+    """
+    forecast = merged_forecast(panels, experts, pair)
+    clean, loud, silent = outcome_counts(pair, outcome_observations)
+    return {"loud": rate_belief("loud", forecast["loud"], (loud, clean + silent), policy),
+            "silent": rate_belief("silent", forecast["silent"], (silent, clean), policy, epsilon=epsilon)}
+
+
+def belief_probabilities(beliefs):
+    """``[P_clean, P_loud, P_silent]`` at the averages of the two beliefs."""
+    loud, share = beliefs["loud"]["mean"], beliefs["silent"]["mean"]
+    return [(1. - loud) * (1. - share), loud, (1. - loud) * share]
+
+
+def belief_intervals(beliefs, policy):
+    """What a selection cell reads from its beliefs.
+
+    ``P_loud`` and ``P_silent_accepted`` are the two beliefs with their 95% points. ``P_clean``
+    and ``P_silent`` carry a mean only, because neither has a belief of its own.
+    """
+    clean, loud, silent = belief_probabilities(beliefs)
+    interval = lambda belief: {k: belief[k] for k in ("mean", "lower", "upper")}
+    return {"P_clean": {"mean": clean}, "P_loud": interval(beliefs["loud"]), "P_silent": {"mean": silent},
+            "P_silent_accepted": interval(beliefs["silent"]),
+            "admission_risk": belief_point(beliefs["silent"], policy["admission_quantile"]),
+            "pi": beliefs["silent"]["pi"]}
+
+
 def outcome_posterior(row, pair, outcome_observations, policy, *, legacy_v9=False):
-    """Dirichlet posterior with continuous cold-start prior decay over empirical weight."""
+    """Frozen reader of v9 and v10 receipts: the Dirichlet posterior, with v10's cold-start decay."""
     p0 = forecast_probabilities(row)
     kappa0 = prior_concentration(row, policy, p0)
     counts = outcome_counts(pair, outcome_observations)
@@ -384,11 +562,8 @@ def admission_pool(cells, policy):
     return [row for row in schedulable if row["pi"] >= bar], POOLS[1]
 
 
-def posterior_intervals(panels, weights, pair, outcome_observations, policy, *, legacy_v9=False, epsilon=None):
-    """Expert-mixture Dirichlet marginals plus the Beta(alpha_silent, alpha_clean) accepted risk.
-
-    With ``epsilon``, also ``pi``: the share of that accepted-risk mixture at or below ``epsilon``.
-    """
+def posterior_intervals(panels, weights, pair, outcome_observations, policy, *, legacy_v9=False):
+    """Frozen reader of v9 and v10 receipts: expert-mixture Dirichlet marginals and accepted risk."""
     from .semantic import OUTCOMES
     posteriors = {
         k: outcome_posterior(panels[k][pair], pair, outcome_observations, policy, legacy_v9=legacy_v9)
@@ -402,8 +577,6 @@ def posterior_intervals(panels, weights, pair, outcome_observations, policy, *, 
     accepted = [(weights[k], posteriors[k]["alpha"][2], posteriors[k]["alpha"][0]) for k in weights]
     intervals["P_silent_accepted"] = mixture_interval(accepted)
     intervals["admission_risk"] = mixture_quantile(accepted, policy["admission_quantile"])
-    if epsilon is not None:
-        intervals["pi"] = min(1., mixture_cdf(accepted, epsilon))
     return intervals, posteriors
 
 
@@ -432,43 +605,39 @@ def envelope(values, mean):
     return {"mean": mean, "lower": min(mean, quantile(.025)), "upper": max(mean, quantile(.975))}
 
 
-def calibration(result, state, expert, cell, row):
-    """Per-cell Dirichlet posterior and the first-order spread of the cost to an accepted result.
+def calibration(result, state, expert, cell):
+    """A cell's frozen draw inputs: its two outcome beliefs and the first-order spread of its cost.
 
-    Active time and run cost are the cell's own beliefs, already merged over the experts:
-    ``T`` and ``C_run`` are their averages, the time term of the spread is
-    ``E[T]^2 * (exp(s'^2) - 1)``, and run cost is exact.
+    Every input is the cell's own belief, already merged over the experts: the two rates
+    from one merged forecast each plus only this cell's counted runs, and active time and
+    run cost as their averages ``T`` and ``C_run``. Experts that disagree widen those
+    beliefs, so the spread has no separate between-expert term. The time term of the
+    spread is ``E[T]^2 * (exp(s'^2) - 1)``, and run cost is exact.
     """
     from .semantic import panel_lookup
     pair = cell["family"], cell["effort"]
     policy = result["sampling_policy"]
-    outcome_obs = state.get("outcome_observations", [])
-    posterior = outcome_posterior(row, pair, outcome_obs, policy)
-    probabilities = np.asarray(posterior["mean"])
-    concentration = posterior["concentration"]
-    summary = panel_lookup(result["cells"])[pair]
-    # Delta-method uncertainty for the same-cell retry objective, including
-    # Dirichlet outcome covariance and log-normal active-time variance.
-    run = summary["session_cost_usd"] if cell["money_included"] else 0.
     constants = result["constants"]
+    panels = {key: panel_lookup(panel) for key, panel in state["worlds"].items()}
+    beliefs = outcome_beliefs(panels, state["beliefs"]["experts"], pair, state.get("outcome_observations", []), policy,
+                              epsilon=constants["epsilon"])
+    probabilities = belief_probabilities(beliefs)
+    loud, silent = probabilities[1], probabilities[2]
+    summary = panel_lookup(result["cells"])[pair]
+    # Delta-method spread of the same-cell retry objective: the two beliefs are independent, so
+    # their variances add, plus the log-normal variance of active time.
+    run = summary["session_cost_usd"] if cell["money_included"] else 0.
     hours = summary["T"]
-    expected = cost(run, hours, probabilities[1], probabilities[2], constants)
-    d = denominator(probabilities[1])
-    gradient = np.array([0., (constants["C_loud"]+expected)/d, constants["C_silent"]/d])
-    covariance = (np.diag(probabilities)-np.outer(probabilities, probabilities))/(concentration+1)
-    outcome_variance = max(0., float(gradient @ covariance @ gradient))
+    expected = cost(run, hours, loud, silent, constants)
+    d = denominator(loud)
+    share = beliefs["silent"]["mean"]
+    rates_variance = (((constants["C_loud"] + expected - constants["C_silent"] * share) / d) ** 2
+                      * belief_variance(beliefs["loud"])
+                      + constants["C_silent"] ** 2 * belief_variance(beliefs["silent"]))
     hours_variance = min(sys.float_info.max, hours ** 2 * math.expm1(min(summary["active_time"]["spread"] ** 2, EXP_CAP)))
-    variance = outcome_variance + ((constants["lambda_per_hour"] / d) ** 2) * hours_variance
-    expert_costs = []
-    for e in state["beliefs"]["experts"]:
-        prediction = panel_lookup(state["worlds"][e["key"]])[pair]
-        mean = outcome_posterior(prediction, pair, outcome_obs, policy)["mean"]
-        expert_costs.append((e["weight"], cost(run, hours, mean[1], mean[2], constants)))
-    mean_cost = sum(w*j for w, j in expert_costs)
-    variance = max(variance, sum(w*(j-mean_cost)**2 for w, j in expert_costs))
+    variance = rates_variance + ((constants["lambda_per_hour"] / d) ** 2) * hours_variance
     return {"family": cell["family"], "effort": cell["effort"], "expert": expert["key"],
-            "outcome_posterior": {k: posterior[k] for k in POSTERIOR_FIELDS},
-            "probabilities": probabilities.tolist(), "concentration": concentration,
+            "outcome_beliefs": beliefs, "probabilities": probabilities,
             "cost_sd": min(sys.float_info.max, math.sqrt(variance))}
 
 
@@ -556,10 +725,14 @@ def validate_selection(selection, semantic, capability, cost_policy, *, decision
         if type(row["credit_ok"]) is not bool or row["credit_ok"] != expected_ok:
             raise HowHardError("decision.selection: inconsistent credit_ok status")
         for field in ("P_clean", "P_loud", "P_silent", "P_silent_accepted"):
-            keys(row[field], ["mean", "lower", "upper"], where="selection."+field)
+            # v11 reads P_loud and P_silent_accepted from a belief each; the other two carry a mean only.
+            ranged = not tiered or field in ("P_loud", "P_silent_accepted")
+            keys(row[field], ["mean", "lower", "upper"] if ranged else ["mean"], where="selection."+field)
             for value in row[field].values():
                 number(value, "selection probability", nonnegative=True)
-            if not 0 <= row[field]["lower"] <= row[field]["mean"] <= row[field]["upper"] <= 1+1e-10:
+            if ranged and not 0 <= row[field]["lower"] <= row[field]["mean"] <= row[field]["upper"] <= 1+1e-10:
+                raise HowHardError("decision.selection: inconsistent probability envelope")
+            if not row[field]["mean"] <= 1+1e-10:
                 raise HowHardError("decision.selection: inconsistent probability envelope")
         pair = row["family"], row["effort"]
         if pair not in panels["llm"] or pair not in known or pair in seen or row["model"] != known[pair]["model"]:
@@ -576,18 +749,21 @@ def validate_selection(selection, semantic, capability, cost_policy, *, decision
             if row["P_silent_accepted"] != expected_risk or row["admissible"] != (expected_risk["upper"] <= constants["epsilon"]):
                 raise HowHardError("decision.selection: accepted-result risk/cap mismatch")
         else:
-            weights = {e["key"]: e["weight"] for e in experts}
-            intervals, _ = posterior_intervals(
-                panels,
-                weights,
-                pair,
-                semantic["outcome_observations"],
-                policy,
-                legacy_v9=(decision_format == LEGACY_DECISION_V9),
-                epsilon=constants["epsilon"] if tiered else None,
-            )
+            if tiered:
+                # Recompute the cell's two beliefs from the frozen forecasts and counted runs.
+                intervals = belief_intervals(outcome_beliefs(
+                    panels, experts, pair, semantic["outcome_observations"], policy, epsilon=constants["epsilon"]), policy)
+            else:
+                intervals, _ = posterior_intervals(
+                    panels,
+                    {e["key"]: e["weight"] for e in experts},
+                    pair,
+                    semantic["outcome_observations"],
+                    policy,
+                    legacy_v9=(decision_format == LEGACY_DECISION_V9),
+                )
             for field in ("P_clean", "P_loud", "P_silent", "P_silent_accepted"):
-                if any(abs(row[field][k] - intervals[field][k]) > 1e-9 for k in ("mean", "lower", "upper")):
+                if any(abs(row[field][k] - intervals[field][k]) > 1e-9 for k in row[field]):
                     raise HowHardError("decision.selection: posterior credible interval mismatch")
             risk = number(row["admission_risk"], "selection.admission_risk", nonnegative=True)
             if abs(risk - intervals["admission_risk"]) > 1e-9:
@@ -596,6 +772,9 @@ def validate_selection(selection, semantic, capability, cost_policy, *, decision
                 pi = number(row["pi"], "selection.pi", nonnegative=True)
                 if abs(pi - intervals["pi"]) > 1e-9:
                     raise HowHardError("decision.selection: pi does not match the frozen forecasts and outcome observations")
+                drawn = next((c for c in semantic["sampling"]["cells"] if (c["family"], c["effort"]) == pair), None)
+                if drawn is None or abs(drawn["outcome_beliefs"]["silent"]["pi"] - intervals["pi"]) > 1e-9:
+                    raise HowHardError("decision.selection: pi of the frozen draw does not match the frozen forecasts and outcome observations")
                 if row["tier"] != admission_tier(pi, policy) or row["admissible"] != (row["tier"] == "trusted"):
                     raise HowHardError("decision.selection: tier/admissible does not match pi")
             elif row["admissible"] != (risk <= constants["epsilon"]):

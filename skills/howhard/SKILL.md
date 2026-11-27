@@ -66,14 +66,14 @@ the host's actual tools execute the task.
    execution duration excluding external scheduler/queue wait. When genuinely unsure of a
    cell's loud or silent probability, add `loud_ci`/`silent_ci` as a `[lo, hi]` 95%
    credible interval containing the value; wide intervals let observed outcomes dominate
-   sooner, narrow ones cannot strengthen the bounded prior, and rows without intervals
+   sooner, narrow ones cannot narrow the forecast's start, and rows without intervals
    remain valid. State the same kind of 95% range for active time as `seconds_ci`
    `[lo, hi]` and, on a row with `token_usage`, for any token kind as
    `token_usage_ci` `{kind: [lo, hi]}`; each range must contain its value, a kind
    forecast at zero is exactly zero unless you state a non-zero upper end, and there is
    no range on total tokens or cost. Give the range you actually believe rather than
-   omitting it or narrowing it to look confident. Cold-start priors decay continuously to zero weight once a cell reaches
-   `W_emp >= 2.0` on a prototype. Handle one explicit re-filter and stronger-only
+   omitting it or narrowing it to look confident. A forecast never fades out: each of a cell's two outcome
+   beliefs keeps it at the weight of about four runs, beside the cell's own counted runs. Handle one explicit re-filter and stronger-only
    widening requests; never truncate an inventory/band or forecast excluded cells.
    The backend learns the order and threshold from actual similar executions, with
    prior-only placement labels for unseen cells. Placement is task-specific; there is
