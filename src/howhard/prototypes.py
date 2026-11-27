@@ -10,19 +10,21 @@ import sqlite3
 import numpy as np
 
 from .accounting import CATEGORIES, total as token_total
-from .context import PROJECT_FORMAT, digest
+from .context import DECISION_FORMAT, PROJECT_FORMAT, digest
 from .llm import SETTINGS
 from .storage import effective_active_seconds, locked
 from .validation import HowHardError
 
 OUTCOMES = ("clean", "loud", "silent")
-# What a stored Stage 2 forecast keeps: its values, every stated range, and (as "host") who made it.
+# What a stored Stage 2 forecast keeps: its values and every stated range. Its host is kept beside it.
 FORECAST_FIELDS = ("clean", "loud", "silent", "tokens", "seconds", "token_usage",
                    "loud_ci", "silent_ci", "seconds_ci", "token_usage_ci")
-EMPIRICAL_BASE = (0.88, 0.08, 0.04)
+# A merged value states the range ``centre -+ RANGE_Z * spread`` on its own scale: a central 95% range.
+RANGE_Z = 1.96
+# A merged spread at or below this is rounding in the average, not disagreement: it reads as no spread.
+SPREAD_FLOOR = 1e-9
 OVERRUN_GRACE_RATIO = 1.5
 STAGE1_MIN_CAP_WEIGHT = 0.5
-STAGE2_MIN_EMP_WEIGHT = 0.5
 BACKFILL_BATCH_THRESHOLD = 32
 BACKFILL_COSINE_THRESHOLD = 0.82
 SPLIT_MIN_MEMBERS = 12
@@ -208,7 +210,74 @@ def _load_cells(db, prototype_ids):
             "prior": json.loads(prior_raw) if prior_raw is not None else None,
             "stats": json.loads(stats_raw),
         }
+    for cells in result.values():
+        for entry in cells.values():
+            entry["forecasts"] = cell_forecasts(entry["prior"])
     return result
+
+
+def cell_forecasts(prior):
+    """The Stage 2 forecasts stored on one prototype cell, keyed by the host that made each.
+
+    The key ``None`` is the one unnamed host. A cell keeps its forecasts in ``forecasts``, one
+    entry per host. A forecast stored before hosts were kept apart sits directly on the cell
+    beside the Stage 1 prior; it belongs to the host named there, or to the unnamed host.
+    """
+    if not isinstance(prior, dict):
+        return {}
+    result = {}
+    if all(k in prior for k in OUTCOMES):
+        result[prior.get("host")] = {k: deepcopy(prior[k]) for k in FORECAST_FIELDS if k in prior}
+    for item in prior.get("forecasts", ()):
+        result[item.get("host")] = {k: deepcopy(item[k]) for k in FORECAST_FIELDS if k in item}
+    return result
+
+
+def _store_forecast(prior, host, forecast):
+    """Keep ``forecast`` as ``host``'s one forecast on the cell; every other host's stays as it is."""
+    kept = cell_forecasts(prior)
+    kept[host] = {k: deepcopy(forecast[k]) for k in FORECAST_FIELDS if k in forecast}
+    for field in (*FORECAST_FIELDS, "host"):
+        prior.pop(field, None)
+    prior["forecasts"] = [{"host": name, **kept[name]}
+                          for name in sorted(kept, key=lambda name: (name is not None, name or ""))]
+    return prior
+
+
+class _RunHosts:
+    """The host of each recorded run: the name in its decision receipt, read at most once.
+
+    A run with no receipt, or with a receipt that carries no name, belongs to the unnamed host.
+    """
+
+    def __init__(self, db):
+        self.db, self.known = db, {}
+
+    def of(self, row):
+        decision_id = row.get("decision_id")
+        if not decision_id:
+            return None
+        if decision_id not in self.known:
+            self.known[decision_id] = self._read(decision_id)
+        return self.known[decision_id]
+
+    def _read(self, decision_id):
+        import zstandard as zstd
+
+        from .native import host_name
+
+        try:
+            stored = self.db.execute(
+                "SELECT payload FROM decisions WHERE decision_id=?", (decision_id,)
+            ).fetchone()
+            if stored is None:
+                return None
+            receipt = json.loads(zstd.ZstdDecompressor().decompress(stored[0]))
+            if not isinstance(receipt, dict) or receipt.get("format") != DECISION_FORMAT:
+                return None
+            return host_name(receipt.get("host"))
+        except (sqlite3.Error, zstd.ZstdError, ValueError, UnicodeError, HowHardError):
+            return None
 
 
 def _extract_category_shares(row):
@@ -228,8 +297,12 @@ def _extract_category_shares(row):
     return [sums[k] / tot for k in CATEGORIES]
 
 
-def _apply_member_to_stats(stats, row, member_weight, config, prior=None):
-    """Apply one non-interrupted member observation using exact exponential-decay recurrences."""
+def _apply_member_to_stats(stats, row, member_weight, config, prior=None, hosts=None):
+    """Apply one non-interrupted member observation using exact exponential-decay recurrences.
+
+    A clean run is timely against the forecast its own host stored on the cell (``prior``);
+    ``hosts`` names the run's host. With no such forecast there is no overrun discount.
+    """
     if row["outcome"] == "interrupted" or row["outcome"] not in OUTCOMES:
         return stats
     out_recency = STATS_OUTCOME_DECAY
@@ -260,7 +333,9 @@ def _apply_member_to_stats(stats, row, member_weight, config, prior=None):
     )
     if row["outcome"] == "clean":
         active = effective_active_seconds(row)
-        prior_sec = prior.get("seconds") if isinstance(prior, dict) else None
+        stored = cell_forecasts(prior)
+        own = stored.get(hosts.of(row) if hosts is not None else None) if stored else None
+        prior_sec = own.get("seconds") if own is not None else None
         if (
             active is not None
             and active > 0
@@ -417,8 +492,12 @@ def _insert_prototype(db, task_type, risk_class, rep, *, parent_id=None, salt=""
     }
 
 
-def _recompute_prototype(db, proto_id, rows_by_id, row_order, config):
-    """Recompute prototype_cells and member_count cleanly in chronological order from effective rows."""
+def _recompute_prototype(db, proto_id, rows_by_id, row_order, config, hosts=None):
+    """Recompute prototype_cells and member_count cleanly in chronological order from effective rows.
+
+    Each cell keeps its Stage 1 prior and every host's stored forecast unchanged.
+    """
+    hosts = hosts if hosts is not None else _RunHosts(db)
     members = db.execute(
         "SELECT evidence_id, weight FROM prototype_members WHERE prototype_id=?",
         (proto_id,),
@@ -446,7 +525,7 @@ def _recompute_prototype(db, proto_id, rows_by_id, row_order, config):
         cell_families[pair] = row["family"]
         st = cell_stats.setdefault(pair, empty_stats())
         prior_obj = priors.get(pair, (None, None))[1]
-        _apply_member_to_stats(st, row, w, config, prior=prior_obj)
+        _apply_member_to_stats(st, row, w, config, prior=prior_obj, hosts=hosts)
 
     now = datetime.now(timezone.utc).isoformat()
     all_pairs = set(priors) | set(cell_stats)
@@ -626,7 +705,7 @@ def _prepare_split_plan(proto, member_rows, cell_entries, retrieval):
     return (rep0, members0), (rep1, members1)
 
 
-def _apply_split(db, parent, children_plan, rows_by_id, row_order, config):
+def _apply_split(db, parent, children_plan, rows_by_id, row_order, config, hosts=None):
     parent_id = parent["prototype_id"]
     parent_cells = _load_cells(db, [parent_id]).get(parent_id, {})
     db.execute("UPDATE prototypes SET active=0 WHERE prototype_id=?", (parent_id,))
@@ -641,7 +720,8 @@ def _apply_split(db, parent, children_plan, rows_by_id, row_order, config):
             salt=f"split:{parent_id}:{idx}",
         )
         cid = child["prototype_id"]
-        # Seed parent cold-start priors as initial fallback so covered cells stay covered without re-querying LLM.
+        # Each child starts with the parent's Stage 1 prior and every host's stored forecast,
+        # so a cell that was covered under a host stays covered under that host.
         for (model, effort), entry in parent_cells.items():
             if entry["prior"] is not None:
                 db.execute(
@@ -661,7 +741,7 @@ def _apply_split(db, parent, children_plan, rows_by_id, row_order, config):
                 "INSERT OR REPLACE INTO prototype_members VALUES (?, ?, ?)",
                 (row["id"], cid, float(w)),
             )
-        _recompute_prototype(db, cid, rows_by_id, row_order, config)
+        _recompute_prototype(db, cid, rows_by_id, row_order, config, hosts)
 
 
 def _cached_or_encode_vectors(engine, texts):
@@ -822,6 +902,7 @@ def sync_observations(engine):
     with locked(engine.config, operation="prototype sync"):
         db = _connect(engine.config, write=True)
         try:
+            hosts = _RunHosts(db)
             stored_meta = db.execute(
                 "SELECT value FROM prototype_meta WHERE key='journal_digest'"
             ).fetchone()
@@ -904,7 +985,7 @@ def sync_observations(engine):
                         cells_map = _load_cells(db, [proto_dict["prototype_id"]]).get(proto_dict["prototype_id"], {})
                         plan = _prepare_split_plan(proto_dict, ordered_m, cells_map, engine.retrieval)
                         if plan is not None:
-                            _apply_split(db, proto_dict, plan, rows_by_id, row_order, engine.config)
+                            _apply_split(db, proto_dict, plan, rows_by_id, row_order, engine.config, hosts)
                 else:
                     recompute_pids = set()
                     deleted_ids = set(current_state) - set(row_digests)
@@ -958,7 +1039,7 @@ def sync_observations(engine):
                             )
 
                     for pid in sorted(recompute_pids):
-                        _recompute_prototype(db, pid, rows_by_id, row_order, engine.config)
+                        _recompute_prototype(db, pid, rows_by_id, row_order, engine.config, hosts)
 
                     # 2. Incremental appends for brand-new rows:
                     touched_for_split = set()
@@ -1011,7 +1092,7 @@ def sync_observations(engine):
                             else:
                                 prior_obj = None
                                 st = empty_stats()
-                            _apply_member_to_stats(st, r, m_weight, engine.config, prior=prior_obj)
+                            _apply_member_to_stats(st, r, m_weight, engine.config, prior=prior_obj, hosts=hosts)
                             db.execute(
                                 "INSERT OR REPLACE INTO prototype_cells VALUES (?, ?, ?, ?, ?, ?, ?)",
                                 (
@@ -1072,7 +1153,7 @@ def sync_observations(engine):
                         cells_map = _load_cells(db, [pid]).get(pid, {})
                         plan = _prepare_split_plan(proto_dict, mem_pairs, cells_map, engine.retrieval)
                         if plan is not None:
-                            _apply_split(db, proto_dict, plan, rows_by_id, row_order, engine.config)
+                            _apply_split(db, proto_dict, plan, rows_by_id, row_order, engine.config, hosts)
 
                 db.execute(
                     "INSERT OR REPLACE INTO prototype_meta VALUES ('journal_digest', ?)",
@@ -1377,18 +1458,12 @@ def record_stage1_baseline(engine, bundle, baseline_filter):
             db.close()
 
 
-def _containing(interval, value):
-    """A stored range, widened only by the rounding of a re-derived value it must still contain."""
-    if interval[0] <= value <= interval[1]:
-        return deepcopy(interval)
-    return [min(float(interval[0]), value), max(float(interval[1]), value)]
-
-
 def stored_forecasts(config, *, task_type=None):
     """The Stage 2 forecasts kept on active prototypes, each with its stated ranges and host.
 
-    ``host`` is the name of the host whose request produced the forecast; ``None`` is the one
-    unnamed host, which is also how forecasts stored before hosts were named read.
+    A prototype keeps one forecast per cell and host. ``host`` is the name of the host whose
+    request produced the forecast; ``None`` is the one unnamed host, which is also how
+    forecasts stored before hosts were named read.
     """
     from .payload_store import _connect
 
@@ -1405,26 +1480,224 @@ def stored_forecasts(config, *, task_type=None):
     result = []
     for proto in prototypes:
         for (model, effort), entry in sorted(cells.get(proto["prototype_id"], {}).items()):
-            prior = entry["prior"]
-            if not isinstance(prior, dict) or not all(k in prior for k in OUTCOMES):
-                continue
-            result.append({"prototype_id": proto["prototype_id"], "task_type": proto["task_type"],
-                           "model": model, "family": entry["family"], "effort": effort,
-                           "host": prior.get("host"),
-                           "forecast": {k: deepcopy(prior[k]) for k in FORECAST_FIELDS if k in prior}})
+            kept = entry["forecasts"]
+            for host in sorted(kept, key=lambda name: (name is not None, name or "")):
+                result.append({"prototype_id": proto["prototype_id"], "task_type": proto["task_type"],
+                               "model": model, "family": entry["family"], "effort": effort,
+                               "host": host, "forecast": deepcopy(kept[host])})
     return result
 
 
-def _build_token_usage_from_shares(scalar_tokens, shares):
-    counts_list = [max(0.0, float(scalar_tokens) * float(s)) for s in shares]
-    diff = float(scalar_tokens) - math.fsum(counts_list)
-    best_idx = int(np.argmax(counts_list))
-    counts_list[best_idx] = max(0.0, counts_list[best_idx] + diff)
-    return dict(zip(CATEGORIES, counts_list))
+def _usable(forecast, cell):
+    """Whether a stored forecast states every value the cell needs.
+
+    It must be a complete forecast row, and a cell priced by token kind also needs the six kinds.
+    """
+    from .semantic import validate_panel
+
+    pair = cell["family"], cell["effort"]
+    try:
+        validate_panel([{"family": pair[0], "effort": pair[1], **forecast}], {pair})
+    except HowHardError:
+        return False
+    return cell.get("forecast_format") != "category-v1" or "token_usage" in forecast
+
+
+def forecast_shares(weights):
+    """``omega_p = w_p / sum of w_q``: each usable prototype's share of the merge."""
+    total = math.fsum(weights)
+    return [w / total for w in weights]
+
+
+def _merge(parts):
+    """Merge ``[(share, centre, spread)]`` on one scale; the shares sum to 1.
+
+    ``m = sum omega_p m_p`` and ``s^2 = sum omega_p (s_p^2 + (m_p - m)^2)``: the merged spread
+    holds each forecast's own spread plus the distance between the forecasts.
+    """
+    centre = math.fsum(w * m for w, m, _ in parts)
+    spread = math.sqrt(max(0.0, math.fsum(w * (s ** 2 + (m - centre) ** 2) for w, m, s in parts)))
+    return centre, spread if spread > SPREAD_FLOOR else 0.0
+
+
+def _log_reading(value, interval):
+    """An amount's centre and stated spread on the log scale, as the amount beliefs read a forecast row."""
+    from .success import CI_Z_WIDTH, log_amount
+
+    if interval is None:
+        return log_amount(value), 0.0
+    return log_amount(value), max(0.0, (log_amount(interval[1]) - log_amount(interval[0])) / CI_Z_WIDTH)
+
+
+def _exp(value):
+    from .success import EXP_CAP
+
+    return math.exp(min(EXP_CAP, value))
+
+
+def _log_range(centre, spread, scale=1.0):
+    return [scale * _exp(centre - RANGE_Z * spread), scale * _exp(centre + RANGE_Z * spread)]
+
+
+def _merge_tokens(stated):
+    """Merge one token count from ``[(share, value, stated range or None)]``.
+
+    A count that every forecast states as exactly zero (zero, with no non-zero upper end)
+    stays exactly zero. Otherwise it is merged over the forecasts that state it above zero
+    and multiplied by their total share. Returns the value, its range or ``None``, and the
+    merged centre, spread and that total share.
+    """
+    live = [(w, v, r) for w, v, r in stated if not (v == 0 and (r is None or r[1] == 0))]
+    if not live:
+        return 0.0, None, {"centre": None, "spread": 0.0, "share": 0.0}
+    total = 1.0 if len(live) == len(stated) else math.fsum(w for w, _, _ in live)
+    centre, spread = _merge([(w / total, *_log_reading(v, r)) for w, v, r in live])
+    return (total * _exp(centre), _log_range(centre, spread, total) if spread > 0 else None,
+            {"centre": centre, "spread": spread, "share": total})
+
+
+def merge_stored_forecasts(sources, *, by_kind):
+    """Merge the usable stored forecasts of one cell into its memory-free row.
+
+    ``sources`` is ``[{"share": omega_p, "forecast": stored row, ...}]`` with shares that sum
+    to 1. Every value is merged on its own scale: log-odds for the loud rate and for the
+    accepted-defect share ``S = silent / (clean + silent)``, the logarithm for active time and
+    for each token count. ``by_kind`` merges the six token kinds and sums them into ``tokens``;
+    otherwise ``tokens`` is merged itself. Returns the row's values and, for each value, its
+    merged centre and spread. One source is reused unchanged.
+    """
+    from .success import _sigmoid, rate_guesses
+
+    parts = [(float(source["share"]), source["forecast"]) for source in sources]
+    guesses = [(share, rate_guesses(forecast)) for share, forecast in parts]
+    loud_centre, loud_spread = _merge([(share, *guess["loud"]) for share, guess in guesses])
+    share_centre, share_spread = _merge([(share, *guess["silent"]) for share, guess in guesses])
+    time_centre, time_spread = _merge(
+        [(share, *_log_reading(forecast["seconds"], forecast.get("seconds_ci"))) for share, forecast in parts])
+    merged = {"loud": {"centre": loud_centre, "spread": loud_spread},
+              "silent": {"centre": share_centre, "spread": share_spread},
+              "seconds": {"centre": time_centre, "spread": time_spread}}
+    if by_kind:
+        kinds = {kind: _merge_tokens([(share, forecast["token_usage"][kind],
+                                       forecast.get("token_usage_ci", {}).get(kind)) for share, forecast in parts])
+                 for kind in CATEGORIES}
+        merged["token_usage"] = {kind: record for kind, (_, _, record) in kinds.items()}
+    else:
+        # There is no range on total tokens, so its merged spread is recorded but not stated.
+        tokens, _, merged["tokens"] = _merge_tokens([(share, forecast["tokens"], None) for share, forecast in parts])
+    if len(parts) == 1:
+        return deepcopy(parts[0][1]), merged
+
+    loud, accepted_defects = _sigmoid(loud_centre), _sigmoid(share_centre)
+    accepted = 1.0 - loud
+    row = {"clean": accepted * (1.0 - accepted_defects), "loud": loud, "silent": accepted * accepted_defects}
+    if loud_spread > 0:
+        low, high = (_sigmoid(loud_centre + sign * RANGE_Z * loud_spread) for sign in (-1, 1))
+        row["loud_ci"] = [min(low, loud), max(high, loud)]
+    if share_spread > 0:
+        # The silent range is the range of S times 1 - loud.
+        low, high = (accepted * _sigmoid(share_centre + sign * RANGE_Z * share_spread) for sign in (-1, 1))
+        row["silent_ci"] = [min(low, row["silent"]), max(high, row["silent"])]
+    row["seconds"] = _exp(time_centre)
+    if time_spread > 0:
+        row["seconds_ci"] = _log_range(time_centre, time_spread)
+    if by_kind:
+        row["token_usage"] = {kind: value for kind, (value, _, _) in kinds.items()}
+        ranges = {kind: interval for kind, (_, interval, _) in kinds.items() if interval is not None}
+        if ranges:
+            row["token_usage_ci"] = ranges
+        row["tokens"] = token_total(row["token_usage"])
+    else:
+        row["tokens"] = tokens
+    return row, merged
+
+
+def _same_value(actual, expected):
+    from .success import same_number
+
+    if isinstance(expected, dict):
+        return (isinstance(actual, dict) and actual.keys() == expected.keys()
+                and all(_same_value(actual[k], expected[k]) for k in expected))
+    if isinstance(expected, list):
+        return (isinstance(actual, list) and len(actual) == len(expected)
+                and all(_same_value(a, e) for a, e in zip(actual, expected)))
+    return same_number(actual, expected)
+
+
+def validate_reuse(entries, panel, host):
+    """Check the reused cells of a receipt against the memory-free panel it stores.
+
+    ``entries`` lists, for each reused cell, its sources and each value's merged centre and
+    spread; ``panel`` is the memory-free panel by ``(family, effort)`` and ``host`` the
+    receipt's host. The shares are recomputed from the match weights, the merge and the row
+    from the stored source rows, and a source stored under another host is refused.
+    """
+    from .semantic import validate_panel
+    from .validation import keys, number, text
+
+    where = "decision.semantic.stored_forecasts"
+    if not isinstance(entries, list):
+        raise HowHardError(f"{where}: expected array")
+    seen = set()
+    for entry in entries:
+        keys(entry, ["family", "effort", "sources", "merged"], where=where)
+        pair = entry["family"], entry["effort"]
+        if not all(isinstance(part, str) for part in pair) or pair not in panel or pair in seen:
+            raise HowHardError(f"{where}: unknown or duplicate forecasted cell")
+        seen.add(pair)
+        sources = entry["sources"]
+        if not isinstance(sources, list) or not sources or not isinstance(entry["merged"], dict):
+            raise HowHardError(f"{where}: a reused cell needs its sources and merged values")
+        by_kind = "token_usage" in entry["merged"]
+        prototype_ids = set()
+        for source in sources:
+            keys(source, ["prototype_id", "weight", "share", "host", "forecast"], where=where + ".source")
+            text(source["prototype_id"], where + ".source.prototype_id")
+            if source["prototype_id"] in prototype_ids:
+                raise HowHardError(f"{where}: duplicate source prototype")
+            prototype_ids.add(source["prototype_id"])
+            if source["host"] != host:
+                raise HowHardError(f"{where}: a forecast stored under another host cannot be reused")
+            if not 0 < number(source["weight"], where + ".source.weight", nonnegative=True) <= 1:
+                raise HowHardError(f"{where}: a match weight lies in (0, 1]")
+            forecast = source["forecast"]
+            if not isinstance(forecast, dict) or not forecast.keys() <= set(FORECAST_FIELDS):
+                raise HowHardError(f"{where}: a source row holds forecast values and ranges only")
+            validate_panel([{"family": pair[0], "effort": pair[1], **forecast}], {pair})
+            if by_kind and "token_usage" not in forecast:
+                raise HowHardError(f"{where}: a cell priced by token kind needs sources that state the six kinds")
+        weights = [float(source["weight"]) for source in sources]
+        if math.fsum(weights) > 1 + 1e-9:
+            raise HowHardError(f"{where}: match weights sum to at most 1")
+        shares = forecast_shares(weights)
+        if not _same_value([source["share"] for source in sources], shares):
+            raise HowHardError(f"{where}: a share does not match the match weights")
+        row, merged = merge_stored_forecasts(
+            [{"share": share, "forecast": source["forecast"]} for share, source in zip(shares, sources)],
+            by_kind=by_kind)
+        if not _same_value(entry["merged"], merged):
+            raise HowHardError(f"{where}: merged values do not match the stored sources")
+        stated = {k: v for k, v in panel[pair].items() if k not in ("family", "effort")}
+        if not _same_value(stated, row):
+            raise HowHardError(f"{where}: the memory-free row does not match the stored sources")
+    return entries
+
+
+def reused_forecasts(proto_state, pairs):
+    """The reuse records of the forecast cells ``pairs``, as the receipt lists them."""
+    kept = (proto_state or {}).get("reused_forecasts", [])
+    return [deepcopy(entry) for entry in kept if (entry["family"], entry["effort"]) in pairs]
 
 
 def prepare_stage2(engine, bundle):
-    """Pre-materialize covered Stage 2 band cells and emit baseline_request only for unseen cells."""
+    """Reuse stored forecasts for the band cells and leave the rest to the forecaster.
+
+    A stored forecast is usable for a cell when its prototype matches the task, it was made
+    under the request's host, and it states every value the cell needs. The usable forecasts
+    of the matched prototypes are merged into the cell's memory-free row. A cell with none
+    goes to the forecaster through ``unseen_cells``; no value is ever built from prototype
+    statistics.
+    """
     from .payload_store import _connect
 
     payload = bundle["payload"]
@@ -1446,155 +1719,33 @@ def prepare_stage2(engine, bundle):
         if db is not None:
             db.close()
 
-    cand_by_pair = {(c["model"], c["effort"]): c for c in bundle["native_candidates"]}
+    host = bundle.get("host")
+    reused = {(entry["family"], entry["effort"]): entry for entry in proto_state.get("reused_forecasts", [])}
     covered_rows = []
     unseen_cells = []
 
     for cell in payload["cells"]:
         pair = (cell["model"], cell["effort"])
-        cand = cand_by_pair.get(pair, {})
-        has_card = "rate_card" in cand
-        cell_priced = (
-            all(v is not None for v in cand["rate_card"]["rates"].values())
-            if has_card
-            else cand.get("usd_per_mtok") is not None
-        )
-        needs_category = cell.get("forecast_format") == "category-v1"
-
-        w_emp = 0.0
-        dur_w = 0.0
-        dur_log_sum = 0.0
-        tok_w = 0.0
-        tok_log_sum = 0.0
-        share_w = 0.0
-        share_accum = [0.0] * len(CATEGORIES)
-
-        prior_out_w = 0.0
-        prior_probs = [0.0, 0.0, 0.0]
-        prior_cis = {}
-        prior_seconds_ci = None
-        prior_token_ci = None
-        prior_sec_w = 0.0
-        prior_sec_sum = 0.0
-        prior_tok_w = 0.0
-        prior_tok_sum = 0.0
-        prior_cat_w = 0.0
-        prior_cat_accum = [0.0] * len(CATEGORIES)
-
+        usable = []
         for m in matches:
-            w = float(m["weight"])
             entry = cells_by_proto.get(m["prototype_id"], {}).get(pair)
-            if entry is None:
-                continue
-            st = entry["stats"]
-            w_emp += w * math.fsum(st.get("counts", (0.0, 0.0, 0.0)))
-            if st.get("duration_w", 0.0) > 0:
-                dw = w * float(st["duration_w"])
-                dur_w += dw
-                dur_log_sum += dw * float(st["duration_mean_log"])
-            if st.get("tokens_w", 0.0) > 0:
-                tw = w * float(st["tokens_w"])
-                tok_w += tw
-                tok_log_sum += tw * float(st["tokens_mean_log"])
-            if st.get("token_usage_shares") is not None and st.get("token_shares_w", 0.0) > 0:
-                sw = w * float(st["token_shares_w"])
-                share_w += sw
-                for idx, val in enumerate(st["token_usage_shares"]):
-                    share_accum[idx] += sw * float(val)
-
-            pr = entry["prior"]
-            if isinstance(pr, dict):
-                if all(k in pr for k in OUTCOMES):
-                    prior_out_w += w
-                    for idx, name in enumerate(OUTCOMES):
-                        prior_probs[idx] += w * float(pr[name])
-                    if len(matches) == 1:
-                        for ci_key in ("loud_ci", "silent_ci"):
-                            if ci_key in pr:
-                                prior_cis[ci_key] = deepcopy(pr[ci_key])
-                if "seconds" in pr:
-                    prior_sec_w += w
-                    prior_sec_sum += w * float(pr["seconds"])
-                    if len(matches) == 1 and "seconds_ci" in pr:
-                        prior_seconds_ci = pr["seconds_ci"]
-                if "tokens" in pr:
-                    prior_tok_w += w
-                    prior_tok_sum += w * float(pr["tokens"])
-                if "token_usage" in pr and isinstance(pr["token_usage"], dict):
-                    prior_cat_w += w
-                    for idx, cat in enumerate(CATEGORIES):
-                        prior_cat_accum[idx] += w * float(pr["token_usage"][cat])
-                    if len(matches) == 1 and "token_usage_ci" in pr:
-                        prior_token_ci = pr["token_usage_ci"]
-
-        outcome_ok = prior_out_w > 0 or w_emp >= STAGE2_MIN_EMP_WEIGHT
-        sec_ok = prior_sec_w > 0 or dur_w > 0
-        if needs_category:
-            tok_ok = (prior_tok_w > 0 and prior_cat_w > 0) or (
-                not cell_priced or (tok_w > 0 and share_w > 0)
-            )
-        else:
-            tok_ok = prior_tok_w > 0 or (not cell_priced or tok_w > 0)
-
-        if not (outcome_ok and sec_ok and tok_ok):
+            forecast = entry["forecasts"].get(host) if entry is not None else None
+            if forecast is not None and float(m["weight"]) > 0 and _usable(forecast, cell):
+                usable.append((m, forecast))
+        reused.pop((cell["family"], cell["effort"]), None)
+        if not usable:
             unseen_cells.append(deepcopy(cell))
             continue
+        shares = forecast_shares([float(m["weight"]) for m, _ in usable])
+        sources = [{"prototype_id": m["prototype_id"], "weight": float(m["weight"]), "share": share,
+                    "host": host, "forecast": deepcopy(forecast)}
+                   for (m, forecast), share in zip(usable, shares)]
+        row, merged = merge_stored_forecasts(sources, by_kind=cell.get("forecast_format") == "category-v1")
+        covered_rows.append({"family": cell["family"], "effort": cell["effort"], **row})
+        reused[cell["family"], cell["effort"]] = {"family": cell["family"], "effort": cell["effort"],
+                                                  "sources": sources, "merged": merged}
 
-        if prior_out_w > 0:
-            probs = [v / prior_out_w for v in prior_probs]
-            p_tot = math.fsum(probs)
-            probs = [v / p_tot for v in probs]
-        else:
-            probs = list(EMPIRICAL_BASE)
-
-        seconds_val = (
-            prior_sec_sum / prior_sec_w if prior_sec_w > 0 else math.exp(dur_log_sum / dur_w)
-        )
-        token_usage_ci_val = None
-        if prior_tok_w > 0 and (not needs_category or prior_cat_w > 0):
-            tokens_val = prior_tok_sum / prior_tok_w
-            if needs_category:
-                cat_vals = [v / prior_cat_w for v in prior_cat_accum]
-                c_tot = math.fsum(cat_vals)
-                shares = [v / c_tot for v in cat_vals] if c_tot > 0 else [1.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-                token_usage_val = _build_token_usage_from_shares(tokens_val, shares)
-                # Like the rate ranges, a stated range is returned only with the one forecast it belongs to.
-                if prior_token_ci is not None:
-                    token_usage_ci_val = {kind: _containing(interval, token_usage_val[kind])
-                                          for kind, interval in prior_token_ci.items()}
-            else:
-                token_usage_val = None
-        elif tok_w > 0:
-            tokens_val = float(max(1, round(math.exp(tok_log_sum / tok_w))))
-            if needs_category:
-                shares = [v / share_w for v in share_accum]
-                s_tot = math.fsum(shares)
-                shares = [v / s_tot for v in shares] if s_tot > 0 else [1.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-                token_usage_val = _build_token_usage_from_shares(tokens_val, shares)
-            else:
-                token_usage_val = None
-        else:
-            tokens_val = 0.0
-            token_usage_val = _build_token_usage_from_shares(0.0, [1.0, 0.0, 0.0, 0.0, 0.0, 0.0]) if needs_category else None
-
-        row = {
-            "family": cell["family"],
-            "effort": cell["effort"],
-            "clean": probs[0],
-            "loud": probs[1],
-            "silent": probs[2],
-            "tokens": tokens_val,
-            "seconds": seconds_val,
-            **prior_cis,
-        }
-        if prior_seconds_ci is not None and prior_sec_w > 0:
-            row["seconds_ci"] = _containing(prior_seconds_ci, seconds_val)
-        if token_usage_val is not None:
-            row["token_usage"] = token_usage_val
-        if token_usage_ci_val is not None:
-            row["token_usage_ci"] = token_usage_ci_val
-        covered_rows.append(row)
-
+    proto_state["reused_forecasts"] = [reused[pair] for pair in sorted(reused)]
     if not unseen_cells and covered_rows:
         payload["no_memory_forecasts"] = covered_rows
         payload["contract"]["forecasts"] = (
@@ -1606,7 +1757,12 @@ def prepare_stage2(engine, bundle):
 
 
 def record_stage2_baseline(engine, bundle, new_rows):
-    """Persist newly evaluated Stage 2 cell priors onto the primary prototype."""
+    """Store newly made Stage 2 forecasts on the primary prototype, under the request's host.
+
+    A prototype keeps one forecast per cell and host: a new one replaces the same host's
+    forecast whole and leaves every other host's as it is. It names no decision, because it
+    is stored when the forecaster answers, before a decision exists.
+    """
     from .payload_store import _connect
 
     if not new_rows:
@@ -1647,13 +1803,7 @@ def record_stage2_baseline(engine, bundle, new_rows):
                     ).fetchone()
                     prior_obj = json.loads(existing[0]) if existing and existing[0] is not None else {}
                     stats_obj = json.loads(existing[1]) if existing else empty_stats()
-                    # A range on active time or a token kind belongs to the forecast that stated it.
-                    for field in ("seconds_ci", "token_usage_ci"):
-                        prior_obj.pop(field, None)
-                    for field in FORECAST_FIELDS:
-                        if field in f_row:
-                            prior_obj[field] = deepcopy(f_row[field])
-                    prior_obj["host"] = bundle.get("host")
+                    _store_forecast(prior_obj, bundle.get("host"), f_row)
                     db.execute(
                         "INSERT OR REPLACE INTO prototype_cells VALUES (?, ?, ?, ?, ?, ?, ?)",
                         (

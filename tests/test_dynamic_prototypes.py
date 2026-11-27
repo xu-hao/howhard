@@ -187,7 +187,9 @@ def test_cold_start_synthesizes_representative_prototype_and_warm_route_runs_pro
     assert len(proto_cells) == 2
     for row in proto_cells:
         prior = json.loads(row["prior_json"])
-        assert "P_clear" in prior and "clean" in prior and "seconds" in prior
+        # The Stage 1 prior is shared by all hosts; the forecast is kept under the unnamed host.
+        (stored,) = prior["forecasts"]
+        assert "P_clear" in prior and stored["host"] is None and "clean" in stored and "seconds" in stored
 
     # Second route on a related task with different one-off literals hits the prototype with zero LLM calls.
     spy.calls.clear()
@@ -351,7 +353,8 @@ def test_counted_runs_move_a_pessimistic_cold_start_forecast_that_never_fades_ou
 
 
 def test_incremental_observe_interrupted_exclusion_and_amendment_reversibility(tmp_path):
-    engine = Engine(directory=tmp_path, retrieval=TopicSimilarityDouble())
+    spy = SpyLLM()
+    engine = Engine(directory=tmp_path, llm=spy, retrieval=TopicSimilarityDouble())
     engine.observe(
         "task",
         "fixture-model",
@@ -416,11 +419,16 @@ def test_incremental_observe_interrupted_exclusion_and_amendment_reversibility(t
     assert stats_restored["duration_mean_log"] == pytest.approx(stats_before["duration_mean_log"])
     assert restored_pick["cells"][0]["J"] == pytest.approx(baseline_pick["cells"][0]["J"], rel=1e-4)
 
-    # Attaching complete category token usage updates token_usage_shares for category-v1 candidates.
+    # A cell priced by token kind needs the six kinds. Neither the stored total-only forecast nor the
+    # usage by kind measured on a run states them, so the forecaster is asked for that cell.
     manifest = artifact(tmp_path, codex_events(), execution_id="run-1")
     engine.attach_usage("run-1", manifest, id="run-1-usage")
     cat_candidates = [{"model": "fixture-model", "effort": "high", "rate_card": card()}]
+    spy.calls.clear()
     cat_pick = engine.pick("task", "Repair rollback", native_candidates=cat_candidates, seed=1)
+    asked = [c for c in spy.calls if c.get("phase") == "baseline"]
+    assert [c["kind"] for c in asked] == ["predict"]
+    assert [c["forecast_format"] for c in asked[0]["cells"]] == ["category-v1"]
     assert cat_pick["cost_policy"]["worker_money_included"]
     assert cat_pick["cells"][0]["needed_credit_usd"] > 0
     load(engine.config, cat_pick["decision_id"])
@@ -483,7 +491,7 @@ def test_dynamic_prototype_splits_heterogeneous_cluster_into_two_children(tmp_pa
     assert slow_pick["cells"][0]["T"] > fast_pick["cells"][0]["T"] * 5.0
 
 
-def test_historical_outcomes_jsonl_backfill_enables_zero_llm_first_warm_pick(project, monkeypatch):
+def test_historical_outcomes_jsonl_backfill_synthesizes_stage_one_and_asks_the_forecaster_once(project):
     from conftest import row
 
     # 40 historical rows (> 32 threshold) across two distinct task clusters, with tokens and seconds recorded.
@@ -516,19 +524,21 @@ def test_historical_outcomes_jsonl_backfill_enables_zero_llm_first_warm_pick(pro
     embedder = ClusterEmbedderDouble()
     stages = RetrievalPipeline(cfg.state_root, embedder=embedder, reranker=embedder)
 
-    monkeypatch.delenv("HOWHARD_LLM_COMMAND", raising=False)
-    monkeypatch.setattr(
-        "howhard.llm.ClaudeCLI",
-        lambda *a, **kw: (_ for _ in ()).throw(LLMError("Backfill warm pick must not invoke provider")),
-    )
-    engine = Engine(cfg, llm=None, retrieval=stages)
-    picked = engine.pick(
-        "Y",
-        "Repair rollback unit helper check",
-        native_candidates=[{"model": "claude-sonnet-5-5", "effort": "high", "usd_per_mtok": 0.4}],
-        seed=9,
-    )
+    spy = SpyLLM()
+    engine = Engine(cfg, llm=spy, retrieval=stages)
+    candidates = [{"model": "claude-sonnet-5-5", "effort": "high", "usd_per_mtok": 0.4}]
+    picked = engine.pick("Y", "Repair rollback unit helper check", native_candidates=candidates, seed=9)
     assert picked["chosen"]["model"] == "claude-sonnet-5-5"
-    assert picked["semantic"]["backend"] == "prototype-materialized"
+    # The backfilled runs give the Stage 1 order with no call. The Stage 2 forecast is never built
+    # from them: the forecaster is asked for it once.
+    assert [c["kind"] for c in spy.calls if c.get("phase") == "baseline"] == ["predict"]
+    (row,) = picked["semantic"]["worlds"]["llm"]
+    assert (row["clean"], row["loud"], row["silent"], row["tokens"], row["seconds"]) == (0.92, 0.06, 0.02, 10000, 120)
+    assert picked["semantic"]["stored_forecasts"] == []
     protos, _, _ = _db_prototypes(engine)
     assert len([p for p in protos if p["active"] == 1]) >= 2
+
+    spy.calls.clear()
+    warm = engine.pick("Y", "Repair rollback unit helper recheck", native_candidates=candidates, seed=9)
+    assert spy.calls == [] and warm["semantic"]["backend"] == "prototype-materialized"
+    assert len(warm["semantic"]["stored_forecasts"]) == 1

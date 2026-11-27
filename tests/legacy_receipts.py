@@ -200,6 +200,8 @@ def to_v10(receipt, on_cap_unmet="flag-review"):
         for row in panel:
             row.pop("seconds_ci", None)
             row.pop("token_usage_ci", None)
+    # v10 kept no record of which memory-free rows came from stored forecasts.
+    sem.pop("stored_forecasts")
     # v10 rows carried their own score and similarity, and outcomes a count-based age.
     scored = {c["id"]: c for c in sem.pop("evidence_candidates")["candidates"]}
     ages = {}

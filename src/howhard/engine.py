@@ -180,6 +180,10 @@ class Engine:
                 )
                 if not has_baseline and not has_memories:
                     replay = semantic.cached_exact_replay(self, bundle["payload"], bundle["snapshot"])
+                    # A replayed forecast round must state the rows reused from store for this request.
+                    if replay is not None and bundle["stage"] == "forecast" and (
+                            replay[1].get("no_memory_forecasts") != bundle["payload"].get("no_memory_forecasts")):
+                        replay = None
                     if replay is not None:
                         response, payload, usage = replay
                         bundle["payload"] = payload
@@ -472,7 +476,8 @@ class Engine:
         prepared[0]["native_candidates"] = deepcopy(bundle["native_candidates"])
         prepared[0]["host"] = bundle["host"]
         prepared = semantic.augment(self, prepared, combined, combined_payload, snapshot, usage,
-                                    candidates=bundle["learned_state"]["evidence_candidates"])
+                                    candidates=bundle["learned_state"]["evidence_candidates"],
+                                    reused=prototypes.reused_forecasts(bundle.get("prototype_state"), forecast_pairs))
         state = deepcopy(bundle["capability"])
         state["disagreements"] = capability.disagreements(state, prepared)
         # Widening reads tiers only, never credit: it stops once a forecast cell is trusted or on trial.

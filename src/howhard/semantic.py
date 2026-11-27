@@ -363,6 +363,10 @@ def validate_response(response, payload, snapshot):
         if {(r.get("family"), r.get("effort")) for r in response["forecasts"] if isinstance(r, dict)} == allowed:
             validate_panel(response["forecasts"], allowed)
             merged = deepcopy(response["forecasts"])
+            # A full panel repeats the rows reused from store; only the unseen cells are the forecaster's.
+            given = panel_lookup(merged)
+            if any(given[r["family"], r["effort"]] != r for r in payload["preset_forecasts"]):
+                raise LLMError("LLM forecasts: a stored forecast reused for this request must not be changed")
         else:
             validate_panel(response["forecasts"], unseen_allowed)
             if any((r["family"], r["effort"]) in unseen_cat and "token_usage" not in r for r in response["forecasts"]):
@@ -650,7 +654,13 @@ def duration_observations(candidates, outcome_obs):
     return result
 
 
-def augment(engine, prepared, response, payload, snapshot, usage, *, candidates):
+def augment(engine, prepared, response, payload, snapshot, usage, *, candidates, reused=()):
+    """Build the selection cells and the receipt's semantic section from the validated forecasts.
+
+    ``reused`` lists the cells whose memory-free row was merged from stored forecasts, with
+    their sources; it is checked against the panel before it enters the receipt.
+    """
+    from .prototypes import validate_reuse
     from .success import admission_tier, belief_intervals, cell_beliefs, cost, credit_fits, denominator, outcome_beliefs
     result, cells = deepcopy(prepared[0]), prepared[1]
     # The readers only weigh the request's scored candidates; nothing is compared again here.
@@ -658,6 +668,7 @@ def augment(engine, prepared, response, payload, snapshot, usage, *, candidates)
     duration_obs = duration_observations(candidates, outcome_obs)
     policy = engine.config.data["sampling"]
     baseline = deepcopy(response["forecasts"])
+    reused = validate_reuse(deepcopy(list(reused)), panel_lookup(baseline), result.get("host"))
     worlds = {"llm": baseline}
     entries = {(m["id"], m["version"]): m for m in snapshot["memories"]}
     exposures = {}
@@ -706,7 +717,8 @@ def augment(engine, prepared, response, payload, snapshot, usage, *, candidates)
     result["cells"].sort(key=lambda row: (row["session_cost_usd"] if row["session_cost_usd"] is not None else float("inf"), row["family"], row["effort"]))
     result["semantic"] = {"format": FORMAT, "prompt_version": SETTINGS["prompt_version"], "backend": usage["backend"],
                           "memory_revision": snapshot["revision"], "memories": deepcopy(snapshot["memories"]),
-                          "worlds": worlds, "exposures": exposures, "beliefs": state, "reason": response["reason"], "retrieval": payload["retrieval"],
+                          "worlds": worlds, "stored_forecasts": reused, "exposures": exposures, "beliefs": state,
+                          "reason": response["reason"], "retrieval": payload["retrieval"],
                           "evidence": deepcopy(payload["evidence"]), "evidence_candidates": deepcopy(candidates),
                           "duration_observations": duration_obs, "outcome_observations": outcome_obs,
                           "reader_usage": {k: usage[k] for k in ("backend", "seconds", "cost_usd", "calls")}, "interval_kind": INTERVAL_KIND}
@@ -762,12 +774,13 @@ def sample(prepared, seed):
     return parts
 
 
-def validate_receipt(state, *, decision_format=DECISION_FORMAT, selection=None):
+def validate_receipt(state, *, decision_format=DECISION_FORMAT, selection=None, host=None):
     """Validate portable frozen semantic inputs before they affect feedback weights.
 
     ``selection`` is the receipt's selection: the beliefs a v11 receipt stores on each of
     its cells are recomputed here from the frozen forecasts, expert weights, same-cell
-    runs and policy.
+    runs and policy. ``host`` is the receipt's host: the memory-free rows a v11 receipt
+    reused from store are recomputed from their sources, which must be that host's.
     """
     legacy = decision_format in (LEGACY_DECISION_V7, LEGACY_DECISION_V8)
     # v10 opened per-cell evidence bounds; v11 adds ranges on active time and token kinds,
@@ -781,7 +794,7 @@ def validate_receipt(state, *, decision_format=DECISION_FORMAT, selection=None):
     if not legacy:
         required.append("outcome_observations")
     if scored:
-        required.append("evidence_candidates")
+        required += ["evidence_candidates", "stored_forecasts"]
     keys(state, required, ["sampled_expert"], "decision.semantic")
     if decision_format not in RECEIPT_SEMANTICS or (state["format"], state["prompt_version"]) != RECEIPT_SEMANTICS[decision_format]:
         raise HowHardError("decision.semantic: unsupported forecast format or prompt version")
@@ -820,6 +833,9 @@ def validate_receipt(state, *, decision_format=DECISION_FORMAT, selection=None):
         if key not in {"llm"} | memory_keys:
             raise HowHardError("decision.semantic.worlds: unknown memory version")
         validate_panel(panel, allowed, intervals=not legacy, ranges=ranges)
+    if scored:
+        from .prototypes import validate_reuse
+        validate_reuse(state["stored_forecasts"], panel_lookup(baseline), host)
     if not isinstance(state["exposures"], dict):
         raise HowHardError("decision.semantic.exposures: expected object")
     for key, pairs in state["exposures"].items():

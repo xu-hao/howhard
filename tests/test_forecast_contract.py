@@ -409,13 +409,12 @@ def test_stored_prototype_forecast_returns_the_same_ranges_and_host(tmp_path):
         assert item["forecast"] == stated[item["model"], item["effort"]]
     assert stored_forecasts(engine.config, task_type="other") == []
 
-    # A related task reuses the stored forecasts with no reader call, ranges included,
-    # under another host: reuse does not depend on the host yet.
+    # A related task of the same host reuses the stored forecasts with no reader call, ranges included.
     spy.calls.clear()
-    second = engine.pick("task", "Repair rollback boundary regression", native_candidates=cells, seed=7, host="host-two")
+    second = engine.pick("task", "Repair rollback boundary regression", native_candidates=cells, seed=7, host="host-one")
     assert spy.calls == [] and second["semantic"]["backend"] == "prototype-materialized"
     receipt = load(engine.config, second["decision_id"])
-    assert receipt["host"] == "host-two"
+    assert receipt["host"] == "host-one"
     models = {(c["family"], c["effort"]): c["model"] for c in receipt["selection"]["cells"]}
     first_rows = {(r["family"], r["effort"]): r for r in load(engine.config, first["decision_id"])["semantic"]["worlds"]["llm"]}
     for row in receipt["semantic"]["worlds"]["llm"]:
@@ -424,8 +423,13 @@ def test_stored_prototype_forecast_returns_the_same_ranges_and_host(tmp_path):
             assert row[field] == expected[field] == first_rows[row["family"], row["effort"]][field]
         assert row["seconds"] == expected["seconds"]
     assert second["chosen"] == first["chosen"]
-    # The stored forecasts still name the host that made them.
     assert {f["host"] for f in stored_forecasts(engine.config)} == {"host-one"}
+    # Another host does not reuse them: the forecaster is asked, and both hosts' forecasts stay stored.
+    engine.pick("task", "Repair rollback boundary follow-up", native_candidates=cells, seed=7, host="host-two")
+    assert [c["kind"] for c in spy.calls if c.get("phase") == "baseline"] == ["predict"]
+    kept = stored_forecasts(engine.config)
+    assert {f["host"] for f in kept} == {"host-one", "host-two"}
+    assert all(f["forecast"] == stated[f["model"], f["effort"]] for f in kept)
 
 
 def test_forecast_stored_without_a_host_or_ranges_reads_as_unnamed(tmp_path):

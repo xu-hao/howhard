@@ -168,17 +168,110 @@ Replay predictive scores and update written lessons
 Supported later defect attribution amends the original outcome
 ```
 
-Separate stateless calls produce cold-start capability priors and fine
-no-memory forecasts once per unseen `(prototype, model, effort)` pair against a
+Separate stateless calls produce cold-start capability priors once per unseen
+`(prototype, model, effort)` cell and fine no-memory forecasts once per unseen
+`(prototype, model, effort, host)`, against a
 synthesized `(representative_task, representative_context)` cluster in
 `payloads.sqlite3` (matched on canonicalized task-only text with positive cross-encoder
 relevance). Neither receives memories, historical
 executions, learned tables or prior conversation. Warm routes whose candidates are
-already covered reuse the prototype's materialized priors and empirical sufficient
-statistics directly, calling a model only when active semantic memories require
-conditional overrides or new unseen candidates enter the inventory. A memory reader separately
+already covered reuse the prototype's capability priors and stored forecasts
+directly, calling a model only when active semantic memories require
+conditional overrides or a cell has no usable stored forecast. A memory reader separately
 supplies conditional adjustments grounded in retrieved evidence and cannot
 rewrite those baseline judgments.
+
+### Stored forecasts are reused per host and merged on each value's own scale
+
+The host is the agent that asks for a route, makes the forecast and accepts or rejects
+the result. The level of a forecast follows the host that made it, so a stored forecast
+is reused only for requests of that host. A prototype keeps one stored forecast per cell
+and host: the forecaster's memory-free row, made against the prototype's representative
+task and context. A new forecast is stored on the request's primary prototype and
+replaces the same host's forecast whole. Capability priors are shared by all hosts.
+
+A stored forecast is usable for a cell of a new request when its prototype matches the
+task, it was made under the request's host, and it states every value the cell needs,
+including the six token kinds for a cell priced by kind. A request with no host name
+belongs to the one unnamed host and reuses only forecasts stored with no host name,
+which includes every forecast stored before hosts were named. Each value of the cell's
+row is merged over the usable forecasts:
+
+```text
+P       = the matched prototypes with a usable stored forecast for the cell
+omega_p = w_p / (sum of w_q over q in P)
+m       = sum over p in P of omega_p * m_p
+s^2     = sum over p in P of omega_p * (s_p^2 + (m_p - m)^2)
+```
+
+- `w_p`: prototype `p`'s match weight for the new task. The weights of all matched
+  prototypes sum to 1.
+- `omega_p`: `p`'s share within `P`. The shares sum to 1.
+- `m_p`: the stored value's centre on its own scale: `logit(loud)` for the loud rate
+  `theta_l`, `logit(silent / (clean + silent))` for the accepted-defect share `S`,
+  `ln(seconds)` for active time and `ln(tokens_a)` for token kind `a`, where
+  `logit(p) = ln(p / (1 - p))`.
+- `s_p`: the stored value's stated spread, `(phi(hi) - phi(lo)) / 3.92` for a stored
+  95% range `[lo, hi]` on the same scale `phi`, or 0 when no range is stored.
+- `m`, `s`: the merged centre and spread.
+
+In plain words: the merged guess is the share-weighted average on the value's scale.
+The merged spread holds each forecast's own spread plus the distance between the
+forecasts, so forecasts that disagree widen the range.
+
+For example, two prototypes with shares 0.7 and 0.3 store loud guesses of 20% and 40%,
+each with a spread of 0.5. The centres are `logit(0.2) = -1.386` and
+`logit(0.4) = -0.405`, so `m = 0.7 * (-1.386) + 0.3 * (-0.405) = -1.092`, which is
+25.1%, and `s^2 = 0.7 * (0.25 + 0.294^2) + 0.3 * (0.25 + 0.687^2) = 0.452`, so
+`s = 0.672`. With both guesses at 20%, `s` stays 0.5.
+
+For active time, for example, three prototypes match with weights 0.5, 0.3 and 0.2 and
+the third stores nothing usable, so the shares are `0.5 / 0.8 = 0.625` and
+`0.3 / 0.8 = 0.375`. The first stores 600 seconds with a range of 300 to 1,200, a
+spread of `(ln 1200 - ln 300) / 3.92 = 0.354`; the second stores 2,400 seconds with no
+range. The merged guess is `exp(0.625 * ln 600 + 0.375 * ln 2400) = 1,009` seconds with
+spread 0.727.
+
+One prototype in `P` has its forecast reused unchanged. A token kind that every
+forecast in `P` states as exactly zero stays exactly zero; any other kind is merged over
+the forecasts that state it above zero and multiplied by their total share. `tokens` is
+the sum of the merged kinds for a cell priced by kind, and is merged itself otherwise.
+
+The merged forecast is the cell's memory-free row, in place of a forecaster's answer:
+
+```text
+loud    = logistic(m_loud)            S        = logistic(m_S)
+clean   = (1 - loud) * (1 - S)        silent   = (1 - loud) * S
+seconds = exp(m_time)                 tokens_a = k_a * exp(m_a)
+range   = [inverse_phi(m - 1.96 * s), inverse_phi(m + 1.96 * s)]    for each value with s > 0
+```
+
+- `m_loud`, `m_S`, `m_time`, `m_a`: the merged centres of the loud rate, `S`, active
+  time and token kind `a`.
+- `logistic(x) = 1 / (1 + exp(-x))`, the inverse of `logit`.
+- `k_a`: the total share of the forecasts that state kind `a` above zero; 1 when all do.
+- `inverse_phi`: `logistic` for the two rates and `exp` for active time and tokens.
+- `range`: the value's stated 95% range. The silent range is the range of `S` times
+  `1 - loud`, and a kind's range is multiplied by `k_a` like its value. A value with
+  `s = 0` has no range.
+
+In plain words: the row states the merged guesses, each with the range from which the
+beliefs of sections 1 and 5 read the merged centre and spread back, exactly as from a
+forecaster's row.
+
+For example, the loud merge above gives `loud = 0.251` with the range
+`[logistic(-1.092 - 1.96 * 0.672), logistic(-1.092 + 1.96 * 0.672)] = [0.082, 0.556]`.
+With a merged `S` of 10% the row is `clean = 0.749 * 0.9 = 0.674`, `loud = 0.251` and
+`silent = 0.749 * 0.1 = 0.075`.
+
+A cell with no usable stored forecast goes to the forecaster. No forecast, and no
+value of one, is built from a prototype's recorded runs: a record with runs and no
+stored forecast asks the forecaster once per cell and host, and the runs then count as
+evidence beside that forecast. The receipt lists each reused cell's sources (prototype,
+match weight, share, host and stored row) and each value's merged centre and spread.
+Loading the receipt recomputes the shares, the merge and the row from those sources and
+refuses a source stored under another host. The [reference](reference.md) gives the
+stored fields.
 
 This separation preserves a reference forecast for evaluating whether experience
 helped. It does not imply that the baseline LLM is unbiased or calibrated.

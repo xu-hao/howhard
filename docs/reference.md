@@ -61,13 +61,18 @@ Configured identities retain their declared labels and evidence weights. Histori
 identity metadata does not activate candidates in a later request.
 
 A [task-specific capability filter](capability.md) first reads the full inventory.
-Cold-start stateless LLM calls evaluate capability and fine forecasts at most once per
-unseen `(prototype, model, effort)` cell against the prototype's synthesized
-`(representative_task, representative_context)`, materializing priors and empirical cell
-statistics in `payloads.sqlite3`. When matched prototypes already cover all cells and no
-active editable memories exist, `pick`, `summary`, and `context --auto-decide` complete
-locally without invoking a provider; when new unseen candidates appear on a warm
-prototype, Stage 2 requests forecasts only for the unseen cells.
+Cold-start stateless LLM calls evaluate capability at most once per unseen
+`(prototype, model, effort)` cell, and fine forecasts at most once per unseen
+`(prototype, model, effort, host)`, against the prototype's synthesized
+`(representative_task, representative_context)`, materializing priors, stored forecasts
+and empirical cell statistics in `payloads.sqlite3`. Stage 1 priors are shared by all
+hosts. A Stage 2 forecast is {ref}`reused only under the host that made it
+<stored-forecasts>`, and the forecasts of several matched prototypes are merged on each
+value's own scale. When matched prototypes already cover all cells under the request's
+host and no active editable memories exist, `pick`, `summary`, and
+`context --auto-decide` complete locally without invoking a provider; when some cells
+have no usable stored forecast, Stage 2 requests forecasts only for those cells. Stage 2
+never builds a forecast from recorded runs.
 The reader supplies conditional overrides for memories it has seen; omitted cells and
 unretrieved memories use the baseline forecast. No learned probability table
 or synthetic forecast is supplied to isolated baseline calls. Cold-start provider absence, invalid forecasts
@@ -248,6 +253,122 @@ Stated ranges are stored unchanged in the receipt's forecast panels
 (`semantic.worlds`). `loud_ci` and `silent_ci` are read as described above.
 `seconds_ci` and `token_usage_ci` are read into the beliefs below: a stated range can
 widen a belief and never narrow it.
+
+(stored-forecasts)=
+### Stored forecasts: reuse and merge
+
+A stored forecast is the forecaster's memory-free row for one cell, made against a
+prototype's representative task and context. A prototype keeps one stored forecast per
+cell and host. The host is the name the request carried; a request with no name belongs
+to the one unnamed host.
+
+- **Store.** When the forecaster answers for a cell, its row is stored on the request's
+  primary prototype (the matched prototype with the largest match weight, or the
+  prototype the request creates) under the request's host. It replaces that host's
+  earlier forecast for the cell whole, ranges included, and leaves every other host's
+  forecast as it is. A stored forecast names no decision, because it is stored when the
+  forecaster answers, before a decision exists.
+- **Usable.** A stored forecast is usable for a cell of a new request when its prototype
+  matches the task, it was made under the request's host, and it states every value the
+  cell needs: `clean`, `loud`, `silent`, `seconds` and `tokens`, and also the six token
+  kinds when the cell is priced by kind. A request with no host name reuses only
+  forecasts stored with no host name, which includes every forecast stored before hosts
+  were named. A request with a host name never reuses those.
+- **Reuse.** The usable forecasts of the matched prototypes are merged into the cell's
+  memory-free row, which stands in place of a forecaster's answer. The cell is left out
+  of `baseline_request`.
+- **Nothing usable.** The cell goes to the forecaster. No forecast, and no single value
+  of one, is built from a prototype's recorded runs, and no stand-in forecast exists. A
+  record with runs and no stored forecast therefore asks the forecaster once per cell
+  and host. The recorded runs still count as evidence beside the forecaster's row.
+
+Each value of the row is merged on its own scale:
+
+```text
+P       = the matched prototypes with a usable stored forecast for the cell
+omega_p = w_p / (sum of w_q over q in P)
+m       = sum over p in P of omega_p * m_p
+s^2     = sum over p in P of omega_p * (s_p^2 + (m_p - m)^2)
+```
+
+- `w_p`: prototype `p`'s match weight for the new task. The weights of all matched
+  prototypes sum to 1.
+- `omega_p`: `p`'s share within `P`. The shares sum to 1.
+- `m_p`: the stored value's centre on its own scale, read as the
+  {ref}`outcome beliefs <outcome-posterior>` and the
+  {ref}`amount beliefs <amount-beliefs>` read a forecast row: `logit(loud)` for the loud
+  rate, `logit(silent / (clean + silent))` for the accepted-defect share `S`,
+  `ln(seconds)` for active time and `ln(tokens_a)` for token kind `a`, where
+  `logit(p) = ln(p / (1 - p))`.
+- `s_p`: the stored value's stated spread, `(phi(hi) - phi(lo)) / 3.92` for a stored
+  range `[lo, hi]` on the same scale `phi`, or 0 when no range is stored.
+- `m`, `s`: the merged centre and spread.
+
+In plain words: the merged guess is the share-weighted average on the value's scale.
+The merged spread holds each forecast's own spread plus the distance between the
+forecasts, so forecasts that disagree widen the range and equal forecasts keep it.
+
+For example, two prototypes with shares 0.7 and 0.3 store loud guesses of 20% and 40%,
+each with a spread of 0.5. The centres are `logit(0.2) = -1.386` and
+`logit(0.4) = -0.405`, so `m = 0.7 * (-1.386) + 0.3 * (-0.405) = -1.092`, which is
+25.1%, and `s^2 = 0.7 * (0.25 + 0.294^2) + 0.3 * (0.25 + 0.687^2) = 0.452`, so
+`s = 0.672`. With both guesses at 20%, `s` stays 0.5.
+
+For active time, for example, three prototypes match with weights 0.5, 0.3 and 0.2 and
+the third stores nothing usable, so the shares are `0.5 / 0.8 = 0.625` and
+`0.3 / 0.8 = 0.375`. The first stores 600 seconds with a range of 300 to 1,200, a
+spread of `(ln 1200 - ln 300) / 3.92 = 0.354`; the second stores 2,400 seconds with no
+range. The merged guess is `exp(0.625 * ln 600 + 0.375 * ln 2400) = 1,009` seconds with
+spread 0.727.
+
+Three rules complete the merge:
+
+- One prototype in `P`: its stored forecast is reused unchanged.
+- A token kind that every forecast in `P` states as exactly zero (zero, with no non-zero
+  upper end) stays exactly zero. Any other kind is merged over the forecasts that state
+  it above zero, and the result is multiplied by their total share. For example, with
+  shares 0.7 and 0.3, a kind stored as 500 by the first prototype and as exactly zero by
+  the second is `0.7 * 500 = 350`.
+- `tokens` is the sum of the merged kinds for a cell priced by kind. For any other cell
+  `tokens` is merged itself, by the same rule as one kind, and has no range.
+
+The merged row states:
+
+```text
+loud    = logistic(m_loud)            S        = logistic(m_S)
+clean   = (1 - loud) * (1 - S)        silent   = (1 - loud) * S
+seconds = exp(m_time)                 tokens_a = k_a * exp(m_a)
+range   = [inverse_phi(m - 1.96 * s), inverse_phi(m + 1.96 * s)]    for each value with s > 0
+```
+
+- `m_loud`, `m_S`, `m_time`, `m_a`: the merged centres of the loud rate, `S`, active
+  time and token kind `a`.
+- `logistic(x) = 1 / (1 + exp(-x))`, the inverse of `logit`.
+- `k_a`: the total share of the forecasts that state kind `a` above zero; 1 when all do.
+- `inverse_phi`: `logistic` for the two rates and `exp` for active time and tokens.
+- `range`: the value's stated range (`loud_ci`, `silent_ci`, `seconds_ci` or the kind's
+  entry in `token_usage_ci`). The silent range is the range of `S` times `1 - loud`,
+  and a kind's range is multiplied by `k_a` like its value. A value with `s = 0` has no
+  range; a spread of at most `1e-9`, which is rounding in the average, counts as 0.
+
+In plain words: the row states the merged guesses, each with the range from which the
+beliefs read the merged centre and spread back, exactly as from a forecaster's row.
+
+For example, the loud merge above gives `loud = 0.251` with the range
+`[logistic(-1.092 - 1.96 * 0.672), logistic(-1.092 + 1.96 * 0.672)] = [0.082, 0.556]`.
+With a merged `S` of 10% the row is `clean = 0.749 * 0.9 = 0.674`, `loud = 0.251` and
+`silent = 0.749 * 0.1 = 0.075`.
+
+The receipt lists every reused cell in `semantic.stored_forecasts`: the cell's `family`
+and `effort`; its `sources`, each with the `prototype_id`, the match `weight`, the
+`share`, the `host` and the stored `forecast` row; and `merged`, the centre and spread
+of `loud`, `silent` (the share `S`), `seconds`, and either `tokens` or each kind under
+`token_usage`, where a token entry also carries its total `share` `k_a`. A cell the
+forecaster answered has no entry. Loading a receipt recomputes the shares from the
+match weights, and the merged values and the memory-free row from the source rows. It
+refuses a receipt in which any of them differs, and one with a source stored under a
+host other than the receipt's own. A calling agent that returns the full panel must
+repeat each reused row unchanged.
 
 (amount-beliefs)=
 ### Beliefs for active time and tokens
@@ -575,9 +696,10 @@ otherwise `sampled-cost` with signed cost components.
 
 New receipts use `howhard-decision-v11` (`howhard-semantic-v8`, reader prompt
 `semantic-reader-v8`, interval kind `log-odds-grid`). Loading a v11
-receipt recomputes every belief from its stored forecasts, expert weights,
+receipt recomputes every belief from its frozen forecast panels, expert weights,
 `outcome_observations`, `duration_observations` and sampling policy, then the `P_*`
-fields, `pi`, `T`, the three credit numbers, `session_cost_usd`, `credit_ok` and `J`; a
+fields, `pi`, `T`, the three credit numbers, `session_cost_usd`, `credit_ok` and `J`,
+and every {ref}`reused memory-free row <stored-forecasts>` from its sources; a
 receipt whose stored values differ is refused.
 Frozen `howhard-decision-v10` and `howhard-decision-v9` receipts keep the outcome
 posterior they recorded (interval kind `dirichlet-posterior-mixture`): each expert's
@@ -879,14 +1001,20 @@ Prototype tables maintain reusable representative `(task, context)` clusters, pe
 cold-start priors (`prior_json`), and incrementally updated / amendment-replayable
 empirical sufficient statistics (`stats_json`), splitting heterogeneous clusters once at
 least 12 non-`interrupted` member runs diverge semantically or empirically.
-A forecast stored on a prototype keeps its values, every stated range and, as `host`,
-the name of the host whose request produced it (`null` for the unnamed host and for
-forecasts stored before hosts were named).
-`howhard.prototypes.stored_forecasts(config, task_type=...)` returns them. Reuse does
-not depend on the host: when exactly one prototype matches, its stored ranges return
-with the reused values, and a range is widened only as far as floating-point rounding
-of the reused value requires; values averaged over several matched prototypes carry no
-range.
+A cell's `prior_json` holds the Stage 1 prior, which all hosts share, and under
+`forecasts` one stored Stage 2 forecast per host: its values, every stated range and,
+as `host`, the name of the host whose request produced it (`null` for the unnamed
+host). A forecast stored before forecasts were kept per host sits directly in
+`prior_json`. It reads as the forecast of the host named there, or of the unnamed host
+when none is named, and moves under `forecasts` the next time a forecast is stored on
+its cell; an existing store needs no migration.
+`howhard.prototypes.stored_forecasts(config, task_type=...)` returns one entry per
+prototype, cell and host. {ref}`Reuse <stored-forecasts>` reads only the forecasts of
+the request's host. A split copies the Stage 1 prior and every host's stored forecast
+to each child. The timely statistic in `stats_json` compares a clean run's active time
+with the forecast stored by the run's own host, which is the host named in the run's
+decision receipt, or the unnamed host for a run with no receipt or an unnamed one; with
+no such forecast the run has no overrun discount.
 Each request or decision row retains the complete original JSON byte sequence in a zstd-compressed `payload`
 BLOB; the SHA-256 `request_id` or `decision_id` remains the digest of the parsed JSON
 value. No semantic forecast, legacy receipt field, or reproducibility input is omitted.
@@ -918,7 +1046,11 @@ error, and removes drained legacy directories. External receipt files and
 ## Inference cache and current interfaces
 
 Validated LLM responses may be cached by complete request, adapter identity, settings,
-evidence and memory revision. Corrupt caches are replaced. Prepared requests bind the
+evidence and memory revision. Corrupt caches are replaced. The cache does not read the
+host's name: an explicit backend adapter asked the same question for a second host
+returns its cached answer, which is stored under that second host like any new forecast.
+A cached forecast round is replayed only when it states the same memory-free rows that
+the request {ref}`reuses from store <stored-forecasts>`. Prepared requests bind the
 current worktree, native inventory and a consistent store snapshot. New requests validate
 only surfaced memory/evidence dependencies and configuration, with belief and capability
 weights frozen at preparation. Unrelated writes do not invalidate them. A real change
@@ -950,7 +1082,7 @@ request = engine.prepare("specified-implementation", "Make rollback safe",
 
 `Engine(llm=adapter)` accepts an object with `complete(request) -> dict`. Standalone
 `pick` and `summary` complete locally with zero LLM calls when matched prototypes cover
-all cells and no active editable memories exist, and lazily resolve `HOWHARD_LLM_COMMAND`
+all cells under the request's host and no active editable memories exist, and lazily resolve `HOWHARD_LLM_COMMAND`
 or an authenticated Claude CLI only when cold-start baselines or active-memory reader
 calls are required. Calling-agent `prepare(..., auto_decide=False|True)` / `retrieve` /
 `decide` never invoke a provider. A fresh engine's

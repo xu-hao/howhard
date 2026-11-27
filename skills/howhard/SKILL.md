@@ -63,9 +63,11 @@ the host's actual tools execute the task.
    capability order over emitted opaque cell keys and nonempty lower/upper fit cuts plus
    up to eight cited `memory_filters`. Submit to `decide`, then use its NEW
    `stage=forecast` request ID: if Stage 2 `baseline_request` is non-null, forecast
-   every cell in `baseline_request.cells` (which contains only newly unseen band cells on
-   a partial prototype hit, merged automatically with materialized band cells) and up to
-   eight `memory_forecasts`; forecasted `seconds` is expected **active**
+   every cell in `baseline_request.cells` (only the forecast cells with no usable stored
+   forecast made under this request's `--host`; the other cells reuse their stored
+   forecasts automatically) and up to eight `memory_forecasts`. Pass the same `--host`
+   on every request you make: forecasts are stored and reused per host, and recorded
+   runs alone never stand in for a forecast; forecasted `seconds` is expected **active**
    execution duration excluding external scheduler/queue wait. When genuinely unsure of a
    cell's loud or silent probability, add `loud_ci`/`silent_ci` as a `[lo, hi]` 95%
    credible interval containing the value; wide intervals let observed outcomes dominate
