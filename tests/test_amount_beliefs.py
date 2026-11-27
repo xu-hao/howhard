@@ -560,7 +560,8 @@ def tamper_cases():
         (lambda r: r["semantic"]["evidence_candidates"]["candidates"][0].update(tokens=-1), r"candidate\.tokens"),
         (lambda r: r["semantic"]["evidence_candidates"]["candidates"][0]["token_usage"].update(output=None), "token_usage"),
         (lambda r: r["semantic"]["evidence_candidates"]["candidates"][0]["token_usage"].pop("output"), "token_usage"),
-        (lambda r: r["semantic"]["sampling"]["policy"].update(duration_miss=2.), "active_time"),
+        # The remaining miss is part of the corrected prediction, which is checked against the policy first.
+        (lambda r: r["semantic"]["sampling"]["policy"].update(duration_miss=2.), r"prediction.*values\.seconds\.D"),
         (lambda r: [p.pop("scatter_share") for p in (r["semantic"]["sampling"]["policy"], r["selection"]["sampling_policy"])], "sampling"),
         (lambda r: [c.update(duration={}) for c in r["semantic"]["sampling"]["cells"]], "duration"),
     ]

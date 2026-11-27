@@ -144,8 +144,10 @@ money. The full objective uses `C_run = session_cost_usd` and is
 inventories with a uniform credit-rate basis include worker money using each candidate's
 `cost_per_credit`. Mixed bases omit it uniformly.
 Each cell holds one belief for its loud rate and one for its accepted-defect share
-`P_silent/(1-P_loud)`. Each starts from the merged forecast at the weight of about four
-runs and is reshaped only by that cell's own
+`P_silent/(1-P_loud)`. Each starts from a prediction: the merged forecast, corrected
+from the record of the same host on other tasks (`semantic.prediction`; pass `--host`
+so that record is the caller's own). With no record the prediction is the merged
+forecast at the weight of about four runs. It is then reshaped only by that cell's own
 recorded outcomes on similar tasks, weighted by task similarity and age with all runs of
 one ticket counting for at most one run. Each cell reports `pi`, the chance under its
 belief that its accepted-defect share is at most epsilon, and a `tier`:

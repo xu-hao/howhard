@@ -24,7 +24,9 @@ J = (C_run + lambda_per_hour * T + C_loud * P_loud + C_silent * P_silent)
 `needed_credit_usd`; `cost_per_credit` converts that credit amount to session cost and
 defaults to `1.0` for pay-as-you-go. A free tier can set it to `0.0`. `T` is the expected
 active hours of one run. `T` and `needed_credit_usd` are the averages of the cell's
-{ref}`beliefs for active time and tokens <amount-beliefs>`.
+{ref}`beliefs for active time and tokens <amount-beliefs>`. Every belief starts from a
+{ref}`corrected prediction <corrected-prediction>`: the forecast, corrected from the
+record of the same host on other tasks.
 
 The caller supplies any nonempty number of distinct actual cells through `--candidates FILE` or Python
 `native_candidates`. External routers can explicitly select a saved list from
@@ -87,7 +89,8 @@ A `(family, effort)` cell holds two independent beliefs, each on the log-odds sc
 - one for its loud rate `theta_l`, the share of attempts that fail loudly;
 - one for its accepted-defect share `S`, silent results / accepted results.
 
-Each belief starts from the forecast and is reshaped by the cell's own counted runs.
+Each belief starts from the {ref}`corrected prediction <corrected-prediction>` of its
+rate and is reshaped by the cell's own counted runs.
 
 **One forecast per rate.** The experts' forecasts for a cell are merged first:
 
@@ -95,7 +98,7 @@ Each belief starts from the forecast and is reshaped by the cell's own counted r
 g_l = loud                     g_S = silent / (clean + silent)
 m_k = logit(g_k)               s_k = (logit(hi_k) - logit(lo_k)) / 3.92
 m   = sum_k w_k m_k            s_stated^2 = sum_k w_k (s_k^2 + (m_k - m)^2)
-p   = logistic(m), held in [0.0001, 0.9998]
+guess = logistic(m), held in [0.0001, 0.9998]
 ```
 
 - `clean`, `loud`, `silent`: one expert's forecast for the cell, floored at the
@@ -107,14 +110,15 @@ p   = logistic(m), held in [0.0001, 0.9998]
   `[0.0001, 0.9999]`: `loud_ci` for `theta_l`, and `silent_ci` divided by
   `clean + silent` for `S`.
 - `s_k`: the stated spread on the log-odds scale; 0 when no range is stated.
-- `m`, `s_stated`, `p`: the merged centre, the merged spread and the prediction.
+- `m`, `s_stated`, `guess`: the merged centre, the merged spread and the merged guess
+  of the rate for this cell on this task.
 - `logistic(x) = 1 / (1 + exp(-x))`, the inverse of `logit`.
 
 In plain words, each rate gets one forecast per cell, and experts that disagree make it
 less certain.
 
 Example: two experts with weights 0.75 and 0.25 guess `S` at 10% and 25%, each with
-spread 0.4. Then `m = 0.75 * (-2.197) + 0.25 * (-1.099) = -1.92`, `p = 12.8%` and
+spread 0.4. Then `m = 0.75 * (-2.197) + 0.25 * (-1.099) = -1.92`, `guess = 12.8%` and
 `s_stated = sqrt(0.16 + 0.75 * 0.275^2 + 0.25 * 0.824^2) = 0.62`.
 
 **The start of each belief.**
@@ -127,13 +131,16 @@ q_j(m) = exp(-(x_j - m)^2 / (2 s^2)) / sum_i exp(-(x_i - m)^2 / (2 s^2))
 centre: the m with  sum_j q_j(m) logistic(x_j) = p
 ```
 
-- `worth`: how many runs the record says about this family, `sampling.model_worth`
-  (5).
+- `p`: the {ref}`corrected prediction <corrected-prediction>` of the rate, held in
+  `[0.0001, 0.9998]`. With an empty record it is the merged guess.
+- `worth`: how many runs the record says about this family: the family's own runs on
+  record under this host and agent plus `sampling.model_worth` (5). With an empty
+  record it is 5.
 - `N_task`: the most a record on other tasks is worth for one task,
   `sampling.task_worth_silent` (32) for `S` and `sampling.task_worth_loud` (16) for
   `theta_l`.
-- `N_start`: how many runs the prediction is worth: 4.32 for `S` and 3.81 for
-  `theta_l`.
+- `N_start`: how many runs the prediction is worth. With an empty record it is 4.32
+  for `S` and 3.81 for `theta_l`.
 - `sigma_1`: the spread of one run's result on the log-odds scale.
 - `s`: the spread at the start. A stated range can widen it, never narrow it. 1.869 is
   the flat belief, the spread of a 95% range of `[0.025, 0.975]`.
@@ -147,8 +154,9 @@ In plain words, the start is a bell curve on the log-odds scale whose average, n
 median, equals the prediction, and it is as wide as a record worth `N_start` runs
 allows.
 
-Example: clean 0.72, loud 0.20, silent 0.08 with `silent_ci = [0.04, 0.16]` gives
-`p = 0.10` for `S` and `s_stated = 0.40` (a range of 5% to 20%).
+Example, with an empty record: clean 0.72, loud 0.20, silent 0.08 with
+`silent_ci = [0.04, 0.16]` gives `p = 0.10` for `S` and `s_stated = 0.40` (a range of
+5% to 20%).
 `sigma_1 / sqrt(N_start) = 3.33 / 2.08 = 1.60`, so `s = 1.60` and the centre is -3.04.
 For `theta_l`, `p = 0.20` and `loud_ci = [0.10, 0.35]` give `s = 1.28` and centre -1.79.
 
@@ -175,9 +183,8 @@ q point = logistic(x_j) at the first j whose running total of b reaches q
 - q point: the 2.5% and 97.5% points of each rate, reported as `lower` and `upper`.
 
 In plain words, the start counts as `N_start` runs and each counted run as its weight.
-The forecast never fades out: however many runs are counted, it keeps the weight of
-`N_start` runs. A never-observed cell keeps its start whatever other cells have
-recorded.
+The prediction never fades out: however many runs are counted, it keeps the weight of
+`N_start` runs. A cell with no counted run keeps its start.
 
 Example, continuing with `epsilon = 0.10`: at the start `E[S] = 0.100`, `pi(c) = 0.70`
 and the 95% range is 0.2% to 52%. With `n_c = 4` and `n_s = 0`, `E[S] = 0.053` and
@@ -377,8 +384,9 @@ repeat each reused row unchanged.
 ### Beliefs for active time and tokens
 
 Active time and each token kind have one belief per cell, held on the log scale. A
-belief starts at the forecast, is as wide as the forecast is unsure, and is updated by
-the cell's own recorded runs. The two rates have the {ref}`outcome beliefs <outcome-posterior>`.
+belief starts at the {ref}`corrected prediction <corrected-prediction>` of its amount,
+is as wide as that prediction is unsure, and is updated by the cell's own recorded
+runs. The two rates have the {ref}`outcome beliefs <outcome-posterior>`.
 
 **One forecast per value.** Several memory experts may forecast one cell. Their forecasts
 of a value are merged before its belief is built.
@@ -409,14 +417,16 @@ m = ln(prediction) - s^2 / 2
 ```
 
 - `T`: the expected active seconds of one run of this cell on this task.
-- `prediction`: where the belief starts: the merged forecast.
+- `prediction`: where the belief starts: the
+  {ref}`corrected prediction <corrected-prediction>` of the amount. With an empty
+  record it is the merged forecast.
 - `s_g`: the stated spread of the merge above.
-- `D`: the typical remaining miss, as a spread of `ln(actual / prediction)`
-  (`sampling.duration_miss`, 1.3).
+- `D`: the typical remaining miss, as a spread of `ln(actual / prediction)`. It is
+  measured from the record, and is `sampling.duration_miss` (1.3) with an empty record.
 - `tau`: the run-to-run scatter on one task. `scatter_share` is the share of `D^2` that
   is scatter; at its default of 0.5, `tau = D / sqrt(2)`.
-- `worth`: how many runs the record says about this family's own level
-  (`sampling.model_worth`, 5).
+- `worth`: how many runs the record says about this family's own level: the family's
+  own runs on record under this host and agent plus `sampling.model_worth` (5).
 - `N_task`: the most a record on other tasks is worth for one task
   (`sampling.task_worth_amount`, 1).
 - `N_start`: how many runs the prediction is worth.
@@ -427,8 +437,8 @@ The belief averages to the prediction. A stated range can widen it and never nar
 For example, the prediction is 3,600 seconds with no stated range, worth is 5 and D is
 1.3. Then `N_start = 0.833`, `tau = 0.919`, `s = 1.007` and `m = 7.682`: an average of
 1 hour and a median of 0.60 hours. A stated range of 600 to 60,000 seconds gives 1.175,
-which is used. With the defaults the minimum spread is 1.007 for active time and for
-every token kind.
+which is used. With the defaults and an empty record the minimum spread is 1.007 for
+active time and for every token kind.
 
 Runs of the same cell then update the belief.
 
@@ -456,9 +466,9 @@ never counts. A run's time is `effective_active_seconds`: its `active_seconds`, 
 total `seconds` when no active time was recorded, so a total that includes waiting counts
 as active time. `interrupted` runs are excluded.
 
-**Token beliefs.** Each of the six token kinds gets a belief of the same form, with the
-same `tau` and `N_start`, updated the same way and at the same weights from those
-same-cell runs whose `execution_usage` is `complete`. Each scored candidate, and each row
+**Token beliefs.** Each of the six token kinds gets a belief of the same form, with its
+own prediction, `D` and `N_start`, updated the same way and at the same weights from
+those same-cell runs whose `execution_usage` is `complete`. Each scored candidate, and each row
 of `duration_observations` counted from it, carries what its run recorded: `tokens` (the
 total, or null) and `token_usage` (the count of each kind over a complete usage envelope,
 or null). A run without complete usage leaves the kinds unchanged.
@@ -510,8 +520,8 @@ Each row of `selection.cells` stores its beliefs:
 
 | Field | Content |
 | --- | --- |
-| `active_time` | `forecast_seconds` (merged forecast), `stated_spread` (`s_g`), `worth`, `N_start`, `D`, `prior_centre` and `prior_spread` (`m`, `s`), `centre` and `spread` (`m'`, `s'`), `evidence_weight` (`W`), `expected_seconds` (`E[T]`) |
-| `token_beliefs` | The same record for each of the six kinds, or one record under `tokens`, with `forecast_tokens` and `expected_tokens`. A kind that is exactly zero has null centres and zero spreads. |
+| `active_time` | `forecast_seconds` (merged forecast), `prediction_seconds` (corrected prediction), `stated_spread` (`s_g`), `worth`, `N_start`, `D`, `prior_centre` and `prior_spread` (`m`, `s`), `centre` and `spread` (`m'`, `s'`), `evidence_weight` (`W`), `expected_seconds` (`E[T]`) |
+| `token_beliefs` | The same record for each of the six kinds, or one record under `tokens`, with `forecast_tokens`, `prediction_tokens` and `expected_tokens`. A kind that is exactly zero has null centres and zero spreads. |
 | `credit_variance`, `credit_p80_usd` | `Var(K)` and `K_80`, beside `needed_credit_usd` |
 
 `P_loud` and `P_silent_accepted` report `{mean, lower, upper}` from the two beliefs:
@@ -526,6 +536,195 @@ For example, `E[theta_l] = 0.20` and `E[S] = 0.10` give `P_loud = 0.20`,
 `P_silent = 0.08` and `P_clean = 0.72`. `J` is the cost formula above at `P_loud` and
 `P_silent`. There is no additional statistical risk floor, and a belief is a model
 assumption, not a calibrated coverage guarantee.
+
+(corrected-prediction)=
+### The corrected prediction
+
+Every belief starts from a prediction, not from the forecast itself. The record gives
+the level of a value, and the forecast only says whether this task looks higher or
+lower than that forecaster usually states.
+
+**One rule for every value.**
+
+```text
+phi(prediction) = phi(level) + gamma * (phi(guess) - phi(usual))
+phi(p) = logit(p) = ln(p / (1 - p))   for theta_l and S
+phi(x) = ln(x)                        for active time and each token count
+```
+
+- `guess`: the merged forecast of the value for this cell on this task (the merges
+  above).
+- `level`: what happened in the recorded runs of this cell under this host.
+- `usual`: what the forecaster had stated for those runs.
+- `gamma`: the weight on the forecaster's judgment, from 0 to 1.
+- `phi`: the value's own scale. A rate is held in `[0.0001, 0.9999]` before its
+  log-odds are taken; an amount is held at 1 or more before its logarithm is taken.
+- `prediction`: where the belief starts, before the similar runs of the
+  {ref}`evidence candidates <evidence-candidates>` are counted. A rate's prediction is
+  held in `[0.0001, 0.9998]`.
+
+In plain words: the record gives the level, and the forecast only says whether this
+task looks harder or easier than usual. An empty record gives the guess, `gamma = 1`
+the guess moved by level minus usual, and `gamma = 0` the level alone.
+
+Example: level 0.0566, usual 0.188, guess 0.10 and gamma 0.74 give
+`-2.81 + 0.74 * (-2.20 + 1.46) = -3.36` in log-odds, a prediction of 0.034.
+
+**Level and usual.** Both come down a ladder of five rungs, each leaning on the rung
+above it:
+
+```text
+level(r) = (sum_i a_i * y_i + kappa_r * level(r+)) / (sum_i a_i + kappa_r)
+usual(r) = (sum_i a_i * g_i + kappa_r * usual(r+)) / (sum_i a_i + kappa_r)
+```
+
+- `r`, `r+`: a rung and the one above it. From the top: all hosts, this host, this
+  agent under it, this family under it, this cell under it. Above all hosts both
+  ladders equal the guess. A rung with no run passes the value above it through.
+- `i`: a finished routed run at rung `r`: a recorded run with outcome `clean`, `loud`
+  or `silent` whose decision stored a forecast for the cell that ran. Its host and
+  agent are the {ref}`names <host-and-agent-names>` that decision stores. The decision's
+  {ref}`evidence candidates <evidence-candidates>` (every recorded run of a prototype
+  the new task matches) are left out: they count through their similarity instead. A
+  run with no decision, a run whose decision cannot be read, and an `interrupted` run
+  enter no ladder.
+- `a_i`: the run's age factor `0.5^(days_i / half_life_days)`, divided by
+  `max(1, A_t)`, where `A_t` is the summed age factors of the runs of ticket `t` in the
+  same ladder. A row with no ticket is not limited.
+- `y_i`: what happened. For a rate it is 1 for a failure and 0 otherwise; for an amount
+  it is the logarithm of the recorded amount.
+- `g_i`: the merged guess that run's own decision stored for its cell, on the same
+  footing: a probability for a rate, a logarithm for an amount. A receipt of any
+  readable format gives it by the merge rules above.
+- `kappa_r`: the worth of the rung above: `sampling.model_worth` (5) at the family
+  rung and `sampling.rung_worth` (40) at every other rung.
+
+Each kind of value has its own ladder. `S` counts accepted results (`clean` and
+`silent`; the failure is `silent`), `theta_l` counts every finished run (the failure is
+`loud`), and an amount counts the runs whose recorded amount and guess are both above
+zero. A rate's level and usual are averages of probabilities; an amount's are averages
+of logarithms, reported as amounts.
+
+In plain words: a cell with few runs leans on its family, then its agent, its host and
+all hosts.
+
+Example, for `S` with guess 0.10:
+
+| Rung | sum a | sum a·y | sum a·g | level | usual |
+| --- | --- | --- | --- | --- | --- |
+| All hosts | 160 | 24 | 16 | 0.140 | 0.100 |
+| This host | 60 | 6 | 9 | 0.116 | 0.130 |
+| This agent | 40 | 2 | 6 | 0.083 | 0.140 |
+| This family | 15 | 1 | 3 | 0.071 | 0.185 |
+| This cell | 10 | 0 | 2 | 0.057 | 0.188 |
+
+The all-hosts level is `(24 + 40 * 0.10) / (160 + 40) = 0.140`, and the family level is
+`(1 + 5 * 0.083) / (15 + 5) = 0.071`. Ten finished routed runs of one ticket, recorded
+on the day of the decision, add 1 to `sum a`.
+
+**The weight on the forecaster.**
+
+```text
+gamma_hat = (O_H - O_L) / (F_H - F_L), held in [0, 1]
+gamma     = (n * gamma_hat + kappa) / (n + kappa)
+```
+
+- `H`, `L`: two groups of the ladder's runs. `H` holds the runs with
+  `d_i = phi(g_i) - phi(usual_i)` above zero, the runs their forecaster rated above
+  usual; `L` holds the rest.
+- `usual_i`, `level_i`: both ladders at run `i`'s own cell over all the runs, with the
+  record's weighted averages of `g` and `y` above all hosts.
+- `F_H`, `F_L`: each group's weighted average of `d_i`, with weights `a_i`.
+- `O_H`, `O_L`: how far each group's results sat from its levels. For a rate it is
+  `logit((sum a_i y_i + 1/2) / (sum a_i + 1)) - logit((sum a_i level_i + 1/2) / (sum a_i + 1))`
+  over the group; for an amount it is the group's weighted average of `y_i - level_i`.
+- `n`: the total weight `sum a_i` of the runs. `kappa`: `sampling.rung_worth` (40).
+- `gamma_hat` is 1 when a group is empty or `F_H - F_L` is under 0.05.
+
+In plain words: the gap that happened divided by the gap that was forecast, starting at
+1. One weight per kind of value (`theta_l`, `S`, active time, total tokens and each
+token kind) is measured at every decision from all hosts' runs and shared by all hosts.
+
+Example: `H` holds 60 runs' worth with 13 silent and levels summing to 9, and `L` holds
+100 with 11 silent and levels summing to 15. Then
+`O_H = logit(13.5 / 61) - logit(9.5 / 61) = 0.43` and `O_L = -0.34`. With
+`F_H - F_L = 1.15`, `gamma_hat = 0.675` and `gamma = (160 * 0.675 + 40) / 200 = 0.74`.
+
+**How firmly the prediction is held.**
+
+```text
+worth   = n_family + kappa_m
+N_start = 1 / (1 / worth + 1 / N_task)
+s_min   = sigma_1 / sqrt(N_start)
+s       = max(s_stated, s_min), at most 1.869 for a rate
+```
+
+- `n_family`: `sum a_i` at the family rung of the value's ladder. `kappa_m`:
+  `sampling.model_worth` (5).
+- `N_task`: the most a record on other tasks is worth for one task:
+  `sampling.task_worth_silent` (32) for `S`, `sampling.task_worth_loud` (16) for
+  `theta_l` and `sampling.task_worth_amount` (1) for an amount.
+- `N_start`: how many runs the prediction is worth.
+- `sigma_1`: one run's spread: `1 / sqrt(p * (1 - p))` for a rate with `p` the
+  prediction, and `tau = D * sqrt(scatter_share)` for an amount, which is `D / sqrt(2)`
+  at the default.
+- `s_stated`, `s`: the merged forecast's stated spread, and the belief's starting
+  spread. 1.869 is the flat belief.
+
+In plain words: the family's own runs set how firmly the prediction is held, and a
+stated range can only widen it.
+
+Example: `worth = 15 + 5 = 20` gives `N_start = 1 / (1/20 + 1/32) = 12.3`. With
+`p = 0.034`, `sigma_1 = 5.54` and `s_min = 1.58`. A stated range of 4% to 20% gives
+0.46, so `s = 1.58`.
+
+**The remaining miss of an amount.**
+
+```text
+D2(r) = (sum_i a_i * e_i^2 + kappa_r * D2(r+)) / (sum_i a_i + kappa_r)
+e_i   = y_i - phi(prediction_i)
+D     = sqrt(D2(this cell))
+```
+
+- `prediction_i`: the rule above for past run `i`, with `level_i`, `usual_i` and the
+  `gamma` of its kind of value.
+- `D2(r+)` above all hosts: `sampling.duration_miss` squared (1.69). `r`, `a_i` and
+  `kappa_r` are those of the level and usual ladders.
+
+In plain words: `D` is the typical miss left after the correction.
+
+Example: 100 runs' worth on one cell, each off by a factor of `e^0.5`, give `D2` =
+0.661, 0.368, 0.284, 0.252 and 0.250 down the rungs, so `D = 0.50`.
+
+**Token counts.** Each of the six token kinds has its own ladders, weight and `D`. They
+are empty until runs record usage by kind (a complete `execution_usage`) for decisions
+that forecast usage by kind. Total `tokens` has its own as well, from each run's
+recorded `tokens`; it starts the one token belief of a cell whose forecasts do not all
+state `token_usage`. A kind forecast at exactly zero stays zero.
+
+**Receipt.** `semantic.prediction` stores the sums and every number derived from them.
+The ladder sums are read once, when the request is prepared and outside the storage
+lock, with the same prepare time as the evidence candidates' age factors.
+
+| Field | Content |
+| --- | --- |
+| `kinds.<kind>` | For `loud`, `silent`, `seconds`, `tokens` and each token kind: `n`, the two groups `high` and `low`, `gamma_hat` and `gamma`. A group holds `weight` (`sum a_i`), `gap` (`sum a_i d_i`), `outcome` (`sum a_i y_i`) and `level` (`sum a_i level_i`). |
+| `cells[].values.<kind>` | For each forecast cell and each of its values (`loud`, `silent`, `seconds`, and its six token kinds or `tokens`): `guess`, `rungs`, `level`, `usual`, `prediction`, `worth`, `N_start`, `s_stated`, `s` and, for an amount, `D`. |
+| `rungs` | Five entries from `all-hosts` through `host`, `agent` and `family` to `cell`. Each holds `weight` (`sum a_i`), `outcome` (`sum a_i y_i`), `guess` (`sum a_i g_i`) and, for an amount, `miss` (`sum a_i e_i^2`). |
+
+A rate's `guess`, `level`, `usual` and `prediction` are probabilities. An amount's are
+amounts (seconds or tokens), while its rung sums are sums of logarithms. A kind
+forecast at exactly zero stores a zero `guess`, `prediction` and `s`, and null `level`
+and `usual`.
+
+When a receipt is loaded, every guess is merged again from the frozen forecast panels
+and every derived number (`n`, `gamma_hat`, `gamma`, `level`, `usual`, `prediction`,
+`worth`, `N_start`, `D` and `s`) is recomputed from the stored sums. A receipt whose
+stored numbers do not follow is refused, and the beliefs of each cell must start from
+the stored prediction.
+
+Receipts older than v11 name neither a host nor an agent: their runs sit under the
+unnamed host and the unnamed agent.
 
 (admission-tiers)=
 ### Admission tiers

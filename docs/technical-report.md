@@ -67,8 +67,9 @@ s=\max\!\left(s_g,\frac{\tau}{\sqrt{N_{\mathrm{start}}}}\right),\qquad
 m=\ln(\mathrm{prediction})-\frac{s^2}{2}.
 ```
 
-- {math}`\mathrm{prediction}` is where the belief starts: the experts' forecasts of
-  the amount, averaged on the log scale with their support weights.
+- {math}`\mathrm{prediction}` is where the belief starts: the corrected prediction
+  of section 5. Its guess is the experts' forecasts of the amount, averaged on the log
+  scale with their support weights; with an empty record the prediction is that guess.
 - {math}`s_g` is the stated spread: each expert's stated 95% range read as
   {math}`(\ln hi-\ln lo)/3.92`, combined with the disagreement between experts,
   {math}`s_g^2=\sum_k w_k\,(s_k^2+(m_k-m_g)^2)`, where {math}`w_k` is expert
@@ -76,16 +77,19 @@ m=\ln(\mathrm{prediction})-\frac{s^2}{2}.
   spread and {math}`m_g=\sum_k w_k m_k`.
 - {math}`\tau=D\sqrt{\text{scatter share}}` is the run-to-run scatter of the amount
   on one task. {math}`D` is the typical remaining miss of a prediction, as a spread
-  of {math}`\ln(\mathrm{actual}/\mathrm{prediction})` (1.3 by default), and the
-  scatter share is the part of {math}`D^2` that is scatter (0.5 by default).
+  of {math}`\ln(\mathrm{actual}/\mathrm{prediction})`: section 5 measures it from the
+  record, and it is 1.3 with an empty record. The scatter share is the part of
+  {math}`D^2` that is scatter (0.5 by default).
 - {math}`N_{\mathrm{start}}=1/(1/\mathrm{worth}+1/N_{\mathrm{task}})` is how many
-  runs the prediction is worth: {math}`\mathrm{worth}` (5) is what the record says
-  about the model family's own level, and {math}`N_{\mathrm{task}}` (1) is the most
-  a record on other tasks is worth for one task.
+  runs the prediction is worth: {math}`\mathrm{worth}` is what the record says
+  about the model family's own level (the family's own runs plus 5), and
+  {math}`N_{\mathrm{task}}` (1) is the most a record on other tasks is worth for one
+  task.
 - Subtracting {math}`s^2/2` makes the belief's average equal the prediction.
 
 A stated range can widen the belief and never narrow it below
-{math}`\tau/\sqrt{N_{\mathrm{start}}}`, which is 1.007 with the defaults. For a
+{math}`\tau/\sqrt{N_{\mathrm{start}}}`, which is 1.007 with the defaults and an
+empty record. For a
 prediction of 3,600 seconds with no range, {math}`N_{\mathrm{start}}=0.833`,
 {math}`\tau=0.919`, {math}`s=1.007` and {math}`m=7.682`: an average of 1 hour and a
 median of 0.60 hours. A stated range of 600 to 60,000 seconds gives a spread of 1.175,
@@ -569,7 +573,8 @@ independent beliefs, each on the log-odds scale
 {math}`\operatorname{logit}(p)=\ln\bigl(p/(1-p)\bigr)`: one for its loud rate
 {math}`\theta_l`, the share of attempts that fail loudly, and one for its
 accepted-defect share {math}`S`, silent results divided by accepted results. A belief
-starts from the forecast and is reshaped by the cell's own counted runs.
+starts from a prediction, the forecast corrected from the record of the same host on
+other tasks, and is reshaped by the cell's own counted runs.
 
 ### One forecast per rate
 
@@ -579,7 +584,7 @@ g_l&=\text{loud}, & g_S&=\frac{\text{silent}}{\text{clean}+\text{silent}},\\
 m_k&=\operatorname{logit}(g_k), &
 s_k&=\frac{\operatorname{logit}(hi_k)-\operatorname{logit}(lo_k)}{3.92},\\
 m&=\sum_k w_k m_k, & s_{\mathrm{stated}}^2&=\sum_k w_k\bigl(s_k^2+(m_k-m)^2\bigr),\\
-p&=\operatorname{logistic}(m)\ \text{held in}\ [0.0001,\,0.9998].
+\mathrm{guess}&=\operatorname{logistic}(m)\ \text{held in}\ [0.0001,\,0.9998].
 \end{aligned}
 ```
 
@@ -593,8 +598,8 @@ p&=\operatorname{logistic}(m)\ \text{held in}\ [0.0001,\,0.9998].
   clean + silent for {math}`S`.
 - {math}`s_k`: the stated spread on the log-odds scale, 0 when no range is stated. A
   95% range spans 3.92 spreads.
-- {math}`m`, {math}`s_{\mathrm{stated}}`, {math}`p`: the merged centre, the merged
-  spread and the prediction.
+- {math}`m`, {math}`s_{\mathrm{stated}}`, guess: the merged centre, the merged
+  spread and the merged guess of the rate for this cell on this task.
 - {math}`\operatorname{logistic}(x)=1/(1+e^{-x})`, the inverse of the logit.
 
 In plain words, each rate gets one forecast per cell, and experts that disagree make it
@@ -602,8 +607,151 @@ less certain.
 
 Example: two experts with weights 0.75 and 0.25 guess {math}`S` at 10% and 25%, each
 with spread 0.4. Then {math}`m=0.75\times(-2.197)+0.25\times(-1.099)=-1.92`,
-{math}`p=12.8\%` and
+a guess of 12.8% and
 {math}`s_{\mathrm{stated}}=\sqrt{0.16+0.75\times0.275^2+0.25\times0.824^2}=0.62`.
+
+### The corrected prediction
+
+The level of a forecast follows the agent that makes it, and outcomes depend on the
+agent that accepts the result. So the record, not the forecast, gives the level of
+every value, and the forecast only says whether this task looks higher or lower than
+that forecaster usually states:
+
+```{math}
+\varphi(\mathrm{prediction})=\varphi(\mathrm{level})
+  +\gamma\,\bigl(\varphi(\mathrm{guess})-\varphi(\mathrm{usual})\bigr).
+```
+
+- {math}`\varphi`: the value's own scale. It is
+  {math}`\operatorname{logit}` for {math}`\theta_l` and {math}`S`, each held in
+  {math}`[0.0001,0.9999]`, and {math}`\ln` for active time and each token count.
+- guess: the merged forecast of the value for this cell on this task.
+- level: what happened in the recorded runs of this cell under this host.
+- usual: what the forecaster had stated for those runs.
+- {math}`\gamma`: the weight on the forecaster's judgment, from 0 to 1.
+- prediction: where the belief starts, before the similar runs are counted.
+
+In plain words, the record gives the level and the forecast only says whether this task
+looks harder or easier than usual. An empty record gives the guess, {math}`\gamma=1`
+the guess moved by level minus usual, and {math}`\gamma=0` the level alone.
+
+Example: level 0.0566, usual 0.188, guess 0.10 and {math}`\gamma=0.74` give
+{math}`-2.81+0.74\times(-2.20+1.46)=-3.36` in log-odds, a prediction of 0.034.
+
+Level and usual come down a ladder of five rungs, each leaning on the rung above it:
+
+```{math}
+\mathrm{level}(r)=\frac{\sum_i a_i\,y_i+\kappa_r\,\mathrm{level}(r^{+})}{\sum_i a_i+\kappa_r},
+\qquad
+\mathrm{usual}(r)=\frac{\sum_i a_i\,g_i+\kappa_r\,\mathrm{usual}(r^{+})}{\sum_i a_i+\kappa_r}.
+```
+
+- {math}`r`, {math}`r^{+}`: a rung and the one above it. From the top: all hosts, this
+  host, this agent under it, this family under it, this cell under it. Above all hosts
+  both ladders equal the guess.
+- {math}`i`: a finished routed run at rung {math}`r`: its outcome is clean, loud or
+  silent and its decision stored a forecast for the cell that ran. Its host and agent
+  are the names that decision stores. The decision's evidence candidates are left out,
+  because they count through their similarity to the new task; a run with no decision
+  enters no ladder.
+- {math}`a_i`: the age factor of section 3's evidence weights, halving every 14 days,
+  divided by {math}`\max(1,A_t)` with {math}`A_t` the summed age factors of the runs of
+  ticket {math}`t` in the ladder. A run with no ticket is not limited.
+- {math}`y_i`: what happened: 1 for a failure and 0 otherwise for a rate, the logarithm
+  of the recorded amount for an amount.
+- {math}`g_i`: the merged guess that run's own decision stored, on the same footing.
+- {math}`\kappa_r`: the worth of the rung above: 5 at the family rung (`model_worth`)
+  and 40 elsewhere (`rung_worth`).
+
+{math}`S` counts accepted results, with silent as the failure; {math}`\theta_l` counts
+every finished run, with loud as the failure; an amount counts the runs whose recorded
+amount and guess are above zero. In plain words, a cell with few runs leans on its
+family, then its agent, its host and all hosts.
+
+Example, for {math}`S` with guess 0.10:
+
+| Rung | {math}`\sum a` | {math}`\sum a\,y` | {math}`\sum a\,g` | level | usual |
+| --- | --- | --- | --- | --- | --- |
+| All hosts | 160 | 24 | 16 | 0.140 | 0.100 |
+| This host | 60 | 6 | 9 | 0.116 | 0.130 |
+| This agent | 40 | 2 | 6 | 0.083 | 0.140 |
+| This family | 15 | 1 | 3 | 0.071 | 0.185 |
+| This cell | 10 | 0 | 2 | 0.057 | 0.188 |
+
+The family level is {math}`(1+5\times0.083)/(15+5)=0.071`.
+
+The weight {math}`\gamma` is measured, one per kind of value, from all hosts' runs:
+
+```{math}
+\hat\gamma=\frac{O_H-O_L}{F_H-F_L}\ \text{held in}\ [0,1],\qquad
+\gamma=\frac{n\,\hat\gamma+\kappa}{n+\kappa}.
+```
+
+- {math}`H`, {math}`L`: the ladder's runs with
+  {math}`d_i=\varphi(g_i)-\varphi(\mathrm{usual}_i)` above zero, and the rest.
+- {math}`\mathrm{usual}_i`, {math}`\mathrm{level}_i`: both ladders at run {math}`i`'s
+  own cell over all the runs, with the record's weighted averages of {math}`g` and
+  {math}`y` above all hosts.
+- {math}`F_H`, {math}`F_L`: each group's weighted average of {math}`d_i`.
+- {math}`O_H`, {math}`O_L`: how far each group's results sat from its levels. For a
+  rate,
+  {math}`\operatorname{logit}\frac{\sum a_i y_i+1/2}{\sum a_i+1}-\operatorname{logit}\frac{\sum a_i\,\mathrm{level}_i+1/2}{\sum a_i+1}`
+  over the group; for an amount, its weighted average of
+  {math}`y_i-\mathrm{level}_i`.
+- {math}`n`, {math}`\kappa`: the runs' total weight, and 40 (`rung_worth`).
+- {math}`\hat\gamma` is 1 when a group is empty or {math}`F_H-F_L` is under 0.05.
+
+In plain words, {math}`\gamma` is the gap that happened divided by the gap that was
+forecast, and it starts at 1.
+
+Example: {math}`H` holds 60 runs' worth with 13 silent and levels summing to 9, and
+{math}`L` holds 100 with 11 silent and levels summing to 15. Then
+{math}`O_H=\operatorname{logit}(13.5/61)-\operatorname{logit}(9.5/61)=0.43` and
+{math}`O_L=-0.34`. With {math}`F_H-F_L=1.15`, {math}`\hat\gamma=0.675` and
+{math}`\gamma=(160\times0.675+40)/200=0.74`.
+
+The family's own runs set how firmly the prediction is held:
+
+```{math}
+\mathrm{worth}=n_{\mathrm{family}}+\kappa_m,\qquad
+N_{\mathrm{start}}=\frac{1}{1/\mathrm{worth}+1/N_{\mathrm{task}}},\qquad
+s=\max\!\left(s_{\mathrm{stated}},\frac{\sigma_1}{\sqrt{N_{\mathrm{start}}}}\right).
+```
+
+- {math}`n_{\mathrm{family}}`, {math}`\kappa_m`: {math}`\sum a_i` at the family rung,
+  and 5 (`model_worth`).
+- {math}`N_{\mathrm{task}}`: the most a record on other tasks is worth for one task:
+  32 for {math}`S`, 16 for {math}`\theta_l`, 1 for an amount.
+- {math}`\sigma_1`: one run's spread: {math}`1/\sqrt{p(1-p)}` for a rate with
+  {math}`p` the prediction, and {math}`\tau=D\sqrt{\text{scatter share}}` for an amount.
+- {math}`s_{\mathrm{stated}}`, {math}`s`: the merged forecast's spread, and the
+  belief's starting spread, at most the flat belief's 1.869 for a rate.
+
+Example: {math}`\mathrm{worth}=15+5=20` gives
+{math}`N_{\mathrm{start}}=1/(1/20+1/32)=12.3`. With {math}`p=0.034`,
+{math}`\sigma_1=5.54` and {math}`\sigma_1/\sqrt{N_{\mathrm{start}}}=1.58`. A stated
+range of 4% to 20% gives 0.46, so {math}`s=1.58`.
+
+For an amount, the same ladder over squared misses gives {math}`D`, the typical miss
+left after the correction:
+
+```{math}
+D^2(r)=\frac{\sum_i a_i\,e_i^2+\kappa_r\,D^2(r^{+})}{\sum_i a_i+\kappa_r},\qquad
+e_i=y_i-\varphi(\mathrm{prediction}_i),\qquad D=\sqrt{D^2(\text{this cell})}.
+```
+
+- {math}`\mathrm{prediction}_i`: the rule above for past run {math}`i`, with
+  {math}`\mathrm{level}_i`, {math}`\mathrm{usual}_i` and the {math}`\gamma` of its kind
+  of value.
+- {math}`D^2(r^{+})` above all hosts: `duration_miss` squared, {math}`1.3^2`.
+
+Example: 100 runs' worth on one cell, each off by a factor of {math}`e^{0.5}`, give
+{math}`D^2` = 0.661, 0.368, 0.284, 0.252 and 0.250 down the rungs, so {math}`D=0.50`.
+
+Total tokens and each of the six token kinds have their own ladders, weight and
+{math}`D`, empty until runs record them. A token kind forecast at zero stays zero. The
+receipt stores every sum under `semantic.prediction`, and each derived number is
+recomputed from those sums when the receipt is loaded.
 
 ### The start of each belief
 
@@ -618,12 +766,14 @@ q_j(m)&=\frac{\exp\bigl(-(x_j-m)^2/(2s^2)\bigr)}{\sum_i\exp\bigl(-(x_i-m)^2/(2s^
 \end{aligned}
 ```
 
-- worth: how many runs the record says about this family, `model_worth`, 5.
+- {math}`p`: the corrected prediction of the rate, held in {math}`[0.0001,0.9998]`.
+- worth: how many runs the record says about this family: the family's own runs plus
+  `model_worth`, 5.
 - {math}`N_{\mathrm{task}}`: the most a record on other tasks is worth for one task,
   32 for {math}`S` (`task_worth_silent`) and 16 for {math}`\theta_l`
   (`task_worth_loud`).
-- {math}`N_{\mathrm{start}}`: how many runs the prediction is worth: 4.32 for
-  {math}`S` and 3.81 for {math}`\theta_l`.
+- {math}`N_{\mathrm{start}}`: how many runs the prediction is worth. With an empty
+  record it is 4.32 for {math}`S` and 3.81 for {math}`\theta_l`.
 - {math}`\sigma_1`: the spread of one run's result on the log-odds scale.
 - {math}`s`: the spread at the start. A stated range can widen it, never narrow it:
   a forecaster cannot claim the authority of many real runs. 1.869 is the flat belief,
@@ -640,8 +790,8 @@ median, equals the prediction, and it is as wide as a record worth
 {math}`N_{\mathrm{start}}` runs allows. One fixed grid makes every belief a finite sum,
 so a stored decision is recomputed exactly when it is loaded.
 
-Example: clean 0.72, loud 0.20, silent 0.08 with `silent_ci = [0.04, 0.16]` gives
-{math}`p=0.10` for {math}`S` and {math}`s_{\mathrm{stated}}=0.40` (a range of 5% to
+Example, with an empty record: clean 0.72, loud 0.20, silent 0.08 with
+`silent_ci = [0.04, 0.16]` gives {math}`p=0.10` for {math}`S` and {math}`s_{\mathrm{stated}}=0.40` (a range of 5% to
 20%). {math}`\sigma_1/\sqrt{N_{\mathrm{start}}}=3.33/2.08=1.60`, so {math}`s=1.60` and
 the centre is {math}`-3.04`. For {math}`\theta_l`, {math}`p=0.20` and
 `loud_ci = [0.10, 0.35]` give {math}`s=1.28` and centre {math}`-1.79`.

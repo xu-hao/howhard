@@ -168,11 +168,13 @@ weight still apply; an amendment does not create a new forecast exposure.
 Selection samples the LLM and memory experts and retains the cost objective. For each
 cell, the experts' forecast rows are merged by their weights on the log-odds scale into
 one forecast of the loud rate and one of the accepted-defect share, and experts that
-disagree make that forecast less certain. Each forecast starts a belief worth a few
-runs (`N_start`, about 4), which is then reshaped by that cell's own
+disagree make that forecast less certain. The record of the same host on other tasks
+corrects each forecast into a {ref}`prediction <corrected-prediction>`, which starts a
+belief worth a few runs (`N_start`, about 4 with an empty record) and is then reshaped
+by that cell's own
 `outcome_observations`: the cell's runs among the decision's
 {ref}`evidence candidates <evidence-candidates>`, each weighted by its task similarity
-and age and limited per ticket. The forecast never fades out: it keeps the weight of
+and age and limited per ticket. The prediction never fades out: it keeps the weight of
 `N_start` runs however many are counted. Forecasters may attach
 `silent_ci` and/or `loud_ci` 95% ranges to a row; a wider range widens the start so
 real outcomes dominate sooner, while a narrow range cannot narrow it below what
