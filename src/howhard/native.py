@@ -4,7 +4,7 @@ from copy import deepcopy
 import hashlib
 import json
 
-from .validation import HowHardError, keys, number, text
+from .validation import HowHardError, keys, name, number, text
 
 FORMAT = "howhard-native-v1"
 
@@ -18,12 +18,14 @@ def credit_budget(value):
     return normalized
 
 
-def validate(candidates):
+def validate(candidates, *, labels=True):
+    """Normalize an inventory. ``labels=False`` reads receipts older than the agent label."""
     if not isinstance(candidates, list) or not candidates:
         raise HowHardError("candidates: expected at least one native model/effort cell")
     result, seen = [], set()
     for cell in candidates:
-        keys(cell, ["model", "effort"], ["usd_per_mtok", "rate_card", "cost_per_credit", "credit_budget"], "native candidate")
+        keys(cell, ["model", "effort"], ["usd_per_mtok", "rate_card", "cost_per_credit", "credit_budget",
+                                        *(["agent"] if labels else [])], "native candidate")
         model = text(cell["model"], "candidate.model")
         effort = text(cell["effort"], "candidate.effort", label=True)
         if len(model) > 256 or any(ord(c) < 32 for c in model) or len(effort) > 64 or effort == "model_default":
@@ -32,6 +34,10 @@ def validate(candidates):
         if pair in seen:
             raise HowHardError("candidates: duplicate native model/effort cell")
         seen.add(pair)
+        if "agent" in cell:
+            # A label for the agent product that would run the cell. It is stored, never
+            # verified, and is not part of the cell's identity.
+            name(cell["agent"], "candidate.agent")
         if "rate_card" in cell:
             from .accounting import rate_card
             rate_card(cell["rate_card"])
@@ -47,6 +53,7 @@ def validate(candidates):
             if "rate_card" not in cell and credit_rate is None:
                 raise HowHardError("candidate.credit_budget: requires rate_card or usd_per_mtok")
         result.append({"model": model, "effort": effort,
+                       **({"agent": cell["agent"]} if "agent" in cell else {}),
                        **({"usd_per_mtok": credit_rate} if "usd_per_mtok" in cell else {}),
                        **({"rate_card": deepcopy(cell["rate_card"])} if "rate_card" in cell else {}),
                        "cost_per_credit": cost_per_credit,
@@ -90,6 +97,17 @@ def apply(config, models):
         family = "native-" + hashlib.sha256(model.encode()).hexdigest()
         config.data["models"][model] = {"family": family, "efforts": spec["efforts"],
                                         "weight": 1.0, "native": True}
+
+
+def agents(candidates):
+    """Map each cell key to its agent label; ``None`` is the one unnamed agent."""
+    from .capability import cell_key
+    return {cell_key(c): c.get("agent") for c in candidates}
+
+
+def host_name(value):
+    """The optional name of the agent that asks for the route; ``None`` is the one unnamed host."""
+    return None if value is None else name(value, "host")
 
 
 def resolve(config, candidates=None, inventory=None):

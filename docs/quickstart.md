@@ -81,6 +81,12 @@ the backend directly. You do not need to configure model-family mappings or tune
 parameters. If an independent forecast or required execution control is unavailable,
 the agent reports the limitation instead of inventing a selection.
 
+The agent can name itself with `--host NAME` and label each candidate with the `agent`
+product that would run it; both names are optional, stored unverified in the decision
+and listed by `report`. Its forecasts can state 95% ranges on the failure rates, on
+active time (`seconds_ci`) and on each token kind (`token_usage_ci`). See the
+{ref}`forecast contract <forecast-contract>`.
+
 The decision includes `chosen.model`, `chosen.effort`, `decision_id`, `cap_met`,
 `needs_review` and `cost_policy`. Honor required review. The host executes the task;
 a recommendation alone is not execution. Unknown worker prices stay unknown. If any

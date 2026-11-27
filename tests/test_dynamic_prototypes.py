@@ -171,11 +171,11 @@ def test_cold_start_synthesizes_representative_prototype_and_warm_route_runs_pro
 
     # Cold start runs Stage 1 + Stage 2 baseline once on the synthesized representative task.
     first = engine.pick("task", noisy_prompt, native_candidates=candidates, seed=7)
-    assert first["format"] == "howhard-decision-v10" if "format" in first else True
+    assert first["format"] == "howhard-decision-v11" if "format" in first else True
     receipt = load(engine.config, first["decision_id"])
-    assert receipt["format"] == "howhard-decision-v10"
-    assert receipt["capability"]["format"] == "howhard-capability-v5"
-    assert receipt["semantic"]["format"] == "howhard-semantic-v7"
+    assert receipt["format"] == "howhard-decision-v11"
+    assert receipt["capability"]["format"] == "howhard-capability-v6"
+    assert receipt["semantic"]["format"] == "howhard-semantic-v8"
     assert len(spy.calls) == 2
     assert all("#123" not in c["context"]["task_text"] for c in spy.calls)
     assert all("/var/tmp/" not in c["context"]["task_text"] for c in spy.calls)

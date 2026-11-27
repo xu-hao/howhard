@@ -12,7 +12,9 @@ converts forecast credit to actual session money cost and defaults to `1.0`. Whe
 quota credit windows are known for a uniformly priced inventory, optional `credit_budget`
 (`available_credit_usd` plus optional `session_5h_remaining_credit_usd` and
 `weekly_7d_remaining_credit_usd`) enforces hard scheduling feasibility (`credit_ok`) against
-`needed_credit_usd`. Selection uses `session_cost_usd`; neither rate source represents
+`needed_credit_usd`. Optional `agent` is a short label (letters, digits, `_`, `-`) for
+the agent product that would run the cell; it is stored with the cell, never verified,
+and a candidate without one belongs to one unnamed agent. Selection uses `session_cost_usd`; neither rate source represents
 actual session money cost when `cost_per_credit` differs from `1.0`. Omitted/null rate means unknown, including
 when the ID also exists in howhard's shipped registry. Do not fabricate an example
 inventory, prices, family labels, weights or statistical settings.
@@ -26,10 +28,14 @@ identity/effort metadata in its own store; active cells and prices belong to the
 
 ```sh
 howhard paths --json
-howhard context task --text-file /tmp/task.txt --candidates /tmp/host-candidates.json --auto-decide --seed 42 --json
+howhard context task --text-file /tmp/task.txt --candidates /tmp/host-candidates.json --host HOST_NAME --auto-decide --seed 42 --json
 ```
 
-Replace temporary paths with this task's actual artifacts. When matched `(task, context)`
+Replace temporary paths with this task's actual artifacts and `HOST_NAME` with the name
+of the agent asking for the route (`--host` is optional; `pick` and `summary` accept it
+too, and Python takes `host="HOST_NAME"`). The name is returned with the prepared
+request, stored in the receipt and listed by `report --json` under `routing` together
+with the chosen cell's `agent` label. When matched `(task, context)`
 prototypes already cover every candidate cell and no active editable semantic memories
 exist, `context --auto-decide` completes both stages immediately and returns the
 committed `decision_id` and `chosen` cell in one call (warm `howhard pick` also succeeds
@@ -101,7 +107,15 @@ the returned stage schema. Filtering uses a complete `filter` order and inclusiv
 nonempty cut points, up to eight cited `memory_filters`, and a reason. Forecasting uses
 frozen baseline `forecasts`, seen active-memory/version overrides in `memory_forecasts`,
 and a reason; forecasted `seconds` explicitly represents expected **active** execution
-duration (excluding passive external scheduler/FIFO queue wait). Follow new request IDs through one explicit re-filter or bounded
+duration (excluding passive external scheduler/FIFO queue wait). Every forecast row,
+baseline or memory override, may state central 95% ranges: `loud_ci` and `silent_ci`
+on those probabilities (`0 <= lo <= value <= hi <= 1`; `[0, 1]` or anything wider than
+`[0.025, 0.975]` states a flat belief), `seconds_ci` on `seconds`, and
+`token_usage_ci` as `{kind: [lo, hi]}` for any of `input`, `output`, `cache_read`,
+`cache_write`, `cache_write_5m` and `cache_write_1h` on a row that has `token_usage`.
+Each range must contain its value with `0 <= lo <= value <= hi`; a token kind forecast
+at zero is exactly zero unless a non-zero upper end is stated; there is no range on
+`tokens` or on cost. A range that misses its value is refused with the field's name. Follow new request IDs through one explicit re-filter or bounded
 stronger-only widening until `decision_id` is returned; never truncate or invent rows. Copy opaque family/effort keys emitted by the
 backend; do not invent or rename them. An empty override list is valid. Generate honest
 prospective estimates; do not fabricate past forecasts, observations or independence.

@@ -18,7 +18,11 @@ the host's actual tools execute the task.
    none remain. Respect the user's chosen model or other execution constraints.
 2. Follow [the native decision workflow](references/workflow.md). Write the observed
    candidate list to a temporary JSON input and pass `--candidates` to `context` or
-   `pick`. Unknown identities receive separate identity labels automatically;
+   `pick`. Pass `--host NAME` with the name of the agent you are (the host that asks
+   for the route, makes the forecast and accepts the result), and put an `agent` label
+   on each candidate naming the agent product that would run it; use the names your
+   routing layer already uses. Both are short labels stored unverified, and both are
+   optional: omit one you cannot establish instead of guessing. Unknown identities receive separate identity labels automatically;
    no model assumptions or statistical settings are required. Read [portable accounting](references/accounting.md) for explicit rate cards and
    category forecasts when rates are known. Candidate `usd_per_mtok` and `rate_card`
    values represent raw list-price quota credit; optional `cost_per_credit` converts that
@@ -62,7 +66,12 @@ the host's actual tools execute the task.
    cell's loud or silent probability, add `loud_ci`/`silent_ci` as a `[lo, hi]` 95%
    credible interval containing the value; wide intervals let observed outcomes dominate
    sooner, narrow ones cannot strengthen the bounded prior, and rows without intervals
-   remain valid. Cold-start priors decay continuously to zero weight once a cell reaches
+   remain valid. State the same kind of 95% range for active time as `seconds_ci`
+   `[lo, hi]` and, on a row with `token_usage`, for any token kind as
+   `token_usage_ci` `{kind: [lo, hi]}`; each range must contain its value, a kind
+   forecast at zero is exactly zero unless you state a non-zero upper end, and there is
+   no range on total tokens or cost. Give the range you actually believe rather than
+   omitting it or narrowing it to look confident. Cold-start priors decay continuously to zero weight once a cell reaches
    `W_emp >= 2.0` on a prototype. Handle one explicit re-filter and stronger-only
    widening requests; never truncate an inventory/band or forecast excluded cells.
    The backend learns the order and threshold from actual similar executions, with

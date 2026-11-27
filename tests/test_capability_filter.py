@@ -93,7 +93,7 @@ def test_unbounded_inventory_runs_both_stages_and_validates_receipt(tmp_path, co
     assert len(receipt["native_candidates"]) == count
     assert len(receipt["capability"]["cells"]) == count
     assert len(receipt["semantic"]["worlds"]["llm"]) == 4
-    assert receipt["format"] == "howhard-decision-v10"
+    assert receipt["format"] == "howhard-decision-v11"
 
 
 @pytest.mark.parametrize("defect", ["missing", "duplicate", "unknown", "empty"])
@@ -548,7 +548,9 @@ def test_frozen_capability_receipts_validate_replay_and_observe(tmp_path, monkey
     current = load(engine.config, current_id)
 
     def to_decision_v9_with_capability_v3(receipt):
-        receipt.update(with_capability_v3(receipt))
+        legacy = with_capability_v3(receipt)
+        receipt.clear()  # A v9 receipt has no v11 keys such as the host's name.
+        receipt.update(legacy)
 
     v3_id, _ = _rewrite_stored_receipt(engine, current_id, to_decision_v9_with_capability_v3)
 
@@ -562,8 +564,8 @@ def test_frozen_capability_receipts_validate_replay_and_observe(tmp_path, monkey
     assert loaded_v2["capability"]["format"] == "howhard-capability-v2"
     assert loaded_v3["format"] == "howhard-decision-v9"
     assert loaded_v3["capability"]["format"] == "howhard-capability-v3"
-    assert current["format"] == "howhard-decision-v10"
-    assert current["capability"]["format"] == "howhard-capability-v5"
+    assert current["format"] == "howhard-decision-v11"
+    assert current["capability"]["format"] == "howhard-capability-v6"
     assert loaded_v3["capability"]["worlds"]["filter:llm"] != current["capability"]["worlds"]["filter:llm"]
 
     # CLI observe --decision and positional observe succeed across all four receipts.
@@ -627,6 +629,6 @@ def test_frozen_capability_receipts_validate_replay_and_observe(tmp_path, monkey
         load(engine.config, old_prefix_in_v4)
 
     unsupported_fmt = deepcopy(loaded_v3)
-    unsupported_fmt["capability"]["format"] = "howhard-capability-v5"
+    unsupported_fmt["capability"]["format"] = "howhard-capability-v6"
     with pytest.raises(HowHardError, match="decision.capability.format: unsupported version"):
         load(engine.config, unsupported_fmt)

@@ -39,6 +39,7 @@ def parser():
             inventory_options = command.add_mutually_exclusive_group(required=True)
             inventory_options.add_argument("--candidates", metavar="FILE", help="JSON available model/effort inventory, with optional list-price credit rate_card or usd_per_mtok, cost_per_credit and credit_budget")
             inventory_options.add_argument("--inventory", metavar="NAME", help="explicitly select a configured inventory")
+            command.add_argument("--host", metavar="NAME", help="optional name of the agent asking for this route; stored in the receipt, never verified")
         if name == "evidence":
             command.add_argument("id")
             command.add_argument("--raw", action="store_true", help="return the exact recorded row rather than current effective evidence")
@@ -125,9 +126,14 @@ def render(result):
         lines.append("Intervals: approximate weighted LLM forecast envelope")
     if not result["cost_policy"]["worker_money_included"]:
         lines.append("Worker monetary cost is unknown for at least one candidate and omitted uniformly from comparison; J includes risk and time only.")
+    if result.get("host") is not None:
+        lines.append(f"Host: {result['host']}")
     if "chosen" in result:
         chosen = result["chosen"]
-        lines.append(f"{chosen['model']} ({chosen['family']}) effort={chosen['effort']} seed={result['seed']}")
+        label = next((c.get("agent") for c in result["native_candidates"]
+                      if (c["model"], c["effort"]) == (chosen["model"], chosen["effort"])), None)
+        lines.append(f"{chosen['model']} ({chosen['family']}) effort={chosen['effort']} seed={result['seed']}"
+                     + (f" agent={label}" if label is not None else ""))
         lines.append(f"Accepted-result silent cap: {'met' if result['cap_met'] else 'UNMET'}")
         lines.append(f"Exploration: {result['exploration']['reason']}")
         lines.append(f"Decision: {result['decision_id']} (record with: howhard observe {result['decision_id']} clean)")
@@ -215,8 +221,10 @@ def main(argv=None):
             print(json.dumps(status(config.state_root), sort_keys=True))
             return 0
         native_candidates = None
+        route_options = {}
         if args.command in ("pick", "summary", "context"):
-            from .native import resolve
+            from .native import host_name, resolve
+            route_options["host"] = host_name(args.host)
             native_candidates = resolve(config, read_json(args.candidates) if args.candidates is not None else None, args.inventory)
         engine = Engine(config, journal_path=args.journal, write_timeout=args.write_timeout)
         context_options = {}
@@ -231,14 +239,16 @@ def main(argv=None):
                 except (ValueError, UnicodeError) as exc:
                     raise HowHardError("project_context: expected valid JSON") from exc
         if args.command == "pick":
-            result = engine.pick(args.task_type, risk=args.risk, seed=args.seed, native_candidates=native_candidates, **context_options)
+            result = engine.pick(args.task_type, risk=args.risk, seed=args.seed, native_candidates=native_candidates,
+                                 **route_options, **context_options)
             if args.save_decision is not None:
                 engine.save_decision(result["decision_id"], args.save_decision)
         elif args.command == "summary":
-            result = engine.summary(args.task_type, risk=args.risk, native_candidates=native_candidates, **context_options)
+            result = engine.summary(args.task_type, risk=args.risk, native_candidates=native_candidates,
+                                    **route_options, **context_options)
         elif args.command == "context":
             result = engine.prepare(args.task_type, risk=args.risk, native_candidates=native_candidates,
-                                    auto_decide=args.auto_decide, seed=args.seed, **context_options)
+                                    auto_decide=args.auto_decide, seed=args.seed, **route_options, **context_options)
             if args.save_decision is not None and "decision_id" in result:
                 engine.save_decision(result["decision_id"], args.save_decision)
         elif args.command == "evidence":

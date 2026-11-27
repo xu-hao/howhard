@@ -4,7 +4,7 @@ from collections import Counter
 import json
 import math
 
-from .decisions import load, exists
+from .decisions import agent, host, load, exists
 from .semantic import OUTCOMES, SETTINGS, panel_lookup
 from .storage import INTERRUPTED_CAUSES, OBSERVATION_OUTCOMES
 from .validation import HowHardError
@@ -75,7 +75,9 @@ def report(engine):
         "queue_wait_seconds": _time_summary([row.get("queue_wait_seconds") for row in engine.rows]),
         "effective_active_seconds": _time_summary([effective_active_seconds(row) for row in engine.rows]),
     }
-    return {"filter_quality": filter_quality(engine), "execution_accounting": summary(engine.rows), "project": engine.config.data["project"], "runs": len(engine.rows), "outcomes": {k: outcomes[k] for k in OBSERVATION_OUTCOMES},
+    stored = scorable_decisions(engine)
+    return {"filter_quality": filter_quality(engine, stored), "routing": routing(stored),
+            "execution_accounting": summary(engine.rows), "project": engine.config.data["project"], "runs": len(engine.rows), "outcomes": {k: outcomes[k] for k in OBSERVATION_OUTCOMES},
             "interrupted_causes": {k: interrupted_causes[k] for k in INTERRUPTED_CAUSES},
             "forecast_metrics": metrics, "missing_receipts": missing, "unsupported_receipts": unsupported,
             "worker_cost": {"basis": "legacy-unspecified", "known_usd": known_worker, "unknown_runs": unknown_worker, "total_usd": known_worker if not unknown_worker else None},
@@ -93,17 +95,33 @@ def report(engine):
 
 
 
-def filter_quality(engine):
-    """Describe actual filter outcomes and frozen disagreements, including pending runs."""
-    from .capability import cell_key
-    from .retrieval import records, task_text
-    from datetime import datetime
+def scorable_decisions(engine):
     decisions = {}
     from .payload_store import decision_ids
     for decision_id in decision_ids(engine.config):
         decision = load(engine.config, decision_id, for_scoring=True)
         if decision is not None:
             decisions[decision_id] = decision
+    return decisions
+
+
+def routing(decisions):
+    """Who asked for each stored decision and which agent its chosen cell belongs to.
+
+    Both names are caller-supplied labels, never verified; ``None`` is the one unnamed
+    host or agent, which is also how receipts older than v11 read.
+    """
+    return [{"decision_id": decision_id, "host": host(decision),
+             "chosen": {**decision["chosen"], "agent": agent(decision)}}
+            for decision_id, decision in decisions.items()]
+
+
+def filter_quality(engine, decisions=None):
+    """Describe actual filter outcomes and frozen disagreements, including pending runs."""
+    from .capability import cell_key
+    from .retrieval import records, task_text
+    from datetime import datetime
+    decisions = scorable_decisions(engine) if decisions is None else decisions
     events = engine.config.state_root / "decision-events.jsonl"
     times = {e["decision_id"]: e["at_utc"] for e in (json.loads(line) for line in events.read_text().splitlines())
              if e.get("decision_id")} if events.exists() else {}

@@ -16,6 +16,9 @@ from .storage import effective_active_seconds, locked
 from .validation import HowHardError
 
 OUTCOMES = ("clean", "loud", "silent")
+# What a stored Stage 2 forecast keeps: its values, every stated range, and (as "host") who made it.
+FORECAST_FIELDS = ("clean", "loud", "silent", "tokens", "seconds", "token_usage",
+                   "loud_ci", "silent_ci", "seconds_ci", "token_usage_ci")
 EMPIRICAL_BASE = (0.88, 0.08, 0.04)
 OVERRUN_GRACE_RATIO = 1.5
 STAGE1_MIN_CAP_WEIGHT = 0.5
@@ -1385,6 +1388,44 @@ def record_stage1_baseline(engine, bundle, baseline_filter):
             db.close()
 
 
+def _containing(interval, value):
+    """A stored range, widened only by the rounding of a re-derived value it must still contain."""
+    if interval[0] <= value <= interval[1]:
+        return deepcopy(interval)
+    return [min(float(interval[0]), value), max(float(interval[1]), value)]
+
+
+def stored_forecasts(config, *, task_type=None):
+    """The Stage 2 forecasts kept on active prototypes, each with its stated ranges and host.
+
+    ``host`` is the name of the host whose request produced the forecast; ``None`` is the one
+    unnamed host, which is also how forecasts stored before hosts were named read.
+    """
+    from .payload_store import _connect
+
+    db = _connect(config, write=False)
+    if db is None:
+        return []
+    try:
+        if not _has_tables(db):
+            return []
+        prototypes = _load_active_prototypes(db, task_type=task_type)
+        cells = _load_cells(db, [p["prototype_id"] for p in prototypes])
+    finally:
+        db.close()
+    result = []
+    for proto in prototypes:
+        for (model, effort), entry in sorted(cells.get(proto["prototype_id"], {}).items()):
+            prior = entry["prior"]
+            if not isinstance(prior, dict) or not all(k in prior for k in OUTCOMES):
+                continue
+            result.append({"prototype_id": proto["prototype_id"], "task_type": proto["task_type"],
+                           "model": model, "family": entry["family"], "effort": effort,
+                           "host": prior.get("host"),
+                           "forecast": {k: deepcopy(prior[k]) for k in FORECAST_FIELDS if k in prior}})
+    return result
+
+
 def _build_token_usage_from_shares(scalar_tokens, shares):
     counts_list = [max(0.0, float(scalar_tokens) * float(s)) for s in shares]
     diff = float(scalar_tokens) - math.fsum(counts_list)
@@ -1442,6 +1483,8 @@ def prepare_stage2(engine, bundle):
         prior_out_w = 0.0
         prior_probs = [0.0, 0.0, 0.0]
         prior_cis = {}
+        prior_seconds_ci = None
+        prior_token_ci = None
         prior_sec_w = 0.0
         prior_sec_sum = 0.0
         prior_tok_w = 0.0
@@ -1483,6 +1526,8 @@ def prepare_stage2(engine, bundle):
                 if "seconds" in pr:
                     prior_sec_w += w
                     prior_sec_sum += w * float(pr["seconds"])
+                    if len(matches) == 1 and "seconds_ci" in pr:
+                        prior_seconds_ci = pr["seconds_ci"]
                 if "tokens" in pr:
                     prior_tok_w += w
                     prior_tok_sum += w * float(pr["tokens"])
@@ -1490,6 +1535,8 @@ def prepare_stage2(engine, bundle):
                     prior_cat_w += w
                     for idx, cat in enumerate(CATEGORIES):
                         prior_cat_accum[idx] += w * float(pr["token_usage"][cat])
+                    if len(matches) == 1 and "token_usage_ci" in pr:
+                        prior_token_ci = pr["token_usage_ci"]
 
         outcome_ok = prior_out_w > 0 or w_emp >= STAGE2_MIN_EMP_WEIGHT
         sec_ok = prior_sec_w > 0 or dur_w > 0
@@ -1514,6 +1561,7 @@ def prepare_stage2(engine, bundle):
         seconds_val = (
             prior_sec_sum / prior_sec_w if prior_sec_w > 0 else math.exp(dur_log_sum / dur_w)
         )
+        token_usage_ci_val = None
         if prior_tok_w > 0 and (not needs_category or prior_cat_w > 0):
             tokens_val = prior_tok_sum / prior_tok_w
             if needs_category:
@@ -1521,6 +1569,10 @@ def prepare_stage2(engine, bundle):
                 c_tot = math.fsum(cat_vals)
                 shares = [v / c_tot for v in cat_vals] if c_tot > 0 else [1.0, 0.0, 0.0, 0.0, 0.0, 0.0]
                 token_usage_val = _build_token_usage_from_shares(tokens_val, shares)
+                # Like the rate ranges, a stated range is returned only with the one forecast it belongs to.
+                if prior_token_ci is not None:
+                    token_usage_ci_val = {kind: _containing(interval, token_usage_val[kind])
+                                          for kind, interval in prior_token_ci.items()}
             else:
                 token_usage_val = None
         elif tok_w > 0:
@@ -1546,8 +1598,12 @@ def prepare_stage2(engine, bundle):
             "seconds": seconds_val,
             **prior_cis,
         }
+        if prior_seconds_ci is not None and prior_sec_w > 0:
+            row["seconds_ci"] = _containing(prior_seconds_ci, seconds_val)
         if token_usage_val is not None:
             row["token_usage"] = token_usage_val
+        if token_usage_ci_val is not None:
+            row["token_usage_ci"] = token_usage_ci_val
         covered_rows.append(row)
 
     if not unseen_cells and covered_rows:
@@ -1602,9 +1658,13 @@ def record_stage2_baseline(engine, bundle, new_rows):
                     ).fetchone()
                     prior_obj = json.loads(existing[0]) if existing and existing[0] is not None else {}
                     stats_obj = json.loads(existing[1]) if existing else empty_stats()
-                    for field in ("clean", "loud", "silent", "tokens", "seconds", "token_usage", "loud_ci", "silent_ci"):
+                    # A range on active time or a token kind belongs to the forecast that stated it.
+                    for field in ("seconds_ci", "token_usage_ci"):
+                        prior_obj.pop(field, None)
+                    for field in FORECAST_FIELDS:
                         if field in f_row:
                             prior_obj[field] = deepcopy(f_row[field])
+                    prior_obj["host"] = bundle.get("host")
                     db.execute(
                         "INSERT OR REPLACE INTO prototype_cells VALUES (?, ?, ?, ?, ?, ?, ?)",
                         (

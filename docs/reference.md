@@ -28,9 +28,27 @@ The caller supplies any nonempty number of distinct actual cells through `--cand
 `native_candidates`. External routers can explicitly select a saved list from
 `howhard.toml` with `--inventory NAME` or Python `inventory="NAME"` instead. Neither
 option is implicit, and the two sources cannot be combined. An empty list is refused. Each has `model`,
-`effort` and optional `usd_per_mtok` or `rate_card`, `cost_per_credit`, and `credit_budget`. External routers can use stable
+`effort` and optional `agent`, `usd_per_mtok` or `rate_card`, `cost_per_credit`, and `credit_budget`. External routers can use stable
 provider-qualified model IDs; execution and provider access belong to the caller.
 See {ref}`inventory configuration <external-router-inventories>`.
+
+(host-and-agent-names)=
+Two optional names say who is involved in a route. Both are short labels of letters,
+digits, `_` and `-`, at most 64 characters; `howhard` stores them and never verifies them.
+
+- **Host**: the agent that asks for the route, makes the forecast and accepts or rejects
+  the result. `pick`, `summary` and `context` take `--host NAME`
+  (`Engine.pick/summary/prepare(..., host="NAME")`). The name travels on the prepared
+  request, is returned with it, and is stored as `host` in the decision receipt. A
+  request with no name belongs to the one unnamed host and stores `"host": null`.
+- **Agent**: the agent product that would run a cell, given as `agent` on a candidate
+  or on an entry of a configured inventory. The label is stored with its cell in the
+  receipt, in `native_candidates` and as `agent` on each `capability.cells` entry. A
+  candidate with no label belongs to the one unnamed agent (`"agent": null` on its
+  capability cell). The label is not part of a cell's identity: two candidates with the
+  same `model` and `effort` are duplicates whatever their labels.
+
+Neither name changes which cell is chosen. `report` lists both under `routing`.
 No-effort, null and `model_default` controls are refused. Unknown identities receive distinct
 opaque family labels for protocol bookkeeping, without model assumptions or effects.
 Configured identities retain their declared labels and evidence weights. Historical
@@ -94,6 +112,38 @@ but an overconfident narrow interval can never make a forecast stronger than
 `prior_strength` pseudo-observations. Bare `clean`/`loud`/`silent` rows remain valid and
 use `kappa_0 = prior_strength`.
 
+(forecast-contract)=
+### Forecast rows and stated ranges
+
+A forecast row names one cell and states a value for each quantity a decision needs.
+Every range is optional and is a central 95% range `[lo, hi]`.
+
+| Value | Required | Optional range |
+| --- | --- | --- |
+| `clean`, `loud`, `silent` (sum to 1) | yes | `loud_ci`, `silent_ci` |
+| `seconds` (active execution time) | yes | `seconds_ci` |
+| `tokens` (total) | yes | none |
+| `token_usage` (`input`, `output`, `cache_read`, `cache_write`, `cache_write_5m`, `cache_write_1h`) | only for a cell with a category rate card | `token_usage_ci: {kind: [lo, hi]}` for any of the six kinds |
+
+- A range must contain its value, with `0 <= lo <= value <= hi`. A rate range also needs
+  `hi <= 1`. A range that misses its value, or is not two finite non-negative numbers,
+  is refused with a message that names the field (for example
+  `forecast.token_usage_ci.input`).
+- A rate range of `[0, 1]`, or anything wider than `[0.025, 0.975]`, states a flat
+  belief: no knowledge of that probability. There is no other ceiling on a stated width.
+  Selection reads such a range through the moment matching above, like any other
+  stated rate range.
+- A token kind forecast at zero is exactly zero unless a non-zero upper end is stated.
+- `token_usage_ci` needs `token_usage` on the same row and accepts only the six kinds.
+  There is no range on total `tokens` or on credit: token counts do not depend on
+  prices, and a stored forecast is reused after prices change.
+
+Stated ranges are stored unchanged in the receipt's forecast panels
+(`semantic.worlds`). `seconds_ci` and `token_usage_ci` are validated and stored only:
+the duration calibration, cost and sampling described here do not read them, so a row
+with these ranges selects exactly as the same row without them. `loud_ci` and
+`silent_ci` are read as described above.
+
 `P_clean`, `P_loud` and `P_silent` report `{mean, lower, upper}` from the
 support-weighted mixture of the experts' Beta marginals `Beta(alpha_i, sum(alpha) - alpha_i)`:
 the mean and the equal-tailed 2.5%/97.5% quantiles, expanded to contain the mean. This is
@@ -141,8 +191,10 @@ can further tighten the posterior-overlap band; it cannot permit exploration out
 it. Cheaper alternatives include signed cost component explanations or the policy that
 excluded them.
 
-New receipts use `howhard-decision-v10` (`howhard-semantic-v7`, reader prompt
-`semantic-reader-v7`, interval kind `dirichlet-posterior-mixture`). Frozen
+New receipts use `howhard-decision-v11` (`howhard-semantic-v8`, reader prompt
+`semantic-reader-v8`, interval kind `dirichlet-posterior-mixture`). Frozen
+`howhard-decision-v10` receipts use the same posterior and selection rules without a
+host name, agent labels or ranges on active time and token kinds. Frozen
 `howhard-decision-v9` receipts keep undecayed `kappa_0 * p_0 + counts` posteriors, while
 frozen `howhard-decision-v8` and `howhard-decision-v7` receipts keep their original weighted
 forecast envelopes, upper-envelope admission and sampling policy shape; all load,
@@ -370,18 +422,26 @@ or memory writes. All receipts require that identity and their native inventory/
 policy. The resolved state subtree is excluded from capture and
 `project.read`, including symlink aliases; a state root equal to or containing the capture
 root is refused. Prepared calling-agent requests bind the worktree and reject sibling
-retrieve/decide. Requests use `howhard-agent-request-v6` and new receipts use
-`howhard-decision-v10` (`howhard-semantic-v7` / `semantic-reader-v7`) with required
-capability and accepted-result selection state. Newly aggregated capability state uses
-`howhard-capability-v5`. Its `band` is an ordered list of forecast cells that can omit
+retrieve/decide. Requests use `howhard-agent-request-v7` and new receipts use
+`howhard-decision-v11` (`howhard-semantic-v8` / `semantic-reader-v8`) with required
+`host`, capability and accepted-result selection state. Newly aggregated capability state uses
+`howhard-capability-v6`, whose cells each carry their `agent` label. Its `band` is an ordered list of forecast cells that can omit
 `intermediate` cells between its `lower` and `upper` endpoints. See
-[capability filtering](capability.md) for the band and widening rules. Persisted
+[capability filtering](capability.md) for the band and widening rules.
+`howhard-decision-v11` is open: its shape can still change before the release that
+freezes it, intermediate shapes are not kept readable, and requests prepared under
+`howhard-agent-request-v6` are refused, so prepare a new request. Persisted
+`howhard-decision-v10` (`howhard-semantic-v7` / `semantic-reader-v7`,
+`howhard-capability-v5` or `howhard-capability-v4`),
 `howhard-decision-v9` (`howhard-semantic-v6` / `semantic-reader-v7`,
 `howhard-capability-v4` or `howhard-capability-v3`), `howhard-decision-v8`
 (`howhard-semantic-v5` / `semantic-reader-v6`, `howhard-capability-v3`), and
 `howhard-decision-v7` (`howhard-semantic-v4` / `semantic-reader-v5`,
 `howhard-capability-v1` or `howhard-capability-v2`) continue to load, validate, accept
 feedback, and participate in belief replay and reporting under their frozen version rules.
+Receipts older than v11 carry no host name and no agent labels; they read as the one
+unnamed host and the one unnamed agent, and they do not accept those fields or the
+ranges on active time and token kinds.
 Receipts v1–v6 remain recognizable as historical store entries but are not replayed as
 new decisions; prepare a fresh request and decision to attach new feedback.
 Frozen-receipt observations and learning share the store across that project's worktrees.
@@ -395,6 +455,14 @@ Prototype tables maintain reusable representative `(task, context)` clusters, pe
 cold-start priors (`prior_json`), and incrementally updated / amendment-replayable
 empirical sufficient statistics (`stats_json`), splitting heterogeneous clusters once at
 least 12 non-`interrupted` member runs diverge semantically or empirically.
+A forecast stored on a prototype keeps its values, every stated range and, as `host`,
+the name of the host whose request produced it (`null` for the unnamed host and for
+forecasts stored before hosts were named).
+`howhard.prototypes.stored_forecasts(config, task_type=...)` returns them. Reuse does
+not depend on the host: when exactly one prototype matches, its stored ranges return
+with the reused values, and a range is widened only as far as floating-point rounding
+of the reused value requires; values averaged over several matched prototypes carry no
+range.
 Each request or decision row retains the complete original JSON byte sequence in a zstd-compressed `payload`
 BLOB; the SHA-256 `request_id` or `decision_id` remains the digest of the parsed JSON
 value. No semantic forecast, legacy receipt field, or reproducibility input is omitted.
