@@ -241,17 +241,24 @@ it can move a boundary or move a particular cell. Missing, duplicate or unknown 
 nonordinal known efforts, reversed cuts and empty bands are refused.
 
 `decide` applies the learned filter and returns a new `stage=forecast` request ID.
-When all fit-band cells are already Stage-2 covered on matched prototypes, Stage 2 sets
-`baseline_request: null` and pre-populates `no_memory_forecasts`; when only a subset of
-fit-band cells is unseen, `baseline_request` contains only those unseen cells and merges
-their new forecasts with the materialized band rows. Otherwise evaluate its clean
+A forecast cell is covered at Stage 2 when a matched prototype stores a usable forecast
+for it made under the request's host; a forecast made under another host, and recorded
+runs with no stored forecast, do not cover a cell. The Stage 1 priors above are shared
+by all hosts. When every forecast cell is covered, Stage 2 sets
+`baseline_request: null` and pre-populates `no_memory_forecasts` with the
+{ref}`stored forecasts merged on each value's own scale <stored-forecasts>`; when only
+some cells are covered, `baseline_request` contains only the other cells and their new
+forecasts join the reused rows. A full panel returned in that case must repeat each
+reused row unchanged. Otherwise evaluate its clean
 `baseline_request` in another independent context and supply the normal
 `{forecasts, memory_forecasts, reason}` response. Only the forecast cells receive
 rows: the core of the band, the reserved cells and the band cells that took unfilled
-slots ({ref}`reserved forecast slots <reserved-slots>`).
+slots ({ref}`reserved forecast slots <reserved-slots>`). Each new forecast is stored on
+the primary prototype under the request's host, so one host asks once per cell.
 Neither independent call receives memory, execution evidence or learned tables.
 `pick` and `summary` drive these same stages, completing locally with zero LLM calls on
-fully covered warm prototypes when no active editable memories exist.
+warm prototypes fully covered under the request's host when no active editable memories
+exist.
 
 The inventory has no count limit. `max_forecast_cells` is a budget for fine forecasts,
 not an inventory cap. If the learned band exceeds it, `decide` returns one re-filter

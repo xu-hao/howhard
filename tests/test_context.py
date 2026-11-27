@@ -35,9 +35,15 @@ def test_context_reproducible_and_memoized_by_actual_context(project):
     args = dict(task_text="repair transaction rollback", project_context={"files": 42, "coverage": .8}, seed=17)
     a = engine.pick("Y", **args, native_candidates=inventory())
     again = engine.pick("Y", **args, native_candidates=inventory())
-    # The same inputs give the same receipt, apart from the time each request was prepared.
+    # The same inputs give the same receipt, apart from the time each request was prepared and
+    # where the memory-free rows came from: the forecaster first, then the forecasts it stored.
     first, second = (load(engine.config, result["decision_id"]) for result in (a, again))
     assert first["semantic"]["evidence_candidates"].pop("prepared_at") <= second["semantic"]["evidence_candidates"].pop("prepared_at")
+    reused = second["semantic"].pop("stored_forecasts")
+    assert first["semantic"].pop("stored_forecasts") == []
+    assert {(entry["family"], entry["effort"]): [source["forecast"] for source in entry["sources"]] for entry in reused} == {
+        (row["family"], row["effort"]): [{k: v for k, v in row.items() if k not in ("family", "effort")}]
+        for row in first["semantic"]["worlds"]["llm"]}
     assert first == second
     b = engine.pick("Y", **{**args, "task_text": "repair spelling"}, native_candidates=inventory())
     assert a["decision_id"] != b["decision_id"]

@@ -36,9 +36,11 @@ Replace temporary paths with this task's actual artifacts and `HOST_NAME` with t
 of the agent asking for the route (`--host` is optional; `pick` and `summary` accept it
 too, and Python takes `host="HOST_NAME"`). The name is returned with the prepared
 request, stored in the receipt and listed by `report --json` under `routing` together
-with the chosen cell's `agent` label. When matched `(task, context)`
-prototypes already cover every candidate cell and no active editable semantic memories
-exist, `context --auto-decide` completes both stages immediately and returns the
+with the chosen cell's `agent` label. A stored forecast is reused only for requests
+that carry the name it was made under, and a request with no name reuses only forecasts
+stored with no name, so use one name consistently. When matched `(task, context)`
+prototypes already cover every candidate cell under that name and no active editable
+semantic memories exist, `context --auto-decide` completes both stages immediately and returns the
 committed `decision_id` and `chosen` cell in one call (warm `howhard pick` also succeeds
 without any configured LLM provider in that state). Otherwise `context` returns a
 `request_id`, `stage`, the memory reader `request`, and `baseline_request` (`null` when
@@ -66,9 +68,11 @@ print(json.dumps(request))
 When `baseline_request` is non-null, evaluate it in a fresh independent model context,
 then submit its capability prior and `memory_filters` through `decide` (when
 `baseline_request` is `null`, omit `filter` and submit `{memory_filters, reason}`). The
-returned NEW `stage=forecast` request ID requests calibrated rows for any unseen fit-band
-cells (or sets `baseline_request: null` when all fit-band cells are covered on matched
-prototypes). Evaluate any non-null Stage 2 `baseline_request` independently too, then
+returned NEW `stage=forecast` request ID requests calibrated rows for the forecast cells
+that have no usable stored forecast made under the request's host (or sets
+`baseline_request: null` when matched prototypes store one for every forecast cell).
+Recorded runs alone never cover a cell, and a returned full panel must repeat the reused
+rows unchanged. Evaluate any non-null Stage 2 `baseline_request` independently too, then
 submit `forecasts` (omitted when `baseline_request` is `null`) and `memory_forecasts`. If
 independence is unavailable when a non-null `baseline_request` is returned, report
 routing unavailable; do not fabricate a baseline or select statistically.

@@ -186,6 +186,36 @@
   is unchanged, so a receipt with a probability above 1 is still refused, including one
   stored by an earlier build.
 
+- Stored forecasts are reused per host and merged on each value's own scale (#136). A
+  prototype now keeps one stored Stage 2 forecast per cell and host, and a request
+  reuses only the forecasts made under its own `--host` name; a request with no name
+  reuses only forecasts stored with no name, which includes every forecast stored
+  before hosts were named. A new forecast replaces the same host's forecast whole and
+  leaves the other hosts' forecasts stored. When several matched prototypes store a
+  usable forecast, the loud rate and the accepted-defect share are merged on the
+  log-odds scale and active time and each token kind on the log scale, at each
+  prototype's share of the match weight; the merged row always states ranges, which
+  hold each forecast's own spread plus the distance between the forecasts, so forecasts
+  that disagree widen them. One usable forecast is reused unchanged. A token kind that
+  every usable forecast states as exactly zero stays exactly zero, and a stored forecast
+  without the six token kinds is not reused for a cell priced by kind. Stage 2 no longer
+  builds a forecast from prototype statistics or from the `(0.88, 0.08, 0.04)` base: a
+  cell with recorded runs and no stored forecast under the request's host goes to the
+  forecaster, once per cell and host, so a warm store answers its first request of each
+  host with a non-null Stage 2 `baseline_request`. Stage 1 and prototype matching are
+  unchanged, and a split copies every host's stored forecast to each child. A calling
+  agent that returns the full forecast panel must repeat each reused row unchanged. A
+  v11 receipt lists every reused cell in `semantic.stored_forecasts` (each source's
+  prototype, match weight, share, host and stored row, and each value's merged centre
+  and spread); loading it recomputes the shares, the merge and the row, and refuses an
+  altered one or a source stored under another host. `howhard.prototypes.stored_forecasts`
+  returns one entry per prototype, cell and host. The inference cache of an explicit
+  backend is keyed by the host's name too, the unnamed host being a key of its own: an
+  answer cached for one host is never returned or stored for another, a second host's
+  identical request calls the backend again, and answers cached by earlier builds are
+  not read. No configuration key is added and an existing store loads unchanged. v11 decisions stored by earlier unreleased builds no
+  longer load; `v7` to `v10` receipts keep loading, observing, replaying and reporting.
+
 ## 5.0.0 — 2026-11-24
 
 - Dynamic synthesized `(task, context)` prototypes with materialized per-cell priors and

@@ -363,6 +363,10 @@ def validate_response(response, payload, snapshot):
         if {(r.get("family"), r.get("effort")) for r in response["forecasts"] if isinstance(r, dict)} == allowed:
             validate_panel(response["forecasts"], allowed)
             merged = deepcopy(response["forecasts"])
+            # A full panel repeats the rows reused from store; only the unseen cells are the forecaster's.
+            given = panel_lookup(merged)
+            if any(given[r["family"], r["effort"]] != r for r in payload["preset_forecasts"]):
+                raise LLMError("LLM forecasts: a stored forecast reused for this request must not be changed")
         else:
             validate_panel(response["forecasts"], unseen_allowed)
             if any((r["family"], r["effort"]) in unseen_cat and "token_usage" not in r for r in response["forecasts"]):
@@ -448,7 +452,17 @@ def combine_usage(earlier, current):
     return result
 
 
-def _cache_read(path, expected_request, snapshot):
+def _cache_path(engine, identity, host, request_obj):
+    """Where one host's cached answer to one request lives.
+
+    The host's name is part of the key, and the unnamed host (``None``) is a key of its own:
+    an answer made for one host is never returned, and so never stored, for another.
+    """
+    key = digest({"format": FORMAT, "backend": identity, "settings": SETTINGS, "host": host, "request": request_obj})
+    return engine.config.state_root / "llm-cache" / f"{key}.json"
+
+
+def _cache_read(path, expected_request, snapshot, host):
     if not path.is_file():
         return None
     try:
@@ -456,7 +470,7 @@ def _cache_read(path, expected_request, snapshot):
         integrity = cached.pop("integrity")
         if digest(cached) != integrity:
             raise ValueError("cache integrity mismatch")
-        if cached["request"] == expected_request:
+        if cached["host"] == host and cached["request"] == expected_request:
             validate_response(cached["response"], cached["final_request"], snapshot)
             return (
                 cached["response"],
@@ -468,9 +482,9 @@ def _cache_read(path, expected_request, snapshot):
     return None
 
 
-def _cache_write(engine, path, request_obj, final_request, response, usage):
+def _cache_write(engine, path, request_obj, final_request, response, usage, host):
     from .storage import locked
-    cached = {"request": request_obj, "final_request": final_request, "response": response, "usage": usage}
+    cached = {"host": host, "request": request_obj, "final_request": final_request, "response": response, "usage": usage}
     cached["integrity"] = digest(cached)
     with locked(engine.config, operation="inference cache"):
         atomic_write(path, canonical(cached) + b"\n")
@@ -497,7 +511,8 @@ def _replay_signature(payload, snapshot):
     }
 
 
-def cached_exact_replay(engine, payload, snapshot):
+def cached_exact_replay(engine, payload, snapshot, *, host=None):
+    """The cached answer to this exact request made for ``host``, or ``None``."""
     llm = engine.llm
     if llm is None:
         import os
@@ -513,20 +528,17 @@ def cached_exact_replay(engine, payload, snapshot):
     else:
         identity = str(getattr(llm, "identity", type(llm).__name__))
     sig = {"replay": _replay_signature(payload, snapshot)}
-    ck = digest({"format": FORMAT, "backend": identity, "settings": SETTINGS, "request": sig})
-    path = engine.config.state_root / "llm-cache" / f"{ck}.json"
-    return _cache_read(path, sig, snapshot)
+    return _cache_read(_cache_path(engine, identity, host, sig), sig, snapshot, host)
 
 
-def complete(engine, payload, snapshot):
+def complete(engine, payload, snapshot, *, host=None):
+    """Answer a request with the backend, or with the answer cached for the same request and ``host``."""
     identity = str(getattr(engine.llm, "identity", type(engine.llm).__name__))
-    cache_dir = engine.config.state_root / "llm-cache"
 
     def cache_path(req_obj):
-        ck = digest({"format": FORMAT, "backend": identity, "settings": SETTINGS, "request": req_obj})
-        return cache_dir / f"{ck}.json"
+        return _cache_path(engine, identity, host, req_obj)
 
-    hit = _cache_read(cache_path(payload), payload, snapshot)
+    hit = _cache_read(cache_path(payload), payload, snapshot, host)
     if hit is not None:
         return hit
 
@@ -566,7 +578,7 @@ def complete(engine, payload, snapshot):
     else:
         current["phase"] = "memory"
         baseline_reason = "Materialized prototype baseline."
-        mem_hit = _cache_read(cache_path(visible_request(current)), visible_request(current), snapshot)
+        mem_hit = _cache_read(cache_path(visible_request(current)), visible_request(current), snapshot, host)
         if mem_hit is not None:
             return mem_hit
 
@@ -604,14 +616,14 @@ def complete(engine, payload, snapshot):
         cost_known = all(c["cost_usd"] is not None for c in calls)
         cost = sum(c["cost_usd"] for c in calls) if cost_known else None
         usage = {"seconds": seconds, "cost_usd": cost, "backend": identity, "calls": calls}
-        _cache_write(engine, cache_path(original), original, current, response, usage)
+        _cache_write(engine, cache_path(original), original, current, response, usage, host)
         replay_sig = {"replay": _replay_signature(original, snapshot)}
-        _cache_write(engine, cache_path(replay_sig), replay_sig, current, response, usage)
+        _cache_write(engine, cache_path(replay_sig), replay_sig, current, response, usage, host)
         if snapshot["memories"] and memory_calls:
             m_sec = sum(c["seconds"] for c in memory_calls)
             m_cost = sum(c["cost_usd"] for c in memory_calls) if all(c["cost_usd"] is not None for c in memory_calls) else None
             m_usage_summary = {"seconds": m_sec, "cost_usd": m_cost, "backend": identity, "calls": memory_calls}
-            _cache_write(engine, cache_path(memory_initial), memory_initial, current, response, m_usage_summary)
+            _cache_write(engine, cache_path(memory_initial), memory_initial, current, response, m_usage_summary, host)
         return response, current, {**usage, "cached": False, "call_seconds": seconds, "call_cost_usd": usage["cost_usd"]}
     raise LLMError("LLM did not return forecasts")
 
@@ -650,7 +662,13 @@ def duration_observations(candidates, outcome_obs):
     return result
 
 
-def augment(engine, prepared, response, payload, snapshot, usage, *, candidates):
+def augment(engine, prepared, response, payload, snapshot, usage, *, candidates, reused=()):
+    """Build the selection cells and the receipt's semantic section from the validated forecasts.
+
+    ``reused`` lists the cells whose memory-free row was merged from stored forecasts, with
+    their sources; it is checked against the panel before it enters the receipt.
+    """
+    from .prototypes import validate_reuse
     from .success import admission_tier, belief_intervals, cell_beliefs, cost, credit_fits, denominator, outcome_beliefs
     result, cells = deepcopy(prepared[0]), prepared[1]
     # The readers only weigh the request's scored candidates; nothing is compared again here.
@@ -658,6 +676,7 @@ def augment(engine, prepared, response, payload, snapshot, usage, *, candidates)
     duration_obs = duration_observations(candidates, outcome_obs)
     policy = engine.config.data["sampling"]
     baseline = deepcopy(response["forecasts"])
+    reused = validate_reuse(deepcopy(list(reused)), panel_lookup(baseline), result.get("host"))
     worlds = {"llm": baseline}
     entries = {(m["id"], m["version"]): m for m in snapshot["memories"]}
     exposures = {}
@@ -706,7 +725,8 @@ def augment(engine, prepared, response, payload, snapshot, usage, *, candidates)
     result["cells"].sort(key=lambda row: (row["session_cost_usd"] if row["session_cost_usd"] is not None else float("inf"), row["family"], row["effort"]))
     result["semantic"] = {"format": FORMAT, "prompt_version": SETTINGS["prompt_version"], "backend": usage["backend"],
                           "memory_revision": snapshot["revision"], "memories": deepcopy(snapshot["memories"]),
-                          "worlds": worlds, "exposures": exposures, "beliefs": state, "reason": response["reason"], "retrieval": payload["retrieval"],
+                          "worlds": worlds, "stored_forecasts": reused, "exposures": exposures, "beliefs": state,
+                          "reason": response["reason"], "retrieval": payload["retrieval"],
                           "evidence": deepcopy(payload["evidence"]), "evidence_candidates": deepcopy(candidates),
                           "duration_observations": duration_obs, "outcome_observations": outcome_obs,
                           "reader_usage": {k: usage[k] for k in ("backend", "seconds", "cost_usd", "calls")}, "interval_kind": INTERVAL_KIND}
@@ -762,12 +782,13 @@ def sample(prepared, seed):
     return parts
 
 
-def validate_receipt(state, *, decision_format=DECISION_FORMAT, selection=None):
+def validate_receipt(state, *, decision_format=DECISION_FORMAT, selection=None, host=None):
     """Validate portable frozen semantic inputs before they affect feedback weights.
 
     ``selection`` is the receipt's selection: the beliefs a v11 receipt stores on each of
     its cells are recomputed here from the frozen forecasts, expert weights, same-cell
-    runs and policy.
+    runs and policy. ``host`` is the receipt's host: the memory-free rows a v11 receipt
+    reused from store are recomputed from their sources, which must be that host's.
     """
     legacy = decision_format in (LEGACY_DECISION_V7, LEGACY_DECISION_V8)
     # v10 opened per-cell evidence bounds; v11 adds ranges on active time and token kinds,
@@ -781,7 +802,7 @@ def validate_receipt(state, *, decision_format=DECISION_FORMAT, selection=None):
     if not legacy:
         required.append("outcome_observations")
     if scored:
-        required.append("evidence_candidates")
+        required += ["evidence_candidates", "stored_forecasts"]
     keys(state, required, ["sampled_expert"], "decision.semantic")
     if decision_format not in RECEIPT_SEMANTICS or (state["format"], state["prompt_version"]) != RECEIPT_SEMANTICS[decision_format]:
         raise HowHardError("decision.semantic: unsupported forecast format or prompt version")
@@ -820,6 +841,9 @@ def validate_receipt(state, *, decision_format=DECISION_FORMAT, selection=None):
         if key not in {"llm"} | memory_keys:
             raise HowHardError("decision.semantic.worlds: unknown memory version")
         validate_panel(panel, allowed, intervals=not legacy, ranges=ranges)
+    if scored:
+        from .prototypes import validate_reuse
+        validate_reuse(state["stored_forecasts"], panel_lookup(baseline), host)
     if not isinstance(state["exposures"], dict):
         raise HowHardError("decision.semantic.exposures: expected object")
     for key, pairs in state["exposures"].items():
