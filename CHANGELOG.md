@@ -67,8 +67,15 @@ all change, and v11 is frozen.
   anything larger is still refused. `report` gains `receipts`: the count of stored
   receipts by format, and `rounded_probabilities`, the number that hold a probability
   in that band, which makes `howhard report --json` the sweep of a store's receipts. A
-  prepared request whose scored state holds no record on other tasks is refused with an
-  error naming the missing field instead of failing part-way through a decision.
+  prepared request and a v11 receipt are readable only in their frozen shape: a request
+  that lacks a part (the agent labels on its scored candidates, the failed runs behind
+  the host's caught share, the record on other tasks, its read snapshot or its
+  dependency manifest) is refused with a message that names the part and says to run
+  `howhard context` again, and a v11 receipt without its `request_snapshot` is refused.
+  **Removed:** the readers that completed such a request, by reading candidates with no
+  agent label as unnamed, by reading the failed runs or scoring the candidates when the
+  request was used, or by checking a request with no dependency manifest against the
+  whole store.
   The compatibility tests start from an authentic v10 receipt that a 5.0.0 build stored
   for a synthetic task.
 

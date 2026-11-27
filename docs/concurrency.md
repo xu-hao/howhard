@@ -124,11 +124,11 @@ to a surfaced execution invalidate it when its effective contents change.
 
 The weight policy is **snapshot**. Both readers use the captured belief/expert scores,
 evidence counts and the scored evidence candidates, with their similarity and age factors, throughout the workflow.
-They do not replay concurrent outcomes into an in-flight forecast. The receipt's optional
+They do not replay concurrent outcomes into an in-flight forecast. A v11 receipt's
 `request_snapshot` records this policy, the dependency manifest, the captured evidence
 hash and memory revision. These are decision-time provenance; the global revision is
-not a freshness condition. A request stored without a dependency manifest is checked
-conservatively against the whole store.
+not a freshness condition. A request without its read snapshot or dependency manifest
+is not in the {ref}`frozen shape <frozen-formats>` and is refused; prepare it again.
 
 At load and after write admission, howhard checks the dependencies again before a new
 stage or receipt is committed. A genuine conflict raises Python `StaleRequest`, exported

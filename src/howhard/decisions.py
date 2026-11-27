@@ -138,8 +138,10 @@ def load(config, source, *, for_scoring=False):
         raise HowHardError("decision.format: unsupported version; prepare a new capability-filtered decision")
     # The host's name and the agent labels start with v11; older receipts read as unnamed.
     named = value["format"] == DECISION_FORMAT
+    # A v11 receipt is readable only in its frozen shape, which always records the request it
+    # came from; older receipts may lack that provenance.
     keys(value, ["format", "project", "project_identity", "task_type", "risk_class", "chosen", "seed", "context", "cost_policy", "native_candidates", "semantic", "capability", "selection",
-                 *(["host"] if named else [])], ["request_snapshot"], where="decision")
+                 *(["host", "request_snapshot"] if named else [])], [] if named else ["request_snapshot"], where="decision")
     if named:
         from .native import host_name
         try:

@@ -336,7 +336,7 @@ def test_capability_recency_weights_do_not_move_with_unsurfaced_appends(tmp_path
     assert updated['evidence'][0]['weight'] < original['evidence'][0]['weight']
 
 
-def test_legacy_v5_requests_keep_conservative_validation(tmp_path):
+def test_a_request_without_its_read_snapshot_and_dependencies_is_refused(tmp_path):
     from howhard.context import canonical, digest
     from howhard.payload_store import get, put
     from howhard.storage import locked
@@ -349,17 +349,19 @@ def test_legacy_v5_requests_keep_conservative_validation(tmp_path):
     with locked(engine.config):
         put(engine.config, 'requests', request_id, canonical(bundle) + b'\n')
     write(tmp_path, 'unrelated', id='synthetic-legacy-change')
-    with pytest.raises(HowHardError, match='stale evidence or memory') as caught:
+    with pytest.raises(HowHardError, match=r"request.read_state: missing .*run `howhard context` again") as caught:
         engine.decide(request_id, filtering(pending['baseline_request'], 0, 1))
     assert type(caught.value).__name__ == 'HowHardError'
 
 
-def test_existing_v6_receipts_without_snapshot_metadata_remain_readable(tmp_path):
+def test_a_v11_receipt_without_its_request_snapshot_is_refused(tmp_path):
     engine = engine_at(tmp_path)
     result = finish(engine, prepare(engine))
     receipt = load(engine.config, result['decision_id'])
-    receipt.pop('request_snapshot')
     assert load(engine.config, receipt)['chosen'] == result['chosen']
+    receipt.pop('request_snapshot')
+    with pytest.raises(HowHardError, match=r"missing keys \['request_snapshot'\]"):
+        load(engine.config, receipt)
 
 
 def _decide_with_short_deadline(directory, pending, connection):

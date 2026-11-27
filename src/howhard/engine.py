@@ -11,16 +11,59 @@ from .selector import choose, prepare
 from . import decisions
 from .context import FORMAT, canonical, capture_project, validate_text
 from .context import digest
-from .validation import HowHardError
+from .validation import HowHardError, keys
 from .memory import MemoryStore
 from .llm import LLMError, resolve
 from . import semantic
 
 REQUEST_FORMAT = "howhard-agent-request-v7"
+# The frozen shape of a prepared request. A request is readable only in this shape: one that
+# an earlier build prepared without a part is refused with the part's name, and nothing
+# completes it.
+REQUEST_PARTS = {"format": "its format", "host": "the host's name", "evidence_key": "its evidence key",
+                 "payload": "its reader request", "snapshot": "its memory snapshot",
+                 "native_candidates": "its native inventory", "project_root": "its worktree",
+                 "stage": "its stage", "capability": "its capability state", "refilter_round": "its re-filter round",
+                 "forecast_template": "its forecast template", "forecast_state": "its forecast state",
+                 "coarse_usage": "its reader usage", "read_state": "the rows and memories it read",
+                 "dependencies": "its dependency manifest", "learned_state": "what it scored when it was prepared",
+                 "inventory_source": "its inventory source", "prototype_state": "its prototype matches"}
 # What a request scored when it was prepared: the candidate runs, the capability reader's
-# observations and the record on other tasks. A request stored without the failed runs behind
-# the host's caught share has them read when it is used.
-LEARNED_FIELDS = ("weights_policy", "evidence_candidates", "capability_observations", "prediction")
+# observations, the failed runs behind the host's caught share and the record on other tasks.
+LEARNED_PARTS = {"weights_policy": "its weights policy", "evidence_candidates": "its scored evidence candidates",
+                 "capability_observations": "the capability reader's observations",
+                 "caught_record": "the failed runs behind the host's caught share",
+                 "prediction": "the record on other tasks behind the corrected prediction"}
+
+
+def frozen_request(bundle):
+    """Refuse a prepared request that is not in the frozen shape, naming the part it lacks.
+
+    Each part is named with what it holds, and the message says to prepare the request again:
+    an earlier build's request is never completed or migrated.
+    """
+    from . import evidence
+
+    def lacking(part, what):
+        raise HowHardError(f"request.{part}: missing {what}; this request was prepared by an earlier build, "
+                           "so run `howhard context` again")
+    for part, what in REQUEST_PARTS.items():
+        if part not in bundle:
+            lacking(part, what)
+    keys(bundle, list(REQUEST_PARTS), where="request")
+    learned = bundle["learned_state"]
+    if not isinstance(learned, dict):
+        lacking("learned_state", REQUEST_PARTS["learned_state"])
+    for part, what in LEARNED_PARTS.items():
+        if learned.get(part) is None:
+            lacking(f"learned_state.{part}", what)
+    keys(learned, list(LEARNED_PARTS), where="request.learned_state")
+    candidates = learned["evidence_candidates"]
+    if not isinstance(candidates, dict) or not isinstance(candidates.get("candidates"), list):
+        lacking("learned_state.evidence_candidates", LEARNED_PARTS["evidence_candidates"])
+    if any(not isinstance(item, dict) or "agent" not in item for item in candidates["candidates"]):
+        lacking("learned_state.evidence_candidates", "the agent label of each candidate run")
+    evidence.validate(candidates, where="request.learned_state.evidence_candidates")
 
 
 class Engine:
@@ -202,7 +245,7 @@ class Engine:
                                  "calls": [], "cached": True, "call_seconds": 0.0, "call_cost_usd": 0.0}
                 else:
                     self._inference()
-                    reader = view(self, bundle["read_state"]) if "read_state" in bundle else self
+                    reader = view(self, bundle["read_state"])
                     response, payload, usage = semantic.complete(reader, bundle["payload"], bundle["snapshot"],
                                                                  host=bundle["host"])
                     bundle["payload"] = payload
@@ -212,11 +255,6 @@ class Engine:
                 exc.request_id = pending["request_id"]
                 raise
         return pending
-
-    def _validate_state(self, evidence_key, revision):
-        self.refresh()
-        if evidence_key != self.evidence_key or revision != self.memory.snapshot()["revision"]:
-            raise HowHardError("request_id: stale evidence or memory; prepare a new decision")
 
     def memory_beliefs(self):
         return semantic.beliefs(self)
@@ -317,19 +355,13 @@ class Engine:
             bundle = json.loads(blob)
         except (ValueError, UnicodeError) as exc:
             raise HowHardError("request_id: unavailable or invalid agent request") from exc
-        from .validation import keys
-        keys(bundle, ["format", "host", "evidence_key", "payload", "snapshot", "native_candidates", "project_root", "stage", "capability", "refilter_round", "forecast_template", "forecast_state", "coarse_usage"],
-             ["read_state", "dependencies", "learned_state", "inventory_source", "prototype_state"], where="request")
-        if digest(bundle) != request_id or bundle["format"] != REQUEST_FORMAT:
-            raise HowHardError("request_id: request integrity or format mismatch")
+        if not isinstance(bundle, dict) or digest(bundle) != request_id or bundle.get("format") != REQUEST_FORMAT:
+            raise HowHardError("request_id: request integrity or format mismatch; run `howhard context` again")
+        frozen_request(bundle)
         if bundle["project_root"] != str(self.config.project_root):
             raise HowHardError("request_id: belongs to another worktree; prepare in the current project")
         from .native import host_name
         host_name(bundle["host"])
-        if "learned_state" in bundle:
-            # A request keeps what it scored when it was prepared. One prepared by a build that
-            # scored no record on other tasks is refused here, not part-way through a decision.
-            keys(bundle["learned_state"], LEARNED_FIELDS, ["caught_record"], where="request.learned_state")
         with storage.reading(self.config):
             self._check_request(bundle)
         return bundle
@@ -337,8 +369,6 @@ class Engine:
     def _check_request(self, bundle):
         from .request_state import changes, StaleRequest
         self.refresh()
-        if "dependencies" not in bundle:
-            return self._validate_state(bundle["evidence_key"], bundle["snapshot"]["revision"])
         changed = changes(self, bundle)
         if changed:
             raise StaleRequest(changed, bundle)
@@ -372,7 +402,7 @@ class Engine:
             raise HowHardError("retrieval: provide between one and three tool requests")
         bundle = self._load_request(request_id)
         from .request_state import view
-        reader = view(self, bundle["read_state"]) if "read_state" in bundle else self
+        reader = view(self, bundle["read_state"])
         if len(bundle["payload"]["retrieval"]) + len(queries) > 3 * semantic.SETTINGS["retrieval_rounds"]:
             raise HowHardError("retrieval: request budget exceeded")
         for query in queries:
@@ -405,7 +435,7 @@ class Engine:
         bundle["stage"] = "forecast"
         bundle["payload"] = deepcopy(bundle["forecast_template"])
         bundle["payload"]["cells"] = [c for c in bundle["payload"]["cells"] if cell_key(c) in requested]
-        reader = view(self, bundle["read_state"]) if "read_state" in bundle else self
+        reader = view(self, bundle["read_state"])
         all_keys = requested | (set(cell_key(c) for c in bundle["forecast_state"]["cells"]) if bundle["forecast_state"] else set())
         inventory = [c for c in bundle["native_candidates"] if cell_key(c) in all_keys]
         p = bundle["payload"]
@@ -419,10 +449,7 @@ class Engine:
         from . import capability, prototypes
         payload, snapshot = bundle["payload"], bundle["snapshot"]
         source_payload = initial_payload if initial_payload is not None else payload
-        from .request_state import extend, view
-        if "learned_state" not in bundle:
-            # A request stored without its scored candidates has them scored once, here.
-            self._score_evidence(view(self, bundle["read_state"]) if "read_state" in bundle else self, bundle)
+        from .request_state import extend
         extend(self, bundle)
         response = semantic.validate_response(response, payload, snapshot)
         if usage is None:
@@ -433,17 +460,12 @@ class Engine:
             self._check_request(bundle)
         if bundle["stage"] == "filter":
             covered_priors = (
-                bundle.get("prototype_state", {}).get("stage1_covered_priors")
+                bundle["prototype_state"].get("stage1_covered_priors")
                 if "no_memory_filter" not in source_payload and not bundle["refilter_round"]
                 else None
             )
             from .native import agents
             learned = bundle["learned_state"]
-            if learned.get("caught_record") is None:
-                # A request stored without its failed-run record has it read once, here.
-                learned["caught_record"] = capability.caught_record(
-                    view(self, bundle["read_state"]) if "read_state" in bundle else self,
-                    bundle["host"], learned["evidence_candidates"])
             state = capability.aggregate(self, payload, response,
                 observed=learned["capability_observations"],
                 covered_priors=covered_priors, agents=agents(bundle["native_candidates"]),
@@ -510,9 +532,8 @@ class Engine:
             return self._forecast_request(bundle, {next_cell})
         state["widening_stop"] = "pickable" if pickable else "forecast-budget" if len(forecasted) >= state["policy"]["max_forecast_cells"] else "round-limit" if stronger else "exhausted"
         prepared[0]["capability"] = state
-        if "dependencies" in bundle:
-            prepared[0]["request_snapshot"] = {"weights_policy": "snapshot", "dependencies": deepcopy(bundle["dependencies"]),
-                "evidence_key": bundle["evidence_key"], "memory_revision": snapshot["revision"]}
+        prepared[0]["request_snapshot"] = {"weights_policy": "snapshot", "dependencies": deepcopy(bundle["dependencies"]),
+            "evidence_key": bundle["evidence_key"], "memory_revision": snapshot["revision"]}
         # Include both reader calls in routing overhead; no invented provider costs.
         coarse = bundle["coarse_usage"]
         prepared[0]["backend"]["inference_cached"] = prepared[0]["backend"]["inference_cached"] and coarse["cached"]

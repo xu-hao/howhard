@@ -684,8 +684,6 @@ def augment(engine, prepared, response, payload, snapshot, usage, *, candidates,
     from .success import (admission_tier, belief_intervals, cell_beliefs, cell_cost, counted_totals, credit_fits,
                           money_terms, outcome_beliefs)
     result, cells = deepcopy(prepared[0]), prepared[1]
-    # A request scored before candidates carried an agent reads every run as the unnamed agent.
-    candidates = {**candidates, "candidates": [{**item, "agent": item.get("agent")} for item in candidates["candidates"]]}
     # The readers only weigh the request's scored candidates; nothing is compared again here.
     outcome_obs = outcome_observations(candidates)
     duration_obs = duration_observations(candidates, {(row["family"], row["effort"]) for row in result["cells"]})

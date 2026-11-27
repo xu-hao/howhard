@@ -123,6 +123,7 @@ def test_a_frozen_v11_receipt_loads_revalidates_and_reports_and_earlier_shapes_a
 
 def test_a_request_prepared_before_the_release_is_refused_with_the_ordinary_errors(tmp_path):
     engine = Engine(directory=tmp_path, retrieval=SimilarityDouble())
+    engine.observe("task", "fixture/a", "high", "clean", native=True, task_text="Repair rollback", id="earlier")
     pending = start(engine, [{"model": "fixture/a", "effort": "high", "usd_per_mtok": 1.0}])
     bundle = json.loads(get(engine.config, "requests", pending["request_id"]))
 
@@ -134,13 +135,23 @@ def test_a_request_prepared_before_the_release_is_refused_with_the_ordinary_erro
             put(engine.config, "requests", request_id, canonical(value) + b"\n")
         return request_id
 
-    v6 = stored(lambda b: b.update(format="howhard-agent-request-v6"))
-    no_record = stored(lambda b: b["learned_state"].pop("prediction"))
+    def unlabelled(b):
+        for item in b["learned_state"]["evidence_candidates"]["candidates"]:
+            item.pop("agent")
+
     response = filtering(pending["baseline_request"])
-    with pytest.raises(HowHardError, match="request integrity or format mismatch"):
-        engine.decide(v6, response)
-    with pytest.raises(HowHardError, match=r"request.learned_state: missing keys \['prediction'\]"):
-        engine.decide(no_record, response)
+    with pytest.raises(HowHardError, match=r"request integrity or format mismatch; run `howhard context` again"):
+        engine.decide(stored(lambda b: b.update(format="howhard-agent-request-v6")), response)
+    # A request is readable only in the frozen shape: each missing part is named, and nothing completes it.
+    assert bundle["learned_state"]["evidence_candidates"]["candidates"]
+    for change, part in ((unlabelled, r"learned_state.evidence_candidates: missing the agent label of each candidate run"),
+                         (lambda b: b["learned_state"].pop("caught_record"), r"learned_state.caught_record: missing the failed runs"),
+                         (lambda b: b["learned_state"].update(caught_record=None), r"learned_state.caught_record: missing"),
+                         (lambda b: b["learned_state"].pop("prediction"), r"learned_state.prediction: missing the record on other tasks"),
+                         (lambda b: b.pop("learned_state"), r"learned_state: missing what it scored"),
+                         (lambda b: b.pop("dependencies"), r"dependencies: missing its dependency manifest")):
+        with pytest.raises(HowHardError, match=r"request\." + part + r".*run `howhard context` again"):
+            engine.decide(stored(change), response)
     # The request as prepared still decides.
     assert "decision_id" in finish(engine, pending)
 

@@ -1330,6 +1330,16 @@ relative to the `howhard` package.
 | Execution usage envelope | `accounting.USAGE_FORMAT` | `howhard-execution-usage-v1` |
 | Rate card | `accounting.RATE_FORMAT` | `howhard-rate-card-v1` |
 
+**A prepared request or a v11 receipt is readable only in its frozen shape.** A request
+that lacks a part is refused with a message that names the part and says to run
+`howhard context` again: the agent label on each scored candidate run, the failed runs
+behind the host's caught share (`learned_state.caught_record`), the record on other
+tasks behind the corrected prediction (`learned_state.prediction`), or any other field
+of the frozen request. Nothing completes or migrates such a request; prepared requests
+are short-lived, so prepare a new one. A request of another format is refused the same
+way. A receipt labelled `howhard-decision-v11` whose shape differs from the frozen one,
+including one without its `request_snapshot`, is refused by the checks of its fields.
+
 The semantic format and reader prompt live in the packaged `data/semantic.toml`, and
 `semantic.RECEIPT_SEMANTICS` pairs them with each decision format.
 
@@ -1349,12 +1359,6 @@ A stored `P_clear` or `P_timely` may exceed 1 by at most `1e-10`
 (`capability.PROBABILITY_TOLERANCE`), the rounding that a running sum of posterior
 masses can leave; a larger value is refused. The tolerance holds for every receipt
 format.
-
-A request prepared under another format is refused, and so is one whose scored state
-holds no record on other tasks (`request.learned_state` names the missing field);
-prepare a new request.
-A receipt labelled `howhard-decision-v11` whose shape differs from the frozen one is
-refused by the ordinary checks of its fields.
 
 **Older receipts.** These formats keep loading, validating, accepting outcomes, replaying
 their stored forecasts for scoring and appearing in `report`, each under its own rules:
