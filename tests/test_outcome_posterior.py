@@ -15,7 +15,7 @@ import math
 import numpy as np
 import pytest
 
-from conftest import row
+from conftest import own_runs_only, row
 from howhard import Engine
 from howhard.context import canonical, digest
 from howhard.decisions import load
@@ -270,19 +270,20 @@ def test_experts_merge_into_one_forecast_per_rate_and_disagreement_widens_it():
 
     # Counted runs: with n_c = 4 and n_s = 0, E[S] = 0.053 and pi = 0.85.
     example = {"llm": {pair: {**EXAMPLE, "tokens": 1000, "seconds": 3600}}}
-    runs = [{"family": "worker", "effort": "high", "outcome": "clean", "weight": 1.}] * 4
+    runs = [{"family": "worker", "effort": "high", "agent": None, "ticket": None, "outcome": "clean", "weight": 1.}] * 4
     forecaster = [{"key": "llm", "weight": 1.}]
     # With no run on record on other tasks, each belief starts from the merged forecast itself.
     values = by_cell(assemble({"kinds": {}, "cells": {}}, example, forecaster, [("cell", pair)], DEFAULTS))[pair]
     assert values["silent"]["prediction"] == merged_forecast(example, forecaster, pair)["silent"]["prediction"]
-    start = outcome_beliefs(values, pair, [], epsilon=EPSILON)
-    after = outcome_beliefs(values, pair, runs, epsilon=EPSILON)
+    start = outcome_beliefs(values, pair, [], DEFAULTS, epsilon=EPSILON)
+    after = outcome_beliefs(values, pair, runs, DEFAULTS, epsilon=EPSILON)
     assert start["silent"]["mean"] == pytest.approx(.100, abs=5e-4) and start["silent"]["pi"] == pytest.approx(.70, abs=5e-3)
     assert after["silent"]["counts"] == [0., 4.] and after["loud"]["counts"] == [0., 4.]
     assert after["silent"]["mean"] == pytest.approx(.053, abs=5e-4) and after["silent"]["pi"] == pytest.approx(.85, abs=5e-3)
     # The start itself is untouched by the runs: the forecast keeps its weight of N_start runs,
     # for four counted runs and for four hundred.
-    many = outcome_beliefs(values, pair, runs * 96 + [{**runs[0], "outcome": "silent"}] * 16, epsilon=EPSILON)
+    many = outcome_beliefs(values, pair, runs * 96 + [{**runs[0], "outcome": "silent"}] * 16, DEFAULTS,
+                           epsilon=EPSILON)
     assert many["silent"]["counts"] == [16., 384.] and many["loud"]["counts"] == [0., 400.]
     for counted in (after, many):
         for rate in ("loud", "silent"):
@@ -373,10 +374,13 @@ def test_two_experts_that_disagree_give_a_wider_start_than_either_alone(tmp_path
     load(mixed_engine.config, mixed["decision_id"])
 
 
-def test_counted_runs_change_only_their_own_cell_and_the_forecast_keeps_its_weight(tmp_path):
+def test_without_discounts_counted_runs_change_only_their_own_cell_and_the_forecast_keeps_its_weight(tmp_path):
     candidates = [{"model": "fixture/unseen", "effort": "high", "usd_per_mtok": 1.0},
                   {"model": "fixture/seen", "effort": "high", "usd_per_mtok": 1.0}]
     specs = {"fixture/seen": spec(.6, .2, .2), "fixture/unseen": spec(.6, .2, .2)}
+    for name in ("fresh", "history"):
+        (tmp_path / name).mkdir()
+        own_runs_only(tmp_path / name)
     fresh = decide(Engine(directory=tmp_path / "fresh", retrieval=SimilarityDouble()), candidates, specs)
 
     engine = Engine(directory=tmp_path / "history", retrieval=SimilarityDouble())
@@ -402,9 +406,13 @@ def test_counted_runs_change_only_their_own_cell_and_the_forecast_keeps_its_weig
         assert by_model(result)["fixture/unseen"][field] == by_model(fresh)["fixture/unseen"][field]
 
     seen, seen_fresh = calibration(result, "fixture/seen"), calibration(fresh, "fixture/seen")
-    counted = {outcome: math.fsum(o["weight"] for o in observed if o["outcome"] == outcome)
+    counted = {outcome: math.fsum(o["weight"] for o in observed if o["outcome"] == outcome and o["family"] == seen_family)
                for outcome in ("clean", "loud", "silent")}
     assert counted["clean"] > 7 and counted["loud"] > 1.5 and counted["silent"] > .9
+    assert by_model(result)["fixture/seen"]["outcome_counts"] == {
+        "n_clean": pytest.approx(counted["clean"]), "n_loud": pytest.approx(counted["loud"]),
+        "n_silent": pytest.approx(counted["silent"]), "runs": 11}
+    assert by_model(result)["fixture/unseen"]["outcome_counts"] == {"n_clean": 0., "n_loud": 0., "n_silent": 0., "runs": 0}
     # S counts silent against clean runs; theta_l counts loud against clean and silent ones.
     assert seen["outcome_beliefs"]["silent"]["counts"] == pytest.approx([counted["silent"], counted["clean"]])
     assert seen["outcome_beliefs"]["loud"]["counts"] == pytest.approx(

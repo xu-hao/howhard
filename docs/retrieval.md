@@ -118,7 +118,12 @@ outside the storage lock.
 ```text
 sim_i = 1 / (1 + exp(-r_i))
 a_i   = 0.5^(days_i / h)
-w_i   = m_i * sim_i * delta(c_i, c) * a_i
+w_i   = m_i * sim_i * a_i * delta(c_i, c)
+
+delta(c_i, c) = 1                 same family, same effort (the same cell)
+              = effort_discount   same family, another effort
+              = model_discount    another family of the same agent
+              = agent_discount    another agent
 ```
 
 - `i`: a candidate run.
@@ -132,12 +137,19 @@ w_i   = m_i * sim_i * delta(c_i, c) * a_i
 - `a_i`: the age factor.
 - `m_i`: the run's weight on record, the `weight` configured for its model (1 unless set).
 - `c_i`, `c`: the cell that ran `i` and the cell being judged.
-- `delta(c_i, c)`: the relatedness discount, 1 for the same cell and 0 for any other.
+- `delta(c_i, c)`: the relatedness discount of the outcome counts. The first line that
+  fits is used. The defaults are `effort_discount` = 0.5, `model_discount` = 0.25 and
+  `agent_discount` = 0.25 in `[sampling]`. A cell's family comes from the model registry
+  and its agent from the label on its candidate; a run's agent is the label stored for
+  the chosen cell in the receipt its `decision_id` names. A run with no decision, a
+  receipt older than v11 or an unlabeled candidate belongs to the one unnamed agent, as
+  does an unlabeled cell of the new request.
 - `w_i`: the run's weight for cell `c` before the per-ticket limit.
 
-In plain words: a run counts more when its task reads like the new one, and half as
-much for every 14 days of age. There is no cut-off: a run with a negative score still
-counts, at a small weight. A run counts the same whichever host it ran under.
+In plain words: a run counts more when its task reads like the new one, half as much
+for every 14 days of age, and, in the outcome counts, as a fraction of a run when a
+related cell ran it. There is no cut-off: a run with a negative score still counts, at
+a small weight. A run counts the same whichever host it ran under.
 
 For example, a run of the same cell with `r = 1.386`, recorded 7 days before the
 request, with `m = 1`: `sim = 0.8`, `a = 0.5^(7/14) = 0.7071` and
@@ -152,7 +164,8 @@ n_k = sum of w_i over the candidate runs with outcome k
 ```
 
 - `t`: a ticket, the row's `ticket` label. A row with no ticket is not limited.
-- `W_t`: the total weight of ticket `t`'s candidate runs for cell `c`.
+- `W_t`: the total weight of ticket `t`'s candidate runs for cell `c`. The limit
+  follows the discount, so it is taken per judged cell.
 - `n_k`: the counted amount of outcome `k`, for `clean`, `loud` and `silent`.
 
 In plain words: all runs of one ticket together count for at most one run, because
@@ -163,16 +176,26 @@ become 0.4, 0.3333 and 0.2667, which sum to 1. A run of another ticket weighs 0.
 stays 0.3. With outcomes loud, loud, clean and clean, `n_loud = 0.7333` and
 `n_clean = 0.5667`.
 
+With the discount, the judged cell is family `f1` at effort `high` under agent `a1`.
+Its own run of ticket `t1` has `sim = 0.8` and weighs 0.80. A run of `f1` at `low` in
+the same ticket has `sim = 0.9` and weighs `0.9 * 0.5 = 0.45`. `W_t1 = 1.25`, so they
+become 0.64 and 0.36. A run of another family under `a1`, 14 days old with `sim = 0.8`,
+weighs `0.8 * 0.5 * 0.25 = 0.10`, and a run under another agent with `sim = 0.4` weighs
+`0.4 * 0.25 = 0.10`. With outcomes clean, loud, clean and silent, `n_clean = 0.74`,
+`n_loud = 0.36` and `n_silent = 0.10`. The
+{ref}`outcome beliefs <outcome-posterior>` give the same example as a table.
+
 **The three readers.**
 
 | Reader | Runs it counts | Weight |
 | --- | --- | --- |
-| Outcomes | The candidates, for each forecast cell | `w_i` after the limit |
-| Active time and tokens | The candidates of the same cell that record an active time | The outcome reader's `w_i` for that run |
+| Outcomes | Every candidate, whatever cell ran it, for each forecast cell | `w_i` with `delta`, after the limit for that cell |
+| Active time and tokens | The candidates of the same cell that record an active time | `m_i * sim_i * a_i`, then the limit over the cell's own runs |
 | Capability | The candidates whose cell is in the inventory | `m_i * sim_i * strength_i * a_i`, then the limit over this reader's runs |
 
-`strength_i` is the capability reader's factor for the outcome and its cause
-([capability filtering](capability.md)); that reader has no `delta`. For example, a loud run with no
+Only the outcome reader has `delta`: runs of other cells leave a cell's active-time and
+token evidence unchanged. `strength_i` is the capability reader's factor for the outcome
+and its cause ([capability filtering](capability.md)); that reader has no `delta`. For example, a loud run with no
 recorded cause, `sim = 0.8` and `a = 0.7071` weighs
 `0.8 * 0.75 * 0.5 * 0.7071 = 0.2121` in the capability reader. The counts feed the
 {ref}`outcome beliefs <outcome-posterior>`, and the active-time reader's runs and
@@ -183,17 +206,23 @@ with a complete execution usage update each token kind.
 **What the receipt stores.** `semantic.evidence_candidates` holds the time the request
 was prepared (`prepared_at`), both constants (`half_life_days`, `comparison_cap`), the
 number of candidates before the cap (`matched`) and each scored candidate once: `id`,
-`family`, `effort`, `outcome`, `active_seconds`, `tokens`, `token_usage` (the count of
-each token kind, only when the run's execution usage is complete), `ticket`,
-`run_weight`, `score`, `similarity`, `days` and `age_factor`. Each row of `semantic.outcome_observations` is
-one counted run of one forecast cell with its `discount`, `ticket_share`
-(`1 / max(1, W_t)`, or 1 without a ticket) and `weight`; each row of
+`family`, `effort`, `agent` (null when unnamed), `outcome`, `active_seconds`, `tokens`,
+`token_usage` (the count of each token kind, only when the run's execution usage is
+complete), `ticket`, `run_weight`, `score`, `similarity`, `days` and `age_factor`. Each
+row of `semantic.outcome_observations` is one candidate run, stored once, with the
+run's own `family`, `effort`, `agent` and `ticket`, its `outcome` and its `weight`
+before the discount, `m_i * sim_i * a_i`. Each forecast cell in `selection.cells` stores
+`outcome_counts`: the sums `n_clean`, `n_loud` and `n_silent` and the number of `runs`
+behind them. No row per run and cell is stored: each run's relation, discount, ticket
+share and weight follow from the stored labels and the frozen discounts, and
+`howhard.decisions.counted_observations(receipt, cell)` computes them on demand. Each row of
 `semantic.duration_observations` carries the run's active seconds, `tokens`,
-`token_usage` and that weight; and
+`token_usage` and its weight after the limit over the cell's own runs; and
 each row of `capability.evidence` carries its `strength`, `ticket_share` and `weight`.
 Loading a `howhard-decision-v11` receipt recomputes every similarity, age factor,
-ticket share, weight and count from these values and refuses a mismatch, or more than
-`comparison_cap` candidates. Every scored candidate is a dependency of the prepared
+relation, discount, ticket share and weight from these values and the sampling
+policy and refuses a mismatch in a stored row or sum, or more than `comparison_cap`
+candidates. Every scored candidate is a dependency of the prepared
 request, so amending one makes the request stale.
 
 ## Replace stages independently

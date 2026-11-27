@@ -171,10 +171,11 @@ one forecast of the loud rate and one of the accepted-defect share, and experts 
 disagree make that forecast less certain. The record of the same host on other tasks
 corrects each forecast into a {ref}`prediction <corrected-prediction>`, which starts a
 belief worth a few runs (`N_start`, about 4 with an empty record) and is then reshaped
-by that cell's own
-`outcome_observations`: the cell's runs among the decision's
+by the cell's `outcome_counts`: the summed weights of the decision's
 {ref}`evidence candidates <evidence-candidates>`, each weighted by its task similarity
-and age and limited per ticket. The prediction never fades out: it keeps the weight of
+and age, discounted when a related cell ran it (0.5 for the same family at another
+effort, 0.25 for another family or another agent) and limited per ticket. The
+prediction never fades out: it keeps the weight of
 `N_start` runs however many are counted. Forecasters may attach
 `silent_ci` and/or `loud_ci` 95% ranges to a row; a wider range widens the start so
 real outcomes dominate sooner, while a narrow range cannot narrow it below what
@@ -190,7 +191,7 @@ does not veto a cell. The
 belief is a model assumption, not a calibrated risk guarantee. Results identify the
 interval method (`log-odds-grid`) and flag a chosen cell that is not trusted. Predictive
 support (`evidence_count`, `log_score`) weights experts; it never stands in for a cell's
-own counted runs. See the {ref}`outcome beliefs <outcome-posterior>`.
+counted runs. See the {ref}`outcome beliefs <outcome-posterior>`.
 
 ## Writer, failures and replay
 

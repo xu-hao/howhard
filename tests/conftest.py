@@ -66,6 +66,20 @@ def row(i, *, task="X", family="opus", effort="high", outcome="clean", **kwargs)
             "seconds": None, "cost_usd": None, "note": "", "amends": None, **kwargs}
 
 
+# With the three relatedness discounts at 0 a cell counts only its own runs as outcome evidence.
+OWN_RUNS_ONLY = "[sampling]\neffort_discount = 0\nmodel_discount = 0\nagent_discount = 0\n"
+
+
+def own_runs_only(directory):
+    """Configure the store in ``directory`` so that no run of another cell, and no agent label,
+    enters a cell's outcome counts. Call it before creating the engine; it keeps a configuration
+    already written there.
+    """
+    path = directory / "howhard.toml"
+    rest = path.read_text() if path.exists() else '[task_types]\ntask = "standard"\n'
+    path.write_text(OWN_RUNS_ONLY + rest)
+
+
 def cell(summary, family, effort):
     return next(c for c in summary["cells"] if (c["family"], c["effort"]) == (family, effort))
 

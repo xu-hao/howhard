@@ -90,7 +90,8 @@ A `(family, effort)` cell holds two independent beliefs, each on the log-odds sc
 - one for its accepted-defect share `S`, silent results / accepted results.
 
 Each belief starts from the {ref}`corrected prediction <corrected-prediction>` of its
-rate and is reshaped by the cell's own counted runs.
+rate and is reshaped by the runs counted for the cell: its own runs in full, and runs
+of related cells at a discount.
 
 **One forecast per rate.** The experts' forecasts for a cell are merged first:
 
@@ -191,38 +192,92 @@ and the 95% range is 0.2% to 52%. With `n_c = 4` and `n_s = 0`, `E[S] = 0.053` a
 `pi(c) = 0.85`. For `theta_l` at the start, expected attempts are 1.38, against 1.25 at
 the average rate.
 
-`n_*` are the counted amounts of each outcome in the cell's `outcome_observations`.
-The runs are the decision's {ref}`evidence candidates <evidence-candidates>`: recorded
-`clean`, `loud` and `silent` runs that belong to a prototype the new task matches
-(`interrupted` runs are excluded), at most `comparison_cap` of them, most recent first.
-For each forecasted `(family, effort)` cell (and any widened cell):
+**Which runs are counted.** `n_c`, `n_l` and `n_s` are the counted amounts of each
+outcome for the cell. The runs are the decision's
+{ref}`evidence candidates <evidence-candidates>`: recorded `clean`, `loud` and `silent`
+runs that belong to a prototype the new task matches (`interrupted` runs are excluded),
+at most `comparison_cap` of them, most recent first. Every candidate is kept, whatever
+cell ran it, including cells with no forecast in this decision. For each forecasted
+`(family, effort)` cell (and any widened cell):
 
 ```text
-w_i = m_i * sim_i * delta(c_i, c) * a_i
-W_t = sum of w_i over the candidate runs of ticket t
+delta(c_i, c) = 1                 same family, same effort (the same cell)
+              = effort_discount   same family, another effort
+              = model_discount    another family of the same agent
+              = agent_discount    another agent
+
+w_i  = m_i * sim_i * a_i * delta(c_i, c)
+W_t  = sum of w_i over the candidate runs of ticket t
 w_i <- w_i / max(1, W_t)
-n_k = sum of w_i over the candidate runs with outcome k
+n_k  = sum of w_i over the candidate runs with outcome k
 ```
 
 - `i`: a candidate run; `c_i` is the cell that ran it and `c` the cell being judged.
+- `delta(c_i, c)`: the relatedness discount. The first line that fits is used. The
+  defaults are `sampling.effort_discount` = 0.5, `sampling.model_discount` = 0.25 and
+  `sampling.agent_discount` = 0.25. A run whose discount is 0 is not counted.
 - `m_i`: the run's weight on record, the `weight` configured for its model (1 unless set).
 - `sim_i`: `1 / (1 + exp(-r_i))`, where `r_i` is the reranker's score for the new task's
   text against the run's own task text.
-- `delta(c_i, c)`: 1 for the same cell and 0 for any other, so only a cell's own runs count.
 - `a_i`: the age factor `0.5^(days_i / half_life_days)`, where `days_i` runs from the
   run's `observed_at` to the time the request was prepared and is never below 0.
-- `t`, `W_t`: a ticket (the row's `ticket` label) and the total weight of its candidate
-  runs for cell `c`. A row with no ticket is not limited.
+- `t`, `W_t`: a ticket (the row's `ticket` label) and the weight its candidate runs carry
+  for cell `c`. The limit follows the discount, so it is taken per judged cell. A row
+  with no ticket is not limited.
 - `n_k`: the counted amount of outcome `k`, for `clean`, `loud` and `silent`.
 
-In plain words: a run counts more when its task reads like the new one, half as much
-for every 14 days of age, and all runs of one ticket together count for at most one
-run. For example, a run of the same cell with `r = 1.386` recorded 7 days before the
-request weighs `0.8 * 0.7071 = 0.5657`; three runs of one ticket weighing 0.6, 0.5 and
-0.4 become 0.4, 0.3333 and 0.2667. Heavy history on another cell cannot crowd out this
-cell's evidence, a regression or recovery dominates as older runs age, and a task that
-matches no prototype counts nothing. An expert's global `evidence_count` affects only
-its predictive weight, never a cell's counted runs.
+In plain words: a run counts more when its task reads like the new one and half as much
+for every 14 days of age; a run by a related cell counts as a fraction of a run by the
+cell itself; and all runs of one ticket together count for at most one run.
+
+**Each run's family and agent.** The judged cell takes its `family` from the model
+registry and its `agent` label from its candidate in the request. A run's family is the
+registry family of the model that ran it. A run's agent is the label stored for the
+chosen cell in the receipt that the row's `decision_id` names. A run with no decision,
+a receipt older than `howhard-decision-v11` or an unlabeled candidate belongs to the one
+unnamed agent, as does an unlabeled cell of the new request. Two unnamed cells are the
+same agent; a named and an unnamed one are different agents. At the same family the
+agent is not read: such a run gets 1 or `effort_discount`.
+
+Example: the judged cell is family `f1` at effort `high` under agent `a1`, and every
+run has `m_i = 1`.
+
+| Run | Ran on | Relation | `sim` | `a` | `delta` | Weight | Ticket | After the limit | Outcome |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | `f1` `high`, `a1` | Same cell | 0.8 | 1 | 1 | 0.80 | `t1` | 0.64 | clean |
+| 2 | `f1` `low`, `a1` | Same family | 0.9 | 1 | 0.5 | 0.45 | `t1` | 0.36 | loud |
+| 3 | `f2` `high`, `a1` | Same agent | 0.8 | 0.5 | 0.25 | 0.10 | `t2` | 0.10 | clean |
+| 4 | `f3` `high`, `a2` | Another agent | 0.4 | 1 | 0.25 | 0.10 | `t3` | 0.10 | silent |
+
+Ticket `t1` carries `0.80 + 0.45 = 1.25`, so both of its runs are divided by 1.25. The
+counts are `n_c = 0.64 + 0.10 = 0.74`, `n_l = 0.36` and `n_s = 0.10`. With the three
+discounts at 0 only run 1 counts, as 0.80 clean.
+
+Only the counts that update these two beliefs read the discount. The
+{ref}`beliefs for active time and tokens <amount-beliefs>` count runs of the same cell
+only, and the capability threshold keeps its own strength factors. An expert's global
+`evidence_count` affects only its predictive weight, never a cell's counted runs.
+
+**What the receipt stores.** Each row of `semantic.outcome_observations` is one
+candidate run, stored once: `id`, the run's own `family`, `effort` and `agent` (null
+when unnamed), `outcome`, `ticket`, and `weight`, which is `m_i * sim_i * a_i` before
+the discount. Each forecast cell in `selection.cells` stores `outcome_counts`: the
+sums `n_clean`, `n_loud` and `n_silent` and `runs`, the number of runs with a weight
+above 0 behind them. The three discounts are frozen in the receipt's sampling policy.
+
+The storage rule: a receipt never stores one row per run and cell. A run's `relation`
+(`cell`, `family`, `agent` for another family of the same agent, or `other` for another
+agent), `discount`, ticket share and `weight` for a cell are a function of what the
+receipt already holds: the run's stored labels, the cell's label in
+`native_candidates` and the frozen discounts. With the discounts above 0 nearly every
+candidate counts in every cell, so such rows would number cells times
+`comparison_cap`, about 3,000 at the defaults. Loading a `howhard-decision-v11`
+receipt recomputes each run's relation, discount, ticket share and weight from the
+stored labels and policy and refuses a receipt whose sums or run count differ; an
+observation's own cell need not be a forecast cell. A reader that needs the rows
+computes them on demand with `howhard.decisions.counted_observations(receipt, cell)`,
+which returns each counted run's `id`, `relation`, `discount` and `weight` after the
+limit for one selection cell (the chosen cell by default).
 
 A forecast row may add `silent_ci` and/or `loud_ci` as `[lo, hi]` with
 `0 <= lo <= value <= hi <= 1`, a central 95% range for that probability. It enters as
@@ -459,10 +514,11 @@ weight. For example, two runs with weights 0.5 and 0.3 recorded 1,800 and 5,400 
 Then `W = 0.8`, `s' = 0.719`, `m' = 7.792` and `E[T] = 3,137` seconds.
 
 The runs are the cell's own {ref}`evidence candidates <evidence-candidates>` that record
-an active time. Each counts at the weight the outcome counts give that run, `w_i` after
-the per-ticket limit: similarity to the new task, half as much for every
-`half_life_days` of age, and at most one run's weight per ticket. A run of another cell
-never counts. A run's time is `effective_active_seconds`: its `active_seconds`, or its
+an active time. Each counts at `m_i * sim_i * a_i` after the per-ticket limit over the
+cell's own runs: similarity to the new task, half as much for every `half_life_days` of
+age, and at most one run's weight per ticket. A run of another cell never counts here,
+whatever {ref}`relatedness discount <outcome-posterior>` the outcome counts give it,
+and it does not share this limit. A run's time is `effective_active_seconds`: its `active_seconds`, or its
 total `seconds` when no active time was recorded, so a total that includes waiting counts
 as active time. `interrupted` runs are excluded.
 
@@ -868,7 +924,8 @@ cell: `J - J_best <= uncertainty_multiplier * (sd_best + sd_cell)`. Only an expl
 risk-class `explore_within` additionally caps that gap at `explore_within * |J_best|`.
 Thompson sampling draws each cell's active time from `ln T ~ Normal(m', s'^2)` in
 `parts["time"]`. Receipts retain the scored `evidence_candidates`, the
-`outcome_observations` and `duration_observations` counted from them, each sampled cell's
+`outcome_observations` and `duration_observations` read from them, each cell's
+`outcome_counts`, each sampled cell's
 `outcome_beliefs`, each cell's beliefs for active time and tokens, `pi`, `tier` and
 `admission_risk`, the seed and the reason for a sampled non-best choice.
 `outcome_beliefs.loud` and `outcome_beliefs.silent` each hold `prediction`,
@@ -881,8 +938,8 @@ candidates; it does not make inference deterministic. A receipt records the time
 request was prepared, because the age of every counted run is measured to that moment,
 so two decisions prepared at different times are different receipts even when nothing
 else differs. Loading a stored decision recomputes both beliefs of every forecast cell
-from its frozen forecasts, expert weights, outcome observations and policy, and refuses
-a receipt in which a belief, a `P_*` field, `pi`, `tier`, `admissible`, `J`,
+from its frozen forecasts, expert weights, outcome observations, agent labels and policy,
+and refuses a receipt in which a counted sum, a belief, a `P_*` field, `pi`, `tier`, `admissible`, `J`,
 `exploration.pool`, the chosen cell or a flag disagrees with them.
 
 Loud attempts are retried on the same cell until a non-loud result is accepted.
@@ -899,7 +956,8 @@ otherwise `sampled-cost` with signed cost components.
 New receipts use `howhard-decision-v11` (`howhard-semantic-v8`, reader prompt
 `semantic-reader-v8`, interval kind `log-odds-grid`). Loading a v11
 receipt recomputes every belief from its frozen forecast panels, expert weights,
-`outcome_observations`, `duration_observations` and sampling policy, then the `P_*`
+`outcome_observations`, `duration_observations` and sampling policy, then each cell's
+`outcome_counts`, the `P_*`
 fields, `pi`, `T`, the three credit numbers, `session_cost_usd`, `credit_ok` and `J`,
 and every {ref}`reused memory-free row <stored-forecasts>` from its sources; a
 receipt whose stored values differ is refused.

@@ -574,7 +574,8 @@ independent beliefs, each on the log-odds scale
 {math}`\theta_l`, the share of attempts that fail loudly, and one for its
 accepted-defect share {math}`S`, silent results divided by accepted results. A belief
 starts from a prediction, the forecast corrected from the record of the same host on
-other tasks, and is reshaped by the cell's own counted runs.
+other tasks, and is reshaped by the runs counted for the cell: its own runs in full,
+and runs of related cells at a discount.
 
 ### One forecast per rate
 
@@ -798,13 +799,63 @@ the centre is {math}`-3.04`. For {math}`\theta_l`, {math}`p=0.20` and
 
 ### Counted runs reshape the belief
 
-The same candidate runs that feed the capability threshold update the belief: for each
-forecasted cell, the candidates that ran on that cell count with
-{math}`w_i=m_i\,\mathrm{sim}_i\,\delta(c_i,c)\,a_i` and the same limit per ticket,
-where {math}`\delta(c_i,c)` is 1 when run {math}`i`'s cell {math}`c_i` is the cell
-{math}`c` being judged and 0 otherwise, so frequently executed cells cannot crowd out
-rarer ones. The counts {math}`n_c,n_l,n_s` are the sums of those weights over the clean,
-loud and silent candidates.
+The same candidate runs that feed the capability threshold update the belief. Every
+candidate is kept, whatever cell ran it, and counts for each forecasted cell {math}`c`
+at a discount set by how related the two cells are:
+
+```{math}
+\begin{aligned}
+\delta(c_i,c)&=\begin{cases}
+1&\text{same family, same effort (the same cell)}\\
+\delta_{\mathrm{effort}}&\text{same family, another effort}\\
+\delta_{\mathrm{model}}&\text{another family of the same agent}\\
+\delta_{\mathrm{agent}}&\text{another agent}
+\end{cases}\\
+w_i&=m_i\,\mathrm{sim}_i\,a_i\,\delta(c_i,c),\qquad
+W_t=\sum_{i\in t}w_i,\qquad
+w_i\leftarrow\frac{w_i}{\max(1,W_t)},\qquad
+n_k=\sum_{i:\,y_i=k}w_i.
+\end{aligned}
+```
+
+- {math}`c`, {math}`c_i`: the cell being judged, and the cell that ran candidate run
+  {math}`i`.
+- {math}`\delta`: the relatedness discount. The first line that fits is used. The
+  defaults are {math}`\delta_{\mathrm{effort}}=0.5`, {math}`\delta_{\mathrm{model}}=0.25`
+  and {math}`\delta_{\mathrm{agent}}=0.25` (`sampling.effort_discount`,
+  `sampling.model_discount`, `sampling.agent_discount`).
+- {math}`m_i`, {math}`\mathrm{sim}_i`, {math}`a_i`: the run's recorded weight, its
+  similarity to the new task and its age factor.
+- {math}`t`, {math}`W_t`: a ticket, and the weight its candidate runs carry for cell
+  {math}`c`. The limit follows the discount, so it is taken per judged cell.
+- {math}`y_i`, {math}`n_k`: run {math}`i`'s outcome, and the counted amount of outcome
+  {math}`k`. {math}`n_c`, {math}`n_l` and {math}`n_s` are the clean, loud and silent
+  counts.
+
+In plain words: a run by a related cell counts as a fraction of a run by the cell
+itself, and one ticket still counts for at most one run.
+
+A cell's family comes from the model registry and its agent from the label on its
+candidate. A run's agent is the label stored for the chosen cell in the receipt that
+the run's `decision_id` names. A run with no decision, a receipt older than v11 or an
+unlabeled candidate belongs to the one unnamed agent, as does an unlabeled cell of the
+new request.
+
+Example: the judged cell is family `f1` at effort `high` under agent `a1`, and every
+run has {math}`m_i=1`.
+
+| Run | Ran on | Relation | {math}`\mathrm{sim}` | {math}`a` | {math}`\delta` | Weight | Ticket | After the limit | Outcome |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | `f1` `high`, `a1` | Same cell | 0.8 | 1 | 1 | 0.80 | `t1` | 0.64 | clean |
+| 2 | `f1` `low`, `a1` | Same family | 0.9 | 1 | 0.5 | 0.45 | `t1` | 0.36 | loud |
+| 3 | `f2` `high`, `a1` | Same agent | 0.8 | 0.5 | 0.25 | 0.10 | `t2` | 0.10 | clean |
+| 4 | `f3` `high`, `a2` | Another agent | 0.4 | 1 | 0.25 | 0.10 | `t3` | 0.10 | silent |
+
+Ticket `t1` carries {math}`0.80+0.45=1.25`, so both of its runs are divided by 1.25.
+The counts are {math}`n_c=0.74`, {math}`n_l=0.36` and {math}`n_s=0.10`. With the three
+discounts at 0 only run 1 counts, as 0.80 clean.
+
+The counts then reshape each belief:
 
 ```{math}
 \begin{aligned}
@@ -831,10 +882,11 @@ In plain words, the start counts as {math}`N_{\mathrm{start}}` runs and each cou
 run as its weight. The forecast never fades out: however many runs are counted, it
 keeps the weight of {math}`N_{\mathrm{start}}` runs. Because each count halves for
 every 14 days of age, a regression or a recovery moves the belief as older runs fade.
-A cell with no counted run keeps its start regardless of how much evidence other cells
-have; global expert support weights experts but is not a per-cell sample size. Active
-time is calibrated from the same cell's candidates that record an active time, each at
-the weight the outcome counts give that run.
+A cell with no counted run keeps its start; global expert support weights experts but
+is not a per-cell sample size. The discount applies to these outcome counts only: active
+time and tokens are calibrated from the same cell's candidates alone, each at
+{math}`m_i\,\mathrm{sim}_i\,a_i` after the per-ticket limit over that cell's own runs,
+and the capability threshold keeps its own strength factors.
 
 Example: with the forecast above, at the start {math}`E[S]=0.100` and the 95% range is
 0.2% to 52%. With {math}`n_c=4` and {math}`n_s=0`, {math}`E[S]=0.053`. For

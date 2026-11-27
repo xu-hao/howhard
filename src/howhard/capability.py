@@ -161,13 +161,10 @@ def prior_cdf(value, policy, *, linear_prefix=False, linear_tail=False):
     return dict(zip(value["order"], before+fit+after))
 
 
-def _decision_forecast_seconds(engine, row):
-    from .decisions import load, exists
+def _decision_forecast_seconds(engine, row, receipts=None):
+    from .decisions import scored_receipt
     from .semantic import panel_lookup
-    decision_id = row.get("decision_id")
-    if not decision_id or not exists(engine.config, decision_id):
-        return None
-    receipt = load(engine.config, decision_id, for_scoring=True)
+    receipt = scored_receipt(engine.config, row, receipts)
     if receipt is None:
         return None
     pair = row["family"], row["resolved_effort"]
@@ -189,8 +186,11 @@ def _strength(row, policy):
     return strength
 
 
-def observations(engine, payload, candidates):
-    """The scored candidates whose cell is in the inventory: ``m * sim * strength * a``, limited per ticket."""
+def observations(engine, payload, candidates, receipts=None):
+    """The scored candidates whose cell is in the inventory: ``m * sim * strength * a``, limited per ticket.
+
+    ``receipts`` is the optional cache of loaded decisions that the candidate scoring filled.
+    """
     from . import evidence
     known = {cell_key(c) for c in payload["cells"]}
     rows = {r["id"]: r for r in engine.rows}
@@ -206,7 +206,7 @@ def observations(engine, payload, candidates):
     shares = evidence.ticket_shares([(item["ticket"], value) for item, _, _, value in counted])
     return [{"id": row["id"], "key": cell_key(row), "outcome": row["outcome"], "cause": row.get("cause"),
              "active_seconds": item["active_seconds"],
-             "forecast_active_seconds": _decision_forecast_seconds(engine, row),
+             "forecast_active_seconds": _decision_forecast_seconds(engine, row, receipts),
              "strength": strength, "ticket_share": share, "weight": value * share}
             for (item, row, strength, value), share in zip(counted, shares)]
 

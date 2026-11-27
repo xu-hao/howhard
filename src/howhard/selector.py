@@ -17,8 +17,10 @@ def prepare(config, task, risk=None, context=None, native_candidates=None):
         raise HowHardError(f"risk: unknown class {cls!r}")
     from .native import preflight
     inventory = preflight(config, native_candidates)
+    # A cell takes its family from the model registry and its agent label from the request;
+    # a candidate with no label belongs to the one unnamed agent.
     cells = [{"model": c["model"], "family": config.data["models"][c["model"]]["family"],
-              "effort": c["effort"], "credit_rate": c.get("usd_per_mtok"),
+              "effort": c["effort"], "agent": c.get("agent"), "credit_rate": c.get("usd_per_mtok"),
               "rate_card": c.get("rate_card"), "cost_per_credit": c["cost_per_credit"],
               "credit_budget": deepcopy(c.get("credit_budget"))} for c in inventory]
     from .accounting import CATEGORIES
