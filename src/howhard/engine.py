@@ -270,9 +270,10 @@ class Engine:
         All three readers weigh this one set; the capability reader's observations are fixed here.
         """
         from . import capability, evidence
-        candidates = evidence.collect(reader, bundle["forecast_template"], bundle.get("prototype_state"))
+        receipts = {}  # Each decision a candidate row names is loaded once for both readers.
+        candidates = evidence.collect(reader, bundle["forecast_template"], bundle.get("prototype_state"), receipts)
         filtering = bundle["stage"] == "filter"
-        observed = capability.observations(reader, bundle["payload"], candidates) if filtering else []
+        observed = capability.observations(reader, bundle["payload"], candidates, receipts) if filtering else []
         # The failed runs behind the asking host's caught share are read once, on the same captured rows.
         caught = capability.caught_record(reader, bundle["host"], candidates) if filtering else None
         bundle["learned_state"] = {"weights_policy": "snapshot", "evidence_candidates": candidates,

@@ -10,11 +10,11 @@ import sqlite3
 
 import pytest
 
-from conftest import inventory, row
+from conftest import OWN_RUNS_ONLY, inventory, row
 from howhard import Engine
 from howhard.cli import main
 from howhard.context import canonical, digest
-from howhard.decisions import load
+from howhard.decisions import counted_observations, load
 from howhard.payload_store import get, put
 from howhard.report import report
 from howhard.storage import locked, reading
@@ -107,7 +107,22 @@ def scored(receipt):
 
 
 def outcome_rows(receipt):
+    """Every candidate run as the outcome reader stores it: once, at its weight before any discount."""
     return {o["id"]: o for o in receipt["semantic"]["outcome_observations"]}
+
+
+def counted_rows(receipt, family="opus", effort="high"):
+    """The runs one forecast cell counts as outcome evidence, each at its weight after the per-ticket limit.
+
+    The receipt stores only the cell's sums; the rows are computed from it on demand.
+    """
+    cell = next(c for c in receipt["selection"]["cells"] if (c["family"], c["effort"]) == (family, effort))
+    rows = counted_observations(receipt, cell)
+    sums = {outcome: math.fsum(r["weight"] for r in rows if outcome_rows(receipt)[r["id"]]["outcome"] == outcome)
+            for outcome in ("clean", "loud", "silent")}
+    assert cell["outcome_counts"] == {"n_clean": pytest.approx(sums["clean"]), "n_loud": pytest.approx(sums["loud"]),
+                                      "n_silent": pytest.approx(sums["silent"]), "runs": len(rows)}
+    return {o["id"]: o for o in rows}
 
 
 def duration_rows(receipt):
@@ -119,7 +134,8 @@ def capability_rows(receipt):
 
 
 def readers(receipt):
-    return outcome_rows(receipt), duration_rows(receipt), capability_rows(receipt)
+    """What the three readers count for the cell ``opus`` at ``high``."""
+    return counted_rows(receipt), duration_rows(receipt), capability_rows(receipt)
 
 
 def counts(receipt, family="opus", effort="high"):
@@ -144,7 +160,7 @@ def test_matched_run_counts_at_similarity_times_age_and_other_runs_count_nowhere
     assert (state["half_life_days"], state["comparison_cap"], state["matched"]) == (14, 256, 2)
     assert set(scored(receipt)) == {"match", "loud"}
     match = scored(receipt)["match"]
-    assert match == {"id": "match", "family": "opus", "effort": "high", "outcome": "clean",
+    assert match == {"id": "match", "family": "opus", "effort": "high", "agent": None, "outcome": "clean",
                      "active_seconds": 100.0, "tokens": None, "token_usage": None,
                      "ticket": None, "run_weight": 1.0, "score": 1.386,
                      "similarity": pytest.approx(.8, abs=1e-4), "days": pytest.approx(7, abs=1e-3),
@@ -154,9 +170,12 @@ def test_matched_run_counts_at_similarity_times_age_and_other_runs_count_nowhere
         assert set(rows) == {"match", "loud"}
     # w = m * sim * delta * a = 1 * 0.8 * 1 * 0.5 ** (7 / 14)
     assert outcomes["match"]["weight"] == pytest.approx(.5657, abs=1e-4)
-    assert outcomes["match"] == {"id": "match", "family": "opus", "effort": "high", "outcome": "clean",
-                                 "discount": 1.0, "ticket_share": 1.0,
+    assert outcomes["match"] == {"id": "match", "relation": "cell", "discount": 1.0,
                                  "weight": match["run_weight"] * match["similarity"] * match["age_factor"]}
+    # The run itself is stored once, with its own cell, agent and ticket and its weight before any discount.
+    assert outcome_rows(receipt)["match"] == {"id": "match", "family": "opus", "effort": "high", "agent": None,
+                                              "outcome": "clean", "ticket": None,
+                                              "weight": outcomes["match"]["weight"]}
     assert durations["match"] == {"id": "match", "family": "opus", "effort": "high", "active_seconds": 100.0,
                                   "tokens": None, "token_usage": None, "weight": outcomes["match"]["weight"]}
     assert capability["match"]["strength"] == 1.0
@@ -206,9 +225,9 @@ def test_runs_of_one_ticket_count_for_at_most_one_run_and_unticketed_runs_are_no
                run("c", relevance=logit(.4), ticket="T-1"),
                run("d", relevance=logit(.3), ticket="T-2")]
     receipt = decide(Engine(project(rows=example), retrieval=Scripted()), OPUS)
-    outcomes = outcome_rows(receipt)
+    outcomes = counted_rows(receipt)
     assert [outcomes[k]["weight"] for k in "abcd"] == pytest.approx([.4, 1 / 3, .8 / 3, .3], abs=1e-4)
-    assert [outcomes[k]["ticket_share"] for k in "abcd"] == pytest.approx([1 / 1.5] * 3 + [1], abs=1e-4)
+    assert [outcome_rows(receipt)[k]["weight"] for k in "abcd"] == pytest.approx([.6, .5, .4, .3], abs=1e-4)
     assert counts(receipt) == pytest.approx([.5667, .7333, 0], abs=1e-4)
 
     limited = [run(f"t-{i}", relevance=logit(.9), ticket="T-9", seconds=100) for i in range(3)]
@@ -246,17 +265,22 @@ def test_only_the_most_recent_comparison_cap_candidates_are_scored_outside_the_s
     assert set(receipt["request_snapshot"]["dependencies"]["evidence"]) == recent
 
 
-def test_a_run_of_another_cell_adds_nothing_to_a_cells_outcomes_or_active_time(project):
-    config = project(rows=[run("opus-run", relevance=-2, seconds=100),
+def test_without_discounts_a_run_of_another_cell_adds_nothing_to_a_cells_outcomes_or_active_time(project):
+    config = project(settings=OWN_RUNS_ONLY,
+                     rows=[run("opus-run", relevance=-2, seconds=100),
                            run("sonnet-run", relevance=-2, family="sonnet", outcome="silent", seconds=900),
                            run("haiku-run", relevance=4, family="haiku", effort="low", seconds=5)])
     receipt = decide(Engine(config, retrieval=Scripted()), [("opus", "high"), ("sonnet", "high")])
     assert set(scored(receipt)) == {"opus-run", "sonnet-run", "haiku-run"}
     assert {(c["family"], c["effort"]) for c in receipt["semantic"]["sampling"]["cells"]} == {("opus", "high"), ("sonnet", "high")}
-    outcomes, durations, capability = readers(receipt)
-    for rows in (outcomes, durations):
-        assert {(o["id"], o["family"], o["effort"]) for o in rows.values()} == {
-            ("opus-run", "opus", "high"), ("sonnet-run", "sonnet", "high")}
+    # Every candidate is stored once, whatever cell ran it; each cell counts only its own.
+    assert {(o["id"], o["family"], o["effort"]) for o in outcome_rows(receipt).values()} == {
+        ("opus-run", "opus", "high"), ("sonnet-run", "sonnet", "high"), ("haiku-run", "haiku", "low")}
+    outcomes = {**counted_rows(receipt, "opus"), **counted_rows(receipt, "sonnet")}
+    assert set(counted_rows(receipt, "opus")) == {"opus-run"} and set(counted_rows(receipt, "sonnet")) == {"sonnet-run"}
+    durations, capability = duration_rows(receipt), capability_rows(receipt)
+    assert {(o["id"], o["family"], o["effort"]) for o in durations.values()} == {
+        ("opus-run", "opus", "high"), ("sonnet-run", "sonnet", "high")}
     assert set(capability) == {"opus-run", "sonnet-run"}
     assert counts(receipt, "opus") == [outcomes["opus-run"]["weight"], 0, 0]
     assert counts(receipt, "sonnet") == [0, 0, outcomes["sonnet-run"]["weight"]]
@@ -381,8 +405,10 @@ def edit_outcome_weight(receipt):
     receipt["semantic"]["outcome_observations"][0]["weight"] *= 1.01
 
 
-def edit_outcome_share(receipt):
-    receipt["semantic"]["outcome_observations"][-1]["ticket_share"] = 1.0
+def edit_counted_sum(receipt):
+    # The cell's clean sum as it would be without the per-ticket limit.
+    receipt["selection"]["cells"][0]["outcome_counts"]["n_clean"] = math.fsum(
+        o["weight"] for o in receipt["semantic"]["outcome_observations"] if o["outcome"] == "clean")
 
 
 def edit_duration_weight(receipt):
@@ -414,7 +440,7 @@ def edit_half_life(receipt):
     receipt["semantic"]["evidence_candidates"]["half_life_days"] = 7
 
 
-EDITS = [edit_score, edit_similarity, edit_age_factor, edit_days, edit_outcome_weight, edit_outcome_share,
+EDITS = [edit_score, edit_similarity, edit_age_factor, edit_days, edit_outcome_weight, edit_counted_sum,
          edit_duration_weight, edit_capability_weight, edit_capability_strength, edit_capability_share,
          drop_outcome_row, edit_run_weight, edit_half_life]
 

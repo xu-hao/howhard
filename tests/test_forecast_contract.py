@@ -12,6 +12,7 @@ import math
 
 import pytest
 
+from conftest import own_runs_only
 from howhard import Engine, load_config
 from howhard.cli import main
 from howhard.context import canonical, digest
@@ -98,10 +99,13 @@ def scenario(directory, *, host=None, agents=False, ranges=False, seed=20261126)
     The three runs of the first cell are retries of one ticket, so together they count for one run.
     The store forecasts its band alone: with a reserved forecast slot the third model, which has no
     earlier run, would join the forecast cells and the cell on trial would never be drawn.
+    Each cell counts only its own runs: with the relatedness discounts at 0 no agent label is
+    read by the selection math.
     """
     from legacy_receipts import without_reserved_slots
     directory.mkdir()
     without_reserved_slots(directory)
+    own_runs_only(directory)
     engine = Engine(directory=directory, llm=ContractLLM(ranges=ranges), retrieval=SimilarityDouble())
     history = [("fixture/small", "low", "loud"), ("fixture/small", "low", "clean"), ("fixture/small", "low", "silent"),
                ("fixture/medium", "low", "clean"), ("fixture/medium", "low", "clean"), ("fixture/medium", "low", "loud")]

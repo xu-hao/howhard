@@ -19,7 +19,12 @@ from .validation import HowHardError, keys, number
 DEFAULTS = {"uncertainty_multiplier": 1., "admission_quantile": .8, "trial_probability": .2,
             "all_excluded_factor": .5, "half_life_days": 14., "comparison_cap": 256,
             "model_worth": 5., "task_worth_amount": 1., "duration_miss": 1.3, "scatter_share": .5,
-            "task_worth_silent": 32., "task_worth_loud": 16.}
+            "task_worth_silent": 32., "task_worth_loud": 16.,
+            "effort_discount": .5, "model_discount": .25, "agent_discount": .25}
+# How much a run by a related cell counts as outcome evidence, as a fraction of a run by the
+# judged cell itself: the same family at another effort, another family of the same agent,
+# and another agent.
+DISCOUNTS = ("effort_discount", "model_discount", "agent_discount")
 # The Dirichlet posterior's three constants. Outcome beliefs on the log-odds scale do not read
 # them: a configuration that still sets one loads with a notice, and only v7-v10 receipts store them.
 RETIRED = ("prior_strength", "min_concentration", "max_concentration")
@@ -205,8 +210,9 @@ def credit_fits(needed_credit, credit_p80, available_credit):
 def validate_policy(policy, *, legacy=False, count_aged=False):
     """Validate the sampling policy; ``legacy`` reads v7/v8 receipts and ``count_aged`` v9/v10 ones.
 
-    Only the current policy carries the time-based evidence constants, the two tier constants and
-    the three worths of the outcome beliefs; only the older ones carry the Dirichlet constants.
+    Only the current policy carries the time-based evidence constants, the two tier constants,
+    the three worths of the outcome beliefs and the three relatedness discounts; only the
+    older ones carry the Dirichlet constants.
     """
     if not legacy and isinstance(policy, dict) and "explore_within" in policy:
         raise HowHardError("sampling.explore_within: removed; Thompson eligibility uses posterior overlap. "
@@ -246,6 +252,9 @@ def validate_policy(policy, *, legacy=False, count_aged=False):
     for key in ("task_worth_silent", "task_worth_loud"):
         if policy[key] <= 0:
             raise HowHardError(f"sampling.{key}: expected a positive number of runs")
+    for key in DISCOUNTS:
+        if policy[key] > 1:
+            raise HowHardError(f"sampling.{key}: expected a discount in [0, 1]")
     return policy
 
 
@@ -360,13 +369,75 @@ def prior_concentration(row, policy, probabilities=None):
     return float(min(policy["prior_strength"], max(policy["min_concentration"], kappa)))
 
 
-def outcome_counts(pair, outcome_observations):
+def same_cell_counts(pair, outcome_observations):
+    """Frozen reader of v9 and v10 receipts: only the judged cell's own observations count."""
     from .semantic import OUTCOMES
     counts = [[], [], []]
     for obs in outcome_observations:
         if (obs["family"], obs["effort"]) == pair and obs["weight"] > 0:
             counts[OUTCOMES.index(obs["outcome"])].append(obs["weight"])
     return [math.fsum(c) for c in counts]
+
+
+def _counted(cell, outcome_observations, policy):
+    """``(observation, relation, discount, weight after the limit)`` for each run counted for ``cell``.
+
+    Each stored observation carries its run's own cell and agent and the weight
+    ``m * sim * a``. For the judged cell ``c = (family, effort, agent)``::
+
+        w_i  = m_i * sim_i * a_i * delta(c_i, c)
+        w_i <- w_i / max(1, W_t)        W_t: the total w of the runs of ticket t counted for c
+
+    ``delta`` is 1 for the cell's own runs and the policy's discount for a related cell's.
+    The limit follows the discount, so it is taken per judged cell. A run whose discount is
+    0 is not counted.
+    """
+    from . import evidence
+    counted = []
+    for obs in outcome_observations:
+        related = evidence.relation((obs["family"], obs["effort"], obs["agent"]), cell)
+        delta = evidence.discount(related, policy)
+        if delta > 0:
+            counted.append((obs, related, delta, obs["weight"] * delta))
+    shares = evidence.ticket_shares([(obs["ticket"], value) for obs, _, _, value in counted])
+    return [(obs, related, delta, value * share) for (obs, related, delta, value), share in zip(counted, shares)]
+
+
+def counted_observations(cell, outcome_observations, policy):
+    """Each run a judged cell counts: ``id``, ``relation``, ``discount`` and ``weight``.
+
+    ``cell`` is the judged ``(family, effort, agent)`` and ``weight`` the run's weight after the
+    per-ticket limit. These rows are computed on demand and never stored: a receipt holds the
+    runs, the cell's label and the discounts, and stores only the sums of ``counted_totals``.
+    """
+    return [{"id": obs["id"], "relation": related, "discount": delta, "weight": value}
+            for obs, related, delta, value in _counted(cell, outcome_observations, policy)]
+
+
+def _totals(cell, outcome_observations, policy):
+    """The counted weights of one judged cell by outcome, in the order clean, loud, silent."""
+    from .semantic import OUTCOMES
+    counts = [[], [], []]
+    for obs, _, _, value in _counted(cell, outcome_observations, policy):
+        if value > 0:
+            counts[OUTCOMES.index(obs["outcome"])].append(value)
+    return counts
+
+
+def outcome_counts(cell, outcome_observations, policy):
+    """``[n_c, n_l, n_s]``: the counted clean, loud and silent weight of one judged cell."""
+    return [math.fsum(c) for c in _totals(cell, outcome_observations, policy)]
+
+
+def counted_totals(cell, outcome_observations, policy):
+    """What a forecast cell stores of its counted runs: the three sums and how many runs contribute.
+
+    ``n_clean``, ``n_loud`` and ``n_silent`` are the counted weights after the discount and
+    the per-ticket limit; ``runs`` is the number of runs with a weight above 0.
+    """
+    counts = _totals(cell, outcome_observations, policy)
+    clean, loud, silent = (math.fsum(c) for c in counts)
+    return {"n_clean": clean, "n_loud": loud, "n_silent": silent, "runs": sum(len(c) for c in counts)}
 
 
 def logit(p):
@@ -485,14 +556,15 @@ def rate_belief(rate, forecast, counts, policy, *, epsilon=None):
     return belief
 
 
-def outcome_beliefs(panels, experts, pair, outcome_observations, policy, *, epsilon=None):
+def outcome_beliefs(panels, experts, pair, outcome_observations, policy, *, agent=None, epsilon=None):
     """The cell's two independent beliefs: ``loud`` for theta_l and ``silent`` for S.
 
     The accepted-defect share counts silent against clean runs; the loud rate counts loud
-    against clean and silent ones. Only this cell's counted runs enter.
+    against clean and silent ones. The cell's own runs count in full and a related cell's
+    at its discount; ``agent`` is the judged cell's label, ``None`` for the unnamed agent.
     """
     forecast = merged_forecast(panels, experts, pair)
-    clean, loud, silent = outcome_counts(pair, outcome_observations)
+    clean, loud, silent = outcome_counts((*pair, agent), outcome_observations, policy)
     return {"loud": rate_belief("loud", forecast["loud"], (loud, clean + silent), policy),
             "silent": rate_belief("silent", forecast["silent"], (silent, clean), policy, epsilon=epsilon)}
 
@@ -521,7 +593,7 @@ def outcome_posterior(row, pair, outcome_observations, policy, *, legacy_v9=Fals
     """Frozen reader of v9 and v10 receipts: the Dirichlet posterior, with v10's cold-start decay."""
     p0 = forecast_probabilities(row)
     kappa0 = prior_concentration(row, policy, p0)
-    counts = outcome_counts(pair, outcome_observations)
+    counts = same_cell_counts(pair, outcome_observations)
     w_emp = math.fsum(counts)
     if legacy_v9:
         kappa = kappa0
@@ -609,7 +681,7 @@ def calibration(result, state, expert, cell):
     """A cell's frozen draw inputs: its two outcome beliefs and the first-order spread of its cost.
 
     Every input is the cell's own belief, already merged over the experts: the two rates
-    from one merged forecast each plus only this cell's counted runs, and active time and
+    from one merged forecast each plus the runs counted for this cell, and active time and
     run cost as their averages ``T`` and ``C_run``. Experts that disagree widen those
     beliefs, so the spread has no separate between-expert term. The time term of the
     spread is ``E[T]^2 * (exp(s'^2) - 1)``, and run cost is exact.
@@ -620,7 +692,7 @@ def calibration(result, state, expert, cell):
     constants = result["constants"]
     panels = {key: panel_lookup(panel) for key, panel in state["worlds"].items()}
     beliefs = outcome_beliefs(panels, state["beliefs"]["experts"], pair, state.get("outcome_observations", []), policy,
-                              epsilon=constants["epsilon"])
+                              agent=cell["agent"], epsilon=constants["epsilon"])
     probabilities = belief_probabilities(beliefs)
     loud, silent = probabilities[1], probabilities[2]
     summary = panel_lookup(result["cells"])[pair]
@@ -683,7 +755,7 @@ def validate_selection(selection, semantic, capability, cost_policy, *, decision
         raise HowHardError("decision.selection.cells: expected array")
     for row in selection["cells"]:
         keys(row, ["model", "family", "effort", "P_clean", "P_loud", "P_silent", "C_run", "session_cost_usd", "cost_per_credit", "needed_credit_usd", "cost_basis", "T", "expected_attempts", "J", "P_silent_accepted", "admissible", "sampled_J", "credit_budget", "available_credit_usd", "credit_ok"]
-             + ([] if legacy else ["admission_risk"]) + (["pi", "tier"] if tiered else [])
+             + ([] if legacy else ["admission_risk"]) + (["pi", "tier", "outcome_counts"] if tiered else [])
              + (["active_time", "token_beliefs", "credit_variance", "credit_p80_usd"] if amounts else []),
              where="selection cell")
         for field in ("T", "expected_attempts", "J", "sampled_J"):
@@ -750,9 +822,13 @@ def validate_selection(selection, semantic, capability, cost_policy, *, decision
                 raise HowHardError("decision.selection: accepted-result risk/cap mismatch")
         else:
             if tiered:
-                # Recompute the cell's two beliefs from the frozen forecasts and counted runs.
+                # Recompute the cell's two beliefs from the frozen forecasts and counted runs. The
+                # cell's agent is the label stored with its native candidate.
+                if (row["model"], row["effort"]) not in candidates:
+                    raise HowHardError("decision.selection: cell does not match native candidate inventory")
                 intervals = belief_intervals(outcome_beliefs(
-                    panels, experts, pair, semantic["outcome_observations"], policy, epsilon=constants["epsilon"]), policy)
+                    panels, experts, pair, semantic["outcome_observations"], policy,
+                    agent=candidates[row["model"], row["effort"]].get("agent"), epsilon=constants["epsilon"]), policy)
             else:
                 intervals, _ = posterior_intervals(
                     panels,

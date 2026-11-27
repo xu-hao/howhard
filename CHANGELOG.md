@@ -216,6 +216,42 @@
   not read. No configuration key is added and an existing store loads unchanged. v11 decisions stored by earlier unreleased builds no
   longer load; `v7` to `v10` receipts keep loading, observing, replaying and reporting.
 
+- Relatedness discounts (#134). A recorded run now counts as outcome evidence for cells
+  other than the one that ran it, at a discount set by how related the two cells are:
+  1 for the same cell, `effort_discount` (0.5) for the same family at another effort,
+  `model_discount` (0.25) for another family of the same agent and `agent_discount`
+  (0.25) for another agent; the first that fits is used. A run's weight for a judged
+  cell is `weight * similarity * age factor * discount`, and the per-ticket limit is
+  applied after the discount, per judged cell, so one ticket still counts for at most
+  one run. **Changed behaviour:** a cell's two outcome beliefs, and so `pi`, tiers, `J`
+  and sampled costs, now move with the runs of related cells; a cell with no run of its
+  own no longer always keeps its start. Only the outcome counts change: active time and
+  tokens still count runs of the same cell alone, now limited per ticket over that
+  cell's own runs, and the capability threshold keeps its own strength factors. A
+  cell's family comes from the model registry and its agent from the optional `agent`
+  label of its candidate. A run's agent is the label stored for the chosen cell in the
+  receipt its `decision_id` names; a run with no decision, a receipt older than v11 or
+  an unlabeled candidate belongs to the one unnamed agent, as does an unlabeled cell of
+  the request. New optional `[sampling]` settings `effort_discount = 0.5`,
+  `model_discount = 0.25` and `agent_discount = 0.25`, each in `[0, 1]` and refused by
+  key outside it; with all three at 0 only a cell's own runs count. A v11 receipt
+  freezes the three discounts in its sampling policy, stores each scored candidate's
+  `agent`, and stores every candidate run once in `semantic.outcome_observations` with
+  the run's own `family`, `effort`, `agent` (null when unnamed), `outcome`, `ticket` and
+  its `weight` before the discount, in place of one row per counted cell with
+  `discount` and `ticket_share`. Each forecast cell in `selection.cells` gains
+  `outcome_counts`: the sums `n_clean`, `n_loud` and `n_silent` and `runs`, the number
+  of runs behind them. No row per run and cell is stored, because each run's relation,
+  discount, ticket share and weight follow from the stored labels and the frozen
+  discounts; `howhard.decisions.counted_observations(receipt, cell)` computes them on
+  demand (`id`, `relation` of `cell`, `family`, `agent` or `other`, `discount` and
+  `weight` after the limit). Loading a v11 decision recomputes them from the stored
+  labels and policy and refuses a receipt whose sums or run count differ; an
+  observation's own cell need not be a forecast cell.
+  v11 decisions stored by earlier unreleased builds no longer load. `v10`, `v9`, `v8`
+  and `v7` receipts keep their own evidence shapes and keep loading, observing,
+  replaying and reporting.
+
 ## 5.0.0 — 2026-11-24
 
 - Dynamic synthesized `(task, context)` prototypes with materialized per-cell priors and

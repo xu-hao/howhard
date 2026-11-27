@@ -115,7 +115,7 @@ def test_cap_targets_the_accepted_result_even_when_raw_silent_risk_is_small(tmp_
     assert result["exploration"]["reason"] == "disabled-no-supported-alternative"
 
 
-def test_evidence_tightens_only_the_observed_cell_while_a_weak_prior_can_explore(tmp_path):
+def test_evidence_tightens_the_observed_cell_most_while_a_weak_prior_can_explore(tmp_path):
     engine = Engine(directory=tmp_path, retrieval=SimilarityDouble())
     table = [("fixture/a", "high", .92, .06, .02, 4.2), ("fixture/b", "high", .92, .06, .02, 4.)]
     weak, weak_response = prepare(engine, table)
@@ -123,8 +123,8 @@ def test_evidence_tightens_only_the_observed_cell_while_a_weak_prior_can_explore
     assert "sampling" in initial["semantic"]
     weak_choices = [engine.decide(weak["request_id"], weak_response, seed=seed)["chosen"]["model"] for seed in range(1000)]
     assert set(weak_choices) == {"fixture/a", "fixture/b"}
-    # Actual synthetic executions of fixture/b update only fixture/b's own posterior
-    # while keeping weaker unseen fixture/a inside the stage-1 fit band.
+    # Actual synthetic executions of fixture/b count in full for fixture/b and at the discount
+    # of another family for fixture/a, which stays inside the stage-1 fit band.
     for i in range(8):
         engine.observe("task", "fixture/b", "high", "clean", native=True, task_text="Repair rollback", id=f"historical-{i}")
     strong, strong_response = prepare(engine, table)
@@ -133,11 +133,13 @@ def test_evidence_tightens_only_the_observed_cell_while_a_weak_prior_can_explore
     families = {c["model"]: c["family"] for c in first["cells"]}
     added_weight = sum(o["weight"] for o in first["semantic"]["outcome_observations"])
     assert added_weight > 6.5
-    # The clean runs count against both of fixture/b's rates; fixture/a's beliefs are untouched.
+    # The clean runs count against both of fixture/b's rates, and a quarter as much against fixture/a's.
     for rate in ("loud", "silent"):
-        assert beliefs(first)[families["fixture/b"]][rate]["counts"] == pytest.approx([0., added_weight])
-        assert beliefs(first)[families["fixture/b"]][rate]["mean"] < beliefs(initial)[families["fixture/b"]][rate]["mean"]
-    assert beliefs(first)[families["fixture/a"]] == beliefs(initial)[families["fixture/a"]]
+        observed, related = (beliefs(first)[families[model]][rate] for model in ("fixture/b", "fixture/a"))
+        assert observed["counts"] == pytest.approx([0., added_weight])
+        assert related["counts"] == pytest.approx([0., .25 * added_weight])
+        assert observed["mean"] < related["mean"] < beliefs(initial)[families["fixture/a"]][rate]["mean"]
+        assert beliefs(initial)[families["fixture/a"]][rate]["mean"] == beliefs(initial)[families["fixture/b"]][rate]["mean"]
     strong_choices = [engine.decide(strong["request_id"], strong_response, seed=seed)["chosen"]["model"] for seed in range(1000)]
     assert strong_choices.count("fixture/b") > weak_choices.count("fixture/b")
 

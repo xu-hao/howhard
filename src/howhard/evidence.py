@@ -9,18 +9,24 @@ task once, when the request is prepared, and every reader weighs it from that on
     a   = 0.5 ** (days / half_life_days)   days: from the run's observed_at to the prepare time
     w   = m * sim * factor * a             m: the run's weight on record; factor: the reader's own
     w  <- w / max(1, W_t)                  W_t: the total w of the counted runs of one ticket
+
+The outcome reader's factor is the relatedness discount ``delta``: a run by a related cell
+counts as a fraction of a run by the judged cell itself (``relation`` and ``discount``).
 """
 
 from datetime import datetime, timezone
 import math
 
 from .storage import effective_active_seconds
-from .validation import HowHardError, keys, number, text
+from .validation import HowHardError, keys, name, number, text
 
 OUTCOMES = ("clean", "loud", "silent")
-CANDIDATE_FIELDS = ("id", "family", "effort", "outcome", "active_seconds", "tokens", "token_usage", "ticket",
+CANDIDATE_FIELDS = ("id", "family", "effort", "agent", "outcome", "active_seconds", "tokens", "token_usage", "ticket",
                     "run_weight", "score", "similarity", "days", "age_factor")
 TOLERANCE = 1e-10
+# The sampling-policy key that holds the discount of each relation between the cell that ran
+# and the cell being judged. The fourth relation, ``cell``, is the cell's own run and counts in full.
+DISCOUNT_KEYS = {"family": "effort_discount", "agent": "model_discount", "other": "agent_discount"}
 
 
 def similarity(score):
@@ -36,9 +42,21 @@ def age_factor(days, half_life_days):
     return 0.5 ** (max(0.0, float(days)) / float(half_life_days))
 
 
-def discount(run_cell, cell):
-    """Relatedness of the cell that ran to the cell being judged: only a cell's own runs count."""
-    return 1.0 if tuple(run_cell) == tuple(cell) else 0.0
+def relation(run_cell, cell):
+    """How the cell that ran relates to the cell being judged; each is ``(family, effort, agent)``.
+
+    The first line that fits is used: ``cell`` for the same family and effort, ``family`` for
+    the same family at another effort, ``agent`` for another family of the same agent, and
+    ``other`` for another agent. An agent of ``None`` is the one unnamed agent.
+    """
+    if run_cell[0] == cell[0]:
+        return "cell" if run_cell[1] == cell[1] else "family"
+    return "agent" if run_cell[2] == cell[2] else "other"
+
+
+def discount(related, policy):
+    """The relatedness discount ``delta`` of a relation under the sampling policy."""
+    return 1.0 if related == "cell" else float(policy[DISCOUNT_KEYS[related]])
 
 
 def weight(candidate, factor):
@@ -64,9 +82,14 @@ def _observed(row):
     return datetime.fromisoformat(row["observed_at"])
 
 
-def collect(engine, payload, proto_state):
-    """Choose and score the candidates once, on the caller's captured rows and outside any storage lock."""
+def collect(engine, payload, proto_state, receipts=None):
+    """Choose and score the candidates once, on the caller's captured rows and outside any storage lock.
+
+    ``receipts`` is an optional cache of the decisions the candidate rows name, shared with
+    the capability reader so that each receipt is loaded once per request.
+    """
     from . import prototypes
+    from .decisions import run_agent
     from .accounting import usage_by_kind
     from .retrieval import records, task_text
     policy = engine.config.data["sampling"]
@@ -95,8 +118,10 @@ def collect(engine, payload, proto_state):
         days = max(0.0, (prepared - _observed(row)).total_seconds() / 86400.0)
         # What the run recorded for the beliefs of its own cell: active time, total tokens, and
         # usage by kind when its execution usage is complete.
+        # The run's agent is the label its decision stored for the chosen cell; a run with no
+        # decision, an older receipt or an unlabeled candidate belongs to the one unnamed agent.
         candidates.append({"id": row["id"], "family": row["family"], "effort": row["resolved_effort"],
-                           "outcome": row["outcome"], "active_seconds": effective_active_seconds(row),
+                           "agent": run_agent(engine.config, row, receipts), "outcome": row["outcome"], "active_seconds": effective_active_seconds(row),
                            "tokens": row.get("tokens"), "token_usage": usage_by_kind(row.get("execution_usage")),
                            "ticket": row["ticket"], "run_weight": float(row["weight"]),
                            "score": float(score), "similarity": similarity(score),
@@ -135,6 +160,8 @@ def validate(state, *, where="decision.semantic.evidence_candidates"):
         if item["id"] in seen or item["outcome"] not in OUTCOMES:
             raise HowHardError(f"{where}.candidate: duplicate ID or unknown outcome")
         seen.add(item["id"])
+        if item["agent"] is not None:
+            name(item["agent"], f"{where}.candidate.agent")
         if item["active_seconds"] is not None:
             number(item["active_seconds"], f"{where}.candidate.active_seconds", nonnegative=True)
         if item["tokens"] is not None:

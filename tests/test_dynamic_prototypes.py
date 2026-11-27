@@ -333,7 +333,9 @@ def test_counted_runs_move_a_pessimistic_cold_start_forecast_that_never_fades_ou
     assert by_warm["post-cutoff/cheap-winner"]["tier"] == "on-trial"
     assert by_warm["post-cutoff/cheap-winner"]["pi"] > by_cold["post-cutoff/cheap-winner"]["pi"]
     assert by_warm["post-cutoff/cheap-winner"]["J"] < by_cold["post-cutoff/cheap-winner"]["J"]
-    assert by_warm["known/expensive"]["pi"] == by_cold["known/expensive"]["pi"]
+    # The other cell counts the same runs at the discount of another family, so it moves less.
+    assert 0 <= by_warm["known/expensive"]["pi"] - by_cold["known/expensive"]["pi"] < (
+        by_warm["post-cutoff/cheap-winner"]["pi"] - by_cold["post-cutoff/cheap-winner"]["pi"])
 
     winner_family = by_warm["post-cutoff/cheap-winner"]["family"]
     beliefs = {name: next(c for c in result["semantic"]["sampling"]["cells"] if c["family"] == winner_family)["outcome_beliefs"]

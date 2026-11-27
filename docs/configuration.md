@@ -226,6 +226,9 @@ duration_miss = 1.3
 scatter_share = 0.5
 task_worth_silent = 32.0
 task_worth_loud = 16.0
+effort_discount = 0.5
+model_discount = 0.25
+agent_discount = 0.25
 ```
 
 The full inventory has no size bound. If the span of the clearing and timely intervals
@@ -257,8 +260,9 @@ in `(0,0.5)`. Probability/strength margins are in `[0,1]`; order penalty is nonn
 The uncertainty multiplier is positive,
 `admission_quantile` lies in `[0.5, 1)`, `trial_probability` in
 `[0, admission_quantile]`, `all_excluded_factor` in `[0, 1]`, `half_life_days` is positive,
-`comparison_cap` is a positive integer, and `model_worth`, `task_worth_silent` and
-`task_worth_loud` are positive. A value outside its range is refused with a
+`comparison_cap` is a positive integer, `model_worth`, `task_worth_silent` and
+`task_worth_loud` are positive, and `effort_discount`, `model_discount` and
+`agent_discount` lie in `[0, 1]`. A value outside its range is refused with a
 message that names the key.
 
 The three worths set how many runs a forecast counts for at the start of a cell's
@@ -293,6 +297,32 @@ At most `comparison_cap` candidate runs are compared with the new task per decis
 most recent first; the rest count nowhere. Both are optional. The former
 `sampling.outcome_recency` is accepted and ignored: a file that sets it loads with one
 notice on standard error, and standard output is unchanged.
+
+The three discounts set how much a recorded run counts as outcome evidence for a cell
+other than the one that ran it ({ref}`outcome beliefs <outcome-posterior>`):
+
+```text
+delta(c_i, c) = 1                 same family, same effort (the same cell)
+              = effort_discount   same family, another effort
+              = model_discount    another family of the same agent
+              = agent_discount    another agent
+w_i = m_i * sim_i * a_i * delta(c_i, c)
+```
+
+- `c`, `c_i`: the cell being judged, and the cell that ran candidate run `i`. The first
+  line that fits is used.
+- `m_i`, `sim_i`, `a_i`: the run's weight on record, its similarity to the new task and
+  its age factor.
+- `w_i`: what the run counts for cell `c`, before the per-ticket limit of that cell.
+
+In plain words, a run by a related cell counts as a fraction of a run by the cell
+itself. Example: a run that weighs 0.8 for its own cell counts as `0.8 * 0.5 = 0.4` for
+the same family at another effort and as `0.8 * 0.25 = 0.2` for a cell of another
+agent. A cell's agent is the optional `agent` label of its candidate; with no labels
+every cell belongs to the one unnamed agent, so `agent_discount` is never used. The
+discounts apply to the outcome counts only, not to active time, tokens or the capability
+threshold. Each is optional and lies in `[0, 1]`; setting all three to 0 counts only a
+cell's own runs. They are frozen into each receipt's sampling policy.
 
 Three constants sort cells into the {ref}`admission tiers <admission-tiers>` by `pi`,
 a cell's chance that its accepted-defect share is within the risk class's epsilon:

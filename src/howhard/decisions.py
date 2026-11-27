@@ -23,6 +23,50 @@ def agent(receipt, cell=None):
     return next((c.get("agent") for c in receipt["native_candidates"] if (c["model"], c["effort"]) == pair), None)
 
 
+def scored_receipt(config, row, receipts=None):
+    """The receipt a recorded run's ``decision_id`` names, as feedback scoring reads it.
+
+    ``None`` when the row names no decision, the receipt is not stored, or its format is older
+    than the ones scoring replays. ``receipts`` caches each receipt by its ID.
+    """
+    decision_id = row.get("decision_id")
+    if not decision_id:
+        return None
+    if receipts is not None and decision_id in receipts:
+        return receipts[decision_id]
+    receipt = load(config, decision_id, for_scoring=True) if exists(config, decision_id) else None
+    if receipts is not None:
+        receipts[decision_id] = receipt
+    return receipt
+
+
+def run_agent(config, row, receipts=None):
+    """The agent that ran a recorded row: the label its decision stored for the chosen cell.
+
+    A run with no decision, a receipt older than v11 or an unlabeled candidate belongs to the
+    one unnamed agent, ``None``.
+    """
+    receipt = scored_receipt(config, row, receipts)
+    return None if receipt is None else agent(receipt)
+
+
+def counted_observations(receipt, cell=None):
+    """The runs one forecast cell of a v11 receipt counts as outcome evidence, computed on demand.
+
+    Each row is a run's ``id``, its ``relation`` to the cell (``cell``, ``family``, ``agent`` for
+    another family of the same agent, or ``other`` for another agent), its ``discount`` and its
+    ``weight`` after the per-ticket limit. A receipt never stores these rows: they follow from
+    its outcome observations, the cell's agent label and the discounts in its sampling policy.
+    ``cell`` is a selection cell, the chosen one by default.
+    """
+    if receipt.get("format") != DECISION_FORMAT:
+        raise HowHardError("decision: counted observations are computed for howhard-decision-v11 receipts only")
+    cell = receipt["chosen"] if cell is None else cell
+    from .success import counted_observations as counted
+    return counted((cell["family"], cell["effort"], agent(receipt, cell)),
+                   receipt["semantic"]["outcome_observations"], receipt["selection"]["sampling_policy"])
+
+
 def save(config, result):
     value = {"format": DECISION_FORMAT, "project": config.data["project"],
              "project_identity": config.project_identity, "host": result["host"],
@@ -115,7 +159,7 @@ def load(config, source, *, for_scoring=False):
         return all(v is not None for v in c["rate_card"]["rates"].values()) if "rate_card" in c else c.get("usd_per_mtok") is not None
     from .semantic import validate_receipt as validate_semantic
     validate_semantic(value["semantic"], decision_format=value["format"], selection=value["selection"],
-                      host=host(value))
+                      host=host(value), inventory=inventory)
     if "request_snapshot" in value and value["request_snapshot"]["memory_revision"] != value["semantic"]["memory_revision"]:
         raise HowHardError("request_snapshot: memory revision differs from frozen semantic inputs")
     forecast_pairs = {(c["family"], c["effort"]) for c in value["semantic"]["worlds"]["llm"]}

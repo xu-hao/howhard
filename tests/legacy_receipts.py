@@ -176,6 +176,11 @@ def to_v10(receipt, on_cap_unmet="flag-review"):
     receipt = deepcopy(receipt)
     if receipt["format"] != "howhard-decision-v11":
         return receipt
+    # A v10 outcome observation counted for its own forecast cell only, at its weight after the
+    # limit. v11 computes those rows on demand, so read them before the labels are removed.
+    from howhard.decisions import counted_observations
+    own = {(row["family"], row["effort"], item["id"]): item["weight"] for row in receipt["selection"]["cells"]
+           for item in counted_observations(receipt, row) if item["relation"] == "cell"}
     receipt["format"] = "howhard-decision-v10"
     receipt.pop("host")
     for candidate in receipt["native_candidates"]:
@@ -204,12 +209,16 @@ def to_v10(receipt, on_cap_unmet="flag-review"):
     sem.pop("stored_forecasts")
     # v10 rows carried their own score and similarity, and outcomes a count-based age.
     scored = {c["id"]: c for c in sem.pop("evidence_candidates")["candidates"]}
-    ages = {}
+    ages, outcomes = {}, []
     for obs in sem["outcome_observations"]:
         pair = obs["family"], obs["effort"]
-        del obs["discount"], obs["ticket_share"]
-        obs.update(score=scored[obs["id"]]["score"], similarity=scored[obs["id"]]["similarity"], age=ages.get(pair, 0))
+        if (*pair, obs["id"]) not in own:
+            continue
+        outcomes.append({"id": obs["id"], "family": pair[0], "effort": pair[1], "outcome": obs["outcome"],
+                         "score": scored[obs["id"]]["score"], "similarity": scored[obs["id"]]["similarity"],
+                         "age": ages.get(pair, 0), "weight": own[(*pair, obs["id"])]})
         ages[pair] = ages.get(pair, 0) + 1
+    sem["outcome_observations"] = sorted(outcomes, key=lambda obs: (obs["family"], obs["effort"]))
     for obs in sem["duration_observations"]:
         del obs["tokens"], obs["token_usage"]
         obs.update(score=scored[obs["id"]]["score"], similarity=scored[obs["id"]]["similarity"])
@@ -233,7 +242,8 @@ def to_v10(receipt, on_cap_unmet="flag-review"):
     experts = sem["beliefs"]["experts"]
     candidates = {(c["model"], c["effort"]): c for c in receipt["native_candidates"]}
     for row in selection["cells"]:
-        for field in ("pi", "tier", "active_time", "token_beliefs", "credit_variance", "credit_p80_usd"):
+        for field in ("pi", "tier", "outcome_counts", "active_time", "token_beliefs", "credit_variance",
+                      "credit_p80_usd"):
             row.pop(field)
         pair = row["family"], row["effort"]
         candidate = candidates[row["model"], row["effort"]]
