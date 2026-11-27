@@ -435,8 +435,9 @@ Here {math}`\pi_k` is initial expert mass, {math}`\tau` tempers evidence,
 weight, and {math}`R_{k,i}` is the resource-score advantage with scale
 {math}`\rho`. The set {math}`E_k` contains eligible earlier forecast exposures;
 {math}`a_{k,i}` counts subsequent eligible exposures for that expert. The set
-{math}`A` contains participating forecast sources for this decision. Probability
-means are mixtures of their forecasts using normalized support {math}`W_k`.
+{math}`A` contains participating forecast sources for this decision. Their
+forecasts of each rate are merged on the log-odds scale using normalized support
+{math}`W_k` (section 5).
 
 Capability-prior experts use the same support machinery separately, scoring
 clean versus non-clean predictions against the independent fine forecast
@@ -466,43 +467,150 @@ remains attributed to the invocation that actually ran. The
 [semantic-memory contract](semantic-memory.md) specifies scoring and mutation;
 the [retrieval guide](retrieval.md) specifies precedent selection.
 
-## 5 Outcome posteriors and bounded exploration
+## 5 Outcome beliefs and bounded exploration
 
-Each expert's fine forecast is a prior, not a measurement. For one candidate cell,
-howhard treats the floored forecast {math}`p_0=(p_c,p_l,p_s)` as the mean of a
-Dirichlet prior with concentration {math}`\kappa_0\le\kappa_{\max}` (the configured
-`prior_strength`, 8 by default). An optional 95% credible interval on {math}`p_l` or
-{math}`p_s` lowers {math}`\kappa_0` by moment matching,
-{math}`\kappa=p(1-p)/\sigma^2-1` with {math}`\sigma` equal to the interval width
-divided by 3.92, but never raises it: a forecaster cannot claim the authority of many
-real runs. The same candidate runs that feed the capability threshold update the prior
-conjugately: for each forecasted cell, the candidates that ran on that cell count with
+Each expert's fine forecast is a prior, not a measurement. A candidate cell holds two
+independent beliefs, each on the log-odds scale
+{math}`\operatorname{logit}(p)=\ln\bigl(p/(1-p)\bigr)`: one for its loud rate
+{math}`\theta_l`, the share of attempts that fail loudly, and one for its
+accepted-defect share {math}`S`, silent results divided by accepted results. A belief
+starts from the forecast and is reshaped by the cell's own counted runs.
+
+### One forecast per rate
+
+```{math}
+\begin{aligned}
+g_l&=\text{loud}, & g_S&=\frac{\text{silent}}{\text{clean}+\text{silent}},\\
+m_k&=\operatorname{logit}(g_k), &
+s_k&=\frac{\operatorname{logit}(hi_k)-\operatorname{logit}(lo_k)}{3.92},\\
+m&=\sum_k w_k m_k, & s_{\mathrm{stated}}^2&=\sum_k w_k\bigl(s_k^2+(m_k-m)^2\bigr),\\
+p&=\operatorname{logistic}(m)\ \text{held in}\ [0.0001,\,0.9998].
+\end{aligned}
+```
+
+- clean, loud, silent: one expert's forecast for the cell, floored at 0.0001 and
+  normalized. {math}`g_l` and {math}`g_S` are its guesses for {math}`\theta_l` and
+  {math}`S`.
+- {math}`k`, {math}`w_k`: a participating expert and its support weight. The weights
+  sum to 1.
+- {math}`lo_k`, {math}`hi_k`: the ends of the expert's stated 95% range, held in
+  {math}`[0.0001,0.9999]`: `loud_ci` for {math}`\theta_l`, and `silent_ci` divided by
+  clean + silent for {math}`S`.
+- {math}`s_k`: the stated spread on the log-odds scale, 0 when no range is stated. A
+  95% range spans 3.92 spreads.
+- {math}`m`, {math}`s_{\mathrm{stated}}`, {math}`p`: the merged centre, the merged
+  spread and the prediction.
+- {math}`\operatorname{logistic}(x)=1/(1+e^{-x})`, the inverse of the logit.
+
+In plain words, each rate gets one forecast per cell, and experts that disagree make it
+less certain.
+
+Example: two experts with weights 0.75 and 0.25 guess {math}`S` at 10% and 25%, each
+with spread 0.4. Then {math}`m=0.75\times(-2.197)+0.25\times(-1.099)=-1.92`,
+{math}`p=12.8\%` and
+{math}`s_{\mathrm{stated}}=\sqrt{0.16+0.75\times0.275^2+0.25\times0.824^2}=0.62`.
+
+### The start of each belief
+
+```{math}
+\begin{aligned}
+N_{\mathrm{start}}&=\frac{1}{1/\mathrm{worth}+1/N_{\mathrm{task}}}, &
+\sigma_1&=\frac{1}{\sqrt{p(1-p)}},\\
+s&=\min\Bigl(1.869,\ \max\bigl(s_{\mathrm{stated}},\ \sigma_1/\sqrt{N_{\mathrm{start}}}\bigr)\Bigr),\\
+x_j&=-16+0.01\,j,\quad j=0,\dots,2500,\\
+q_j(m)&=\frac{\exp\bigl(-(x_j-m)^2/(2s^2)\bigr)}{\sum_i\exp\bigl(-(x_i-m)^2/(2s^2)\bigr)},\\
+\text{centre}&:\ \text{the}\ m\ \text{with}\ \sum_j q_j(m)\operatorname{logistic}(x_j)=p.
+\end{aligned}
+```
+
+- worth: how many runs the record says about this family, `model_worth`, 5.
+- {math}`N_{\mathrm{task}}`: the most a record on other tasks is worth for one task,
+  32 for {math}`S` (`task_worth_silent`) and 16 for {math}`\theta_l`
+  (`task_worth_loud`).
+- {math}`N_{\mathrm{start}}`: how many runs the prediction is worth: 4.32 for
+  {math}`S` and 3.81 for {math}`\theta_l`.
+- {math}`\sigma_1`: the spread of one run's result on the log-odds scale.
+- {math}`s`: the spread at the start. A stated range can widen it, never narrow it:
+  a forecaster cannot claim the authority of many real runs. 1.869 is the flat belief,
+  the spread of a 95% range of {math}`[0.025,0.975]`.
+- {math}`x_j`, {math}`q_j(m)`: the grid of 2,501 log-odds points, the same for every
+  belief, and a bell curve of centre {math}`m` and spread {math}`s` on it.
+- centre: found by 60 halvings of {math}`[-25,25]`, keeping the upper half when the
+  grid average at the midpoint is below {math}`p`. The grid's top value is
+  {math}`\operatorname{logistic}(9)=0.99988`, so every prediction up to 0.9998 can be
+  met.
+
+In plain words, the start is a bell curve on the log-odds scale whose average, not its
+median, equals the prediction, and it is as wide as a record worth
+{math}`N_{\mathrm{start}}` runs allows. One fixed grid makes every belief a finite sum,
+so a stored decision is recomputed exactly when it is loaded.
+
+Example: clean 0.72, loud 0.20, silent 0.08 with `silent_ci = [0.04, 0.16]` gives
+{math}`p=0.10` for {math}`S` and {math}`s_{\mathrm{stated}}=0.40` (a range of 5% to
+20%). {math}`\sigma_1/\sqrt{N_{\mathrm{start}}}=3.33/2.08=1.60`, so {math}`s=1.60` and
+the centre is {math}`-3.04`. For {math}`\theta_l`, {math}`p=0.20` and
+`loud_ci = [0.10, 0.35]` give {math}`s=1.28` and centre {math}`-1.79`.
+
+### Counted runs reshape the belief
+
+The same candidate runs that feed the capability threshold update the belief: for each
+forecasted cell, the candidates that ran on that cell count with
 {math}`w_i=m_i\,\mathrm{sim}_i\,\delta(c_i,c)\,a_i` and the same limit per ticket,
 where {math}`\delta(c_i,c)` is 1 when run {math}`i`'s cell {math}`c_i` is the cell
 {math}`c` being judged and 0 otherwise, so frequently executed cells cannot crowd out
 rarer ones. The counts {math}`n_c,n_l,n_s` are the sums of those weights over the clean,
-loud and silent candidates, and they update the prior
-while decaying cold-start prior concentration linearly over empirical
-weight {math}`W_{\mathrm{emp}}=n_c+n_l+n_s` (`\tau_{\mathrm{emp}}=2.0`) toward a unit
-empirical base prior {math}`b_0=(0.88,0.08,0.04)`,
-{math}`\alpha=\kappa_0\max(0,1-W_{\mathrm{emp}}/2)p_0+\min(1,W_{\mathrm{emp}}/2)b_0+(n_c,n_l,n_s)`.
-Once {math}`W_{\mathrm{emp}}\ge 2`, cold-start zero-shot guesses have exact zero weight so
-pessimistic priors on unfamiliar model IDs cannot permanently suppress empirical winners.
-Because each count halves for every 14 days of age, a regression or a
-recovery moves the posterior as older runs fade. Active time is calibrated from the
-same cell's candidates that record an active time, each at the weight the outcome
-counts give that run. A cell with no
-observations keeps its prior variance regardless of how much evidence other cells have;
-global expert support weights experts but is not a per-cell sample size.
+loud and silent candidates.
 
-Reported probabilities are the support-weighted mixture of the experts' posterior
-marginals {math}`\mathrm{Beta}(\alpha_i,\sum_j\alpha_j-\alpha_i)`, with equal-tailed
-95% credible intervals. Under a Dirichlet, accepted-result defect risk
-{math}`p_s/(p_c+p_s)` is exactly {math}`\mathrm{Beta}(\alpha_s,\alpha_c)`, which
-preserves each expert's loud/silent relationship. The intervals are Bayesian under the
-stated prior and exchangeability assumptions; they are not calibrated frequentist
-guarantees, and epsilon is a selection rule, not an empirical guarantee about the
-future defect rate.
+```{math}
+\begin{aligned}
+b_j&\propto q_j(m)\,\operatorname{logistic}(x_j)^{n_{\mathrm{yes}}}\,
+     \bigl(1-\operatorname{logistic}(x_j)\bigr)^{n_{\mathrm{no}}},\qquad \sum_j b_j=1,\\
+S&:\ n_{\mathrm{yes}}=n_s,\ n_{\mathrm{no}}=n_c;\qquad
+\theta_l:\ n_{\mathrm{yes}}=n_l,\ n_{\mathrm{no}}=n_c+n_s,\\
+E[S]&=\sum_j b_j\operatorname{logistic}(x_j),\\
+E\!\left[\frac{1}{1-\theta_l}\right]&=\sum_j b_j\,(1+e^{x_j}),\qquad
+E\!\left[\frac{\theta_l}{1-\theta_l}\right]=\sum_j b_j\,e^{x_j},\\
+q\ \text{point}&=\operatorname{logistic}(x_j)\ \text{at the first}\ j\
+  \text{whose running total of}\ b\ \text{reaches}\ q.
+\end{aligned}
+```
+
+- {math}`b_j`: the belief after the counted runs, computed in logarithms.
+- {math}`E[S]`: the average of the belief of {math}`S`; the average of the belief of
+  {math}`\theta_l` is read the same way.
+- {math}`E[1/(1-\theta_l)]`, {math}`E[\theta_l/(1-\theta_l)]`: expected attempts, and
+  expected loud failures per accepted result.
+- {math}`q` point: the 2.5% and 97.5% points of each rate, for reports.
+
+In plain words, the start counts as {math}`N_{\mathrm{start}}` runs and each counted
+run as its weight. The forecast never fades out: however many runs are counted, it
+keeps the weight of {math}`N_{\mathrm{start}}` runs. Because each count halves for
+every 14 days of age, a regression or a recovery moves the belief as older runs fade.
+A cell with no counted run keeps its start regardless of how much evidence other cells
+have; global expert support weights experts but is not a per-cell sample size. Active
+time is calibrated from the same cell's candidates that record an active time, each at
+the weight the outcome counts give that run.
+
+Example: with the forecast above, at the start {math}`E[S]=0.100` and the 95% range is
+0.2% to 52%. With {math}`n_c=4` and {math}`n_s=0`, {math}`E[S]=0.053`. For
+{math}`\theta_l` at the start, expected attempts are 1.38, against 1.25 at the average
+rate.
+
+Selection reads the two averages:
+
+```{math}
+P_{\mathrm{loud}}=E[\theta_l],\qquad
+P_{\mathrm{silent}}=(1-E[\theta_l])\,E[S],\qquad
+P_{\mathrm{clean}}=(1-E[\theta_l])\,(1-E[S]).
+```
+
+The cost {math}`J` of section 1 is evaluated at {math}`P_{\mathrm{loud}}` and
+{math}`P_{\mathrm{silent}}`. For example, {math}`E[\theta_l]=0.20` and
+{math}`E[S]=0.10` give {math}`P_{\mathrm{silent}}=0.08` and
+{math}`P_{\mathrm{clean}}=0.72`. The reported ranges are those of the two beliefs.
+They are Bayesian under the stated start and exchangeability assumptions; they are not
+calibrated frequentist guarantees, and epsilon is a selection rule, not an empirical
+guarantee about the future defect rate.
 
 ### The chance of meeting the limit
 
@@ -510,30 +618,21 @@ Admission asks one question of each forecast cell: how likely is it that the cel
 silently wrong accepted results within the risk class's limit?
 
 ```{math}
-\pi(c)=P(S\le\varepsilon)
-      =\sum_k w_k\,I(\varepsilon;\,\alpha_{s,k},\,\alpha_{c,k}).
+\pi(c)=P(S\le\varepsilon)=\sum_{j:\ \operatorname{logistic}(x_j)\le\varepsilon} b_j.
 ```
 
 - {math}`c`: a forecast cell.
-- {math}`S`: the accepted-defect share, silent results divided by accepted results,
-  {math}`p_s/(p_c+p_s)`.
+- {math}`S`: the accepted-defect share, silent results divided by accepted results.
 - {math}`\varepsilon`: the risk class's limit on {math}`S`.
-- {math}`\pi(c)`: the share of the cell's posterior for {math}`S` at or below
-  {math}`\varepsilon`.
-- {math}`k`, {math}`w_k`: a participating expert and its support weight. The weights
-  sum to 1.
-- {math}`\alpha_{s,k}`, {math}`\alpha_{c,k}`: the silent and clean entries of expert
-  {math}`k`'s posterior {math}`\alpha` for the cell.
-- {math}`I(x;a,b)`: the regularized incomplete beta function, the share of a
-  {math}`\mathrm{Beta}(a,b)` distribution at or below {math}`x`.
+- {math}`b_j`, {math}`x_j`: the cell's belief for {math}`S` and its grid points.
+- {math}`\pi(c)`: the share of that belief at or below {math}`\varepsilon`.
 
 In plain words, {math}`\pi` is the chance, under the cell's current belief, that no
 more than {math}`\varepsilon` of its accepted results are silently wrong.
 
-Example: {math}`\varepsilon` is 0.10. Two experts weigh 0.6 and 0.4, and their
-posteriors for {math}`S` are {math}`\mathrm{Beta}(1,30)` and
-{math}`\mathrm{Beta}(1,9)`. Then {math}`I` is {math}`1-0.9^{30}=0.958` and
-{math}`1-0.9^{9}=0.613`, so {math}`\pi=0.6\times0.958+0.4\times0.613=0.820`.
+Example: {math}`\varepsilon` is 0.10. The cell forecast at clean 0.72, loud 0.20,
+silent 0.08 has {math}`E[S]=0.100`, and 70% of its belief lies at or below 0.10, so
+{math}`\pi=0.70`. Four counted clean runs move {math}`\pi` to 0.85.
 
 ### Three tiers
 
@@ -550,20 +649,21 @@ posteriors for {math}`S` are {math}`\mathrm{Beta}(1,30)` and
 
 In plain words, a cell that very likely meets the limit is trusted. An uncertain cell
 is on trial. Only a cell that very likely misses the limit is excluded. A wide
-posterior, which is all an unproven cell has, puts the cell on trial instead of
+belief, which is all an unproven cell has, puts the cell on trial instead of
 shutting it out for width alone, while a forecast or history with substantial silent
 risk is still excluded.
 
-Example, with one expert and {math}`\varepsilon=0.10`:
+Example, with one expert, no stated range, no counted run and
+{math}`\varepsilon=0.10`:
 
-| Posterior for {math}`S` | Average | {math}`\pi` | Tier | 80% point of {math}`S` |
-| --- | --- | --- | --- | --- |
-| {math}`\mathrm{Beta}(1,30)` | 3.2% | 0.958 | trusted | 0.052 |
-| {math}`\mathrm{Beta}(1,9)` | 10.0% | 0.613 | on trial | 0.164 |
-| {math}`\mathrm{Beta}(4,8)` | 33.3% | 0.019 | excluded | 0.445 |
+| Forecast of {math}`S` | {math}`\pi` | Tier | 80% point of {math}`S` |
+| --- | --- | --- | --- |
+| 2% | 0.957 | trusted | 0.021 |
+| 10% | 0.702 | on trial | 0.156 |
+| 50% | 0.011 | excluded | 0.692 |
 
 The last column is the receipt's `admission_risk`, the {math}`q` point of the same
-mixture. It is at most {math}`\varepsilon` exactly when {math}`\pi\ge q`, so the
+belief. It is at most {math}`\varepsilon` exactly when {math}`\pi\ge q`, so the
 trusted tier is the same test read from the other side.
 
 ### Who competes
@@ -586,16 +686,17 @@ c^{*}&=\arg\min_{c\in\mathcal{P}}J(c),\\
   second line runs over the cells {math}`c'` that have enough credit.
 - {math}`f`: `all_excluded_factor`, 0.5.
 - {math}`J(c)`, {math}`\mathrm{sd}(c)`: the cell's mean cost and the delta-method
-  standard deviation of that cost. It combines the Dirichlet covariance of the cell's
-  outcome probabilities with the variance of its active time,
+  standard deviation of that cost. It combines the variances of the cell's two
+  outcome beliefs with the variance of its active time,
   {math}`(\lambda/(1-p_l))^2\,\mathbb{E}[T]^2\,(e^{s'^2}-1)`; run cost is exact in it.
 - {math}`c^{*}`: the pool cell with the lowest mean cost.
 - {math}`u`: `uncertainty_multiplier`, 1. A risk class's `explore_within` additionally
   caps the gap at that fraction of {math}`|J(c^{*})|`.
 - {math}`\tilde J(c)`: the cell's cost under the seed's draw. Selection samples a
-  predictive expert in proportion to its support and draws outcome probabilities from
-  that expert's per-cell Dirichlet posterior, and each cell's active time from its
-  belief, {math}`\ln T\sim\mathcal{N}(m',s'^2)`; run cost stays at its average
+  predictive expert in proportion to its support. Each cell then draws its loud rate
+  and its accepted-defect share, one uniform number each read at the first grid point
+  whose running total of the belief reaches it, and its active time from its belief,
+  {math}`\ln T\sim\mathcal{N}(m',s'^2)`; run cost stays at its average
   (Thompson sampling).
 
 In plain words, trusted and on-trial cells compete as equals, and nothing limits how
@@ -622,7 +723,7 @@ third is left out.
 In plain words, the flag says that the chosen cell is not trusted. It is advice to the
 caller, and nothing is enforced or recorded for it.
 
-Example: a chosen cell with {math}`\pi=0.613` is on trial, so `cap_met` is false and
+Example: a chosen cell with {math}`\pi=0.702` is on trial, so `cap_met` is false and
 `needs_review` is true.
 
 When every forecast cell is excluded, the engine first forecasts the next stronger
@@ -761,10 +862,10 @@ The components have distinct statistical meanings:
 | Evidence weights | Task similarity, a 14-day half-life and at most one run's weight per ticket, over the runs of matched prototypes | Similarity is a heuristic transfer strength; the half-life and the 256-run cap are defaults, not fitted values |
 | Cross-model ordering | Constrained local posterior/MAP search | Approximate search over rankings |
 | Memory support | Tempered, recency-weighted predictive evidence | Forecast support does not establish truth or causality |
-| Outcome posterior | Per-cell Dirichlet–multinomial update with continuous prior decay (`tau_emp = 2`) | Prior decay scale, base floor and the 14-day evidence half-life are fixed modelling choices |
+| Outcome beliefs | Two independent per-cell beliefs on a fixed log-odds grid, for the loud rate and the accepted-defect share: a bell-curve start worth `N_start` runs, reshaped by the cell's weighted counts | The two rates are treated as independent; the worths (5, 32 and 16) and the 14-day evidence half-life are fixed modelling choices |
 | Active time and token beliefs | Per-cell log-normal belief with a conjugate update from same-cell runs | The miss `D`, scatter share and worths are fixed modelling choices; token kinds are taken to move together |
 | Credit check | 80% point of a log-normal matched to the average and variance of run credit | A moment match, not the exact distribution of a sum |
-| Admission tiers | Share of the mixture accepted-defect posterior within epsilon, cut at 0.80 and 0.20 | No calibrated coverage guarantee; the two lines are policy choices |
+| Admission tiers | Share of the accepted-defect belief within epsilon, cut at 0.80 and 0.20 | No calibrated coverage guarantee; the two lines are policy choices |
 | Selection sampling | Thompson sampling within posterior cost overlap, among trusted and on-trial cells | Delta-method overlap is approximate |
 | Outcome amendments | Correction and replay of an earlier execution | Requires supported attribution and preserved provenance |
 

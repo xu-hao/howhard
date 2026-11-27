@@ -74,28 +74,110 @@ or synthetic forecast is supplied to isolated baseline calls. Cold-start provide
 and provider failures are explicit errors; none produces a routing recommendation.
 
 (outcome-posterior)=
-### Per-cell outcome posterior
+### Per-cell outcome beliefs
 
-Each expert forecast row is a bounded Dirichlet prior for that `(family, effort)` cell,
-updated only by that cell's own observed outcomes (`W_emp = n_clean + n_loud + n_silent`),
-with continuous cold-start prior decay over `tau_emp = 2.0`:
+A `(family, effort)` cell holds two independent beliefs, each on the log-odds scale
+`logit(p) = ln(p / (1 - p))`:
+
+- one for its loud rate `theta_l`, the share of attempts that fail loudly;
+- one for its accepted-defect share `S`, silent results / accepted results.
+
+Each belief starts from the forecast and is reshaped by the cell's own counted runs.
+
+**One forecast per rate.** The experts' forecasts for a cell are merged first:
 
 ```text
-p_0         = floored, normalized (clean, loud, silent) forecast
-kappa_0     = prior_strength, lowered by optional credible intervals, within
-              [min_concentration, prior_strength]
-decay       = max(0, 1 - W_emp / 2.0)
-kappa_prior = kappa_0 * decay
-kappa_base  = 1.0 * (1 - decay)
-b_0         = (0.88, 0.08, 0.04)
-alpha       = kappa_prior * p_0 + kappa_base * b_0 + (n_clean, n_loud, n_silent)
+g_l = loud                     g_S = silent / (clean + silent)
+m_k = logit(g_k)               s_k = (logit(hi_k) - logit(lo_k)) / 3.92
+m   = sum_k w_k m_k            s_stated^2 = sum_k w_k (s_k^2 + (m_k - m)^2)
+p   = logistic(m), held in [0.0001, 0.9998]
 ```
 
-At `W_emp = 0`, `prior_concentration = kappa_0` and `alpha = kappa_0 * p_0`. As real
-executions accumulate on the cell, the cold-start LLM prior decays linearly to exact
-zero weight at `W_emp >= 2.0`, leaving only the unit empirical base smoothing `b_0` plus
-the cell's own weighted counts so pessimistic guesses on unfamiliar or post-cutoff model
-identifiers never depress observed winners permanently.
+- `clean`, `loud`, `silent`: one expert's forecast for the cell, floored at the
+  probability floor 0.0001 and normalized. `g_l` and `g_S` are its guesses for `theta_l`
+  and `S`.
+- `k`, `w_k`: an expert in `semantic.beliefs.experts` and its weight. The weights sum
+  to 1.
+- `lo_k`, `hi_k`: the ends of the expert's stated 95% range, held in
+  `[0.0001, 0.9999]`: `loud_ci` for `theta_l`, and `silent_ci` divided by
+  `clean + silent` for `S`.
+- `s_k`: the stated spread on the log-odds scale; 0 when no range is stated.
+- `m`, `s_stated`, `p`: the merged centre, the merged spread and the prediction.
+- `logistic(x) = 1 / (1 + exp(-x))`, the inverse of `logit`.
+
+In plain words, each rate gets one forecast per cell, and experts that disagree make it
+less certain.
+
+Example: two experts with weights 0.75 and 0.25 guess `S` at 10% and 25%, each with
+spread 0.4. Then `m = 0.75 * (-2.197) + 0.25 * (-1.099) = -1.92`, `p = 12.8%` and
+`s_stated = sqrt(0.16 + 0.75 * 0.275^2 + 0.25 * 0.824^2) = 0.62`.
+
+**The start of each belief.**
+
+```text
+N_start = 1 / (1/worth + 1/N_task)       sigma_1 = 1 / sqrt(p (1 - p))
+s = min(1.869, max(s_stated, sigma_1 / sqrt(N_start)))
+x_j = -16 + 0.01 j,  j = 0 .. 2500
+q_j(m) = exp(-(x_j - m)^2 / (2 s^2)) / sum_i exp(-(x_i - m)^2 / (2 s^2))
+centre: the m with  sum_j q_j(m) logistic(x_j) = p
+```
+
+- `worth`: how many runs the record says about this family, `sampling.model_worth`
+  (5).
+- `N_task`: the most a record on other tasks is worth for one task,
+  `sampling.task_worth_silent` (32) for `S` and `sampling.task_worth_loud` (16) for
+  `theta_l`.
+- `N_start`: how many runs the prediction is worth: 4.32 for `S` and 3.81 for
+  `theta_l`.
+- `sigma_1`: the spread of one run's result on the log-odds scale.
+- `s`: the spread at the start. A stated range can widen it, never narrow it. 1.869 is
+  the flat belief, the spread of a 95% range of `[0.025, 0.975]`.
+- `x_j`, `q_j(m)`: the grid of 2,501 log-odds points, the same for every belief, and a
+  bell curve of centre `m` and spread `s` on it.
+- centre: found by 60 halvings of `[-25, 25]`, keeping the upper half when the grid
+  average at the midpoint is below `p`. The grid's top value is `logistic(9) = 0.99988`,
+  so every prediction up to 0.9998 can be met.
+
+In plain words, the start is a bell curve on the log-odds scale whose average, not its
+median, equals the prediction, and it is as wide as a record worth `N_start` runs
+allows.
+
+Example: clean 0.72, loud 0.20, silent 0.08 with `silent_ci = [0.04, 0.16]` gives
+`p = 0.10` for `S` and `s_stated = 0.40` (a range of 5% to 20%).
+`sigma_1 / sqrt(N_start) = 3.33 / 2.08 = 1.60`, so `s = 1.60` and the centre is -3.04.
+For `theta_l`, `p = 0.20` and `loud_ci = [0.10, 0.35]` give `s = 1.28` and centre -1.79.
+
+**Counted runs reshape the belief.**
+
+```text
+b_j = q_j(m) * logistic(x_j)^n_yes * (1 - logistic(x_j))^n_no,  rescaled so that sum_j b_j = 1
+S:        n_yes = n_s,  n_no = n_c
+theta_l:  n_yes = n_l,  n_no = n_c + n_s
+
+E[S] = sum_j b_j logistic(x_j)
+pi(c) = sum of b_j over the points with logistic(x_j) <= epsilon
+E[1 / (1 - theta_l)] = sum_j b_j (1 + exp(x_j))
+E[theta_l / (1 - theta_l)] = sum_j b_j exp(x_j)
+q point = logistic(x_j) at the first j whose running total of b reaches q
+```
+
+- `n_c`, `n_l`, `n_s`: the counted clean, loud and silent weight of the cell (below).
+- `b_j`: the belief after the counted runs, computed in logarithms.
+- `E[S]`, `pi(c)`: the average of the belief of `S` and its share at or below
+  `epsilon`, the risk class's silent limit ({ref}`admission tiers <admission-tiers>`).
+- `E[1 / (1 - theta_l)]`, `E[theta_l / (1 - theta_l)]`: expected attempts, and expected
+  loud failures per accepted result.
+- q point: the 2.5% and 97.5% points of each rate, reported as `lower` and `upper`.
+
+In plain words, the start counts as `N_start` runs and each counted run as its weight.
+The forecast never fades out: however many runs are counted, it keeps the weight of
+`N_start` runs. A never-observed cell keeps its start whatever other cells have
+recorded.
+
+Example, continuing with `epsilon = 0.10`: at the start `E[S] = 0.100`, `pi(c) = 0.70`
+and the 95% range is 0.2% to 52%. With `n_c = 4` and `n_s = 0`, `E[S] = 0.053` and
+`pi(c) = 0.85`. For `theta_l` at the start, expected attempts are 1.38, against 1.25 at
+the average rate.
 
 `n_*` are the counted amounts of each outcome in the cell's `outcome_observations`.
 The runs are the decision's {ref}`evidence candidates <evidence-candidates>`: recorded
@@ -127,17 +209,14 @@ run. For example, a run of the same cell with `r = 1.386` recorded 7 days before
 request weighs `0.8 * 0.7071 = 0.5657`; three runs of one ticket weighing 0.6, 0.5 and
 0.4 become 0.4, 0.3333 and 0.2667. Heavy history on another cell cannot crowd out this
 cell's evidence, a regression or recovery dominates as older runs age, and a task that
-matches no prototype counts nothing. A never-observed cell keeps its prior variance no
-matter how many runs other cells have; an expert's global `evidence_count` affects only
-its predictive weight, never a cell's sample size.
+matches no prototype counts nothing. An expert's global `evidence_count` affects only
+its predictive weight, never a cell's counted runs.
 
 A forecast row may add `silent_ci` and/or `loud_ci` as `[lo, hi]` with
-`0 <= lo <= value <= hi <= 1`, a central 95% credible interval for that probability.
-Moment matching gives `kappa = p*(1-p)/((hi-lo)/3.92)^2 - 1`; the smallest such value is
-clamped to `[min_concentration, prior_strength]`. Intervals can therefore widen a prior
-but an overconfident narrow interval can never make a forecast stronger than
-`prior_strength` pseudo-observations. Bare `clean`/`loud`/`silent` rows remain valid and
-use `kappa_0 = prior_strength`.
+`0 <= lo <= value <= hi <= 1`, a central 95% range for that probability. It enters as
+the stated spread `s_k` above: a wide range widens the start, up to the flat belief,
+and a narrow one cannot make the start narrower than a record worth `N_start` runs
+allows. Bare `clean`/`loud`/`silent` rows remain valid and state no spread.
 
 (forecast-contract)=
 ### Forecast rows and stated ranges
@@ -158,8 +237,8 @@ Every range is optional and is a central 95% range `[lo, hi]`.
   `forecast.token_usage_ci.input`).
 - A rate range of `[0, 1]`, or anything wider than `[0.025, 0.975]`, states a flat
   belief: no knowledge of that probability. There is no other ceiling on a stated width.
-  Selection reads such a range through the moment matching above, like any other
-  stated rate range.
+  Selection reads such a range as the stated spread above, which stops at the flat
+  belief's 1.869.
 - A token kind forecast at zero is exactly zero unless a non-zero upper end is stated.
 - `token_usage_ci` needs `token_usage` on the same row and accepts only the six kinds.
   There is no range on total `tokens` or on credit: token counts do not depend on
@@ -175,7 +254,7 @@ widen a belief and never narrow it.
 
 Active time and each token kind have one belief per cell, held on the log scale. A
 belief starts at the forecast, is as wide as the forecast is unsure, and is updated by
-the cell's own recorded runs. Rates keep the {ref}`outcome posterior <outcome-posterior>`.
+the cell's own recorded runs. The two rates have the {ref}`outcome beliefs <outcome-posterior>`.
 
 **One forecast per value.** Several memory experts may forecast one cell. Their forecasts
 of a value are merged before its belief is built.
@@ -311,14 +390,18 @@ Each row of `selection.cells` stores its beliefs:
 | `token_beliefs` | The same record for each of the six kinds, or one record under `tokens`, with `forecast_tokens` and `expected_tokens`. A kind that is exactly zero has null centres and zero spreads. |
 | `credit_variance`, `credit_p80_usd` | `Var(K)` and `K_80`, beside `needed_credit_usd` |
 
-`P_clean`, `P_loud` and `P_silent` report `{mean, lower, upper}` from the
-support-weighted mixture of the experts' Beta marginals `Beta(alpha_i, sum(alpha) - alpha_i)`:
-the mean and the equal-tailed 2.5%/97.5% quantiles, expanded to contain the mean. This is
-a real posterior interval even when only the `llm` expert participates. Accepted-result
-risk `P_silent / (1 - P_loud)` is, under each Dirichlet, `Beta(alpha_silent, alpha_clean)`;
-`P_silent_accepted` reports the same mixture mean and 95% interval. There is no
-additional statistical risk floor, and the posterior is a model assumption, not a
-calibrated coverage guarantee. `J` uses the posterior means.
+`P_loud` and `P_silent_accepted` report `{mean, lower, upper}` from the two beliefs:
+the average and the 2.5% and 97.5% points of `theta_l` and of `S`. `P_clean` and
+`P_silent` carry a `mean` only, because neither has a belief of its own:
+
+```text
+P_loud = E[theta_l]    P_silent = (1 - E[theta_l]) * E[S]    P_clean = (1 - E[theta_l]) * (1 - E[S])
+```
+
+For example, `E[theta_l] = 0.20` and `E[S] = 0.10` give `P_loud = 0.20`,
+`P_silent = 0.08` and `P_clean = 0.72`. `J` is the cost formula above at `P_loud` and
+`P_silent`. There is no additional statistical risk floor, and a belief is a model
+assumption, not a calibrated coverage guarantee.
 
 (admission-tiers)=
 ### Admission tiers
@@ -327,28 +410,22 @@ Every forecast cell is sorted by its chance of meeting the risk class's limit on
 silently wrong accepted results:
 
 ```text
-pi(c) = P(S <= epsilon)
-      = sum over k of  w_k * I(epsilon; alpha_silent_k, alpha_clean_k)
+pi(c) = P(S <= epsilon) = sum of b_j over the points with logistic(x_j) <= epsilon
 ```
 
 - `c`: a forecast cell.
-- `S`: the accepted-defect share, silent results / accepted results
-  (`P_silent / (1 - P_loud)`).
+- `S`: the accepted-defect share, silent results / accepted results.
 - `epsilon`: the risk class's limit on `S`.
-- `pi(c)`: the share of the cell's posterior for `S` at or below `epsilon`.
-- `k`, `w_k`: an expert in `semantic.beliefs.experts` and its weight. The weights sum
-  to 1.
-- `alpha_silent_k`, `alpha_clean_k`: the silent and clean entries of expert `k`'s
-  posterior `alpha` for the cell.
-- `I(x; a, b)`: the regularized incomplete beta function, the share of a `Beta(a, b)`
-  distribution at or below `x`.
+- `b_j`, `x_j`: the cell's {ref}`belief <outcome-posterior>` for `S` and the grid of
+  log-odds points it lives on.
+- `pi(c)`: the share of that belief at or below `epsilon`.
 
 In plain words, `pi` is the chance, under the cell's current belief, that no more than
 `epsilon` of its accepted results are silently wrong.
 
-Example: `epsilon` is 0.10. Two experts weigh 0.6 and 0.4, and their posteriors for `S`
-are `Beta(1, 30)` and `Beta(1, 9)`. Then `I` is `1 - 0.9^30 = 0.958` and
-`1 - 0.9^9 = 0.613`, so `pi = 0.6 * 0.958 + 0.4 * 0.613 = 0.820`.
+Example: `epsilon` is 0.10. A cell forecast at clean 0.72, loud 0.20, silent 0.08 has a
+belief for `S` with average 0.100, and 70% of it lies at or below 0.10, so `pi = 0.70`.
+Four counted clean runs move the average to 0.053 and `pi` to 0.85.
 
 ```text
 trusted   <=> pi(c) >= admission_quantile
@@ -363,17 +440,17 @@ In plain words, a cell that very likely meets the limit is trusted, an uncertain
 on trial, and only a cell that very likely misses the limit is excluded. A wide
 posterior alone therefore puts an unproven cell on trial instead of shutting it out.
 
-Example, with one expert and `epsilon` 0.10:
+Example, with one expert, no stated range, no counted run and `epsilon` 0.10:
 
-| Posterior for `S` | Average | `pi` | Tier | `admission_risk` |
-| --- | --- | --- | --- | --- |
-| `Beta(1, 30)` | 3.2% | 0.958 | trusted | 0.052 |
-| `Beta(1, 9)` | 10.0% | 0.613 | on trial | 0.164 |
-| `Beta(4, 8)` | 33.3% | 0.019 | excluded | 0.445 |
+| Forecast of `S` | `pi` | Tier | `admission_risk` |
+| --- | --- | --- | --- |
+| 2% | 0.957 | trusted | 0.021 |
+| 10% | 0.702 | on trial | 0.156 |
+| 50% | 0.011 | excluded | 0.692 |
 
 Each cell, in `pick` and in `summary`, reports `pi`, `tier` (`trusted`, `on-trial` or
 `excluded`), `admission_risk` and `admissible`. `admission_risk` is the
-`admission_quantile` point of the same mixture, so `admission_risk <= epsilon` holds
+`admission_quantile` point of the same belief, so `admission_risk <= epsilon` holds
 exactly when `pi >= admission_quantile`. `admissible` is true exactly when the tier is
 trusted.
 
@@ -426,33 +503,64 @@ cell). The three constants are frozen with the rest of the policy in
 ### The draw
 
 A sample is drawn for every decision, so `semantic.sampling.enabled` is always true.
-`pick` samples one expert by its weight and draws outcome probabilities from that
-expert's per-cell Dirichlet posterior `alpha`. Forecasted `seconds` represents expected
-**active** execution duration excluding external queue wait. `T` and `C_run` in `J` are
-the averages of the cell's {ref}`beliefs <amount-beliefs>`, which are merged over the
-experts and so do not depend on the sampled expert. `cost_sd` is the delta-method
-retry-cost standard deviation: the posterior Dirichlet covariance
-`(diag(m) - m m^T) / (sum(alpha) + 1)` plus the active-time term
-`(lambda_per_hour / (1 - P_loud))^2 * E[T]^2 * (exp(s'^2) - 1)`, raised to the
-between-expert spread of per-expert posterior costs when larger. Run cost is exact in
-`cost_sd` and in the draw: its spread enters the credit check only. Thompson sampling
+`pick` samples one expert by its weight. Then each cell, in order, takes one uniform
+number for `theta_l` and one for `S`, each read at the first grid point whose running
+total of the belief reaches it, and then its active-time draw:
+
+```text
+sampled J = run / (1 - theta_l) + C_loud * theta_l / (1 - theta_l) + C_silent * S
+            + lambda_per_hour * hours / (1 - theta_l)
+```
+
+- `theta_l`, `S`: the sampled loud rate and accepted-defect share of the cell.
+- `run`: the cell's run cost, the average of its {ref}`belief <amount-beliefs>`.
+- `hours`: the sampled active time of the cell.
+- `C_loud`, `C_silent`, `lambda_per_hour`: the risk class's costs.
+
+For example, `run = 2`, one hour at 25 dollars, `C_loud = 50`, `C_silent = 1000`,
+`theta_l = 0.20` and `S = 0.10` give `2.5 + 12.5 + 100 + 31.25 = 146.25`.
+
+Forecasted `seconds` represents expected **active** execution duration excluding
+external queue wait. `T` and `C_run` in `J` are the averages of the cell's
+{ref}`beliefs <amount-beliefs>`. Every value of a cell, its two rates, its active time
+and its run cost, is one belief merged over the experts, so none depends on the sampled
+expert, and experts that disagree widen the beliefs themselves. `cost_sd` is the
+delta-method spread of the retry cost. Its part from the two rates is
+
+```text
+Var_rates(J) = ((C_loud + J - C_silent * E[S]) / (1 - P_loud))^2 * Var(theta_l) + C_silent^2 * Var(S)
+```
+
+- `J`: the cell's mean cost.
+- `Var(theta_l)`, `Var(S)`: the variances of the two beliefs on the grid. The beliefs
+  are independent, so their parts add.
+
+For example, `J = 146.25`, `C_loud = 50`, `C_silent = 1000`, `P_loud = 0.20`,
+`E[S] = 0.10`, `Var(theta_l) = 0.0314` and `Var(S) = 0.0188` give
+`120.3^2 * 0.0314 + 1000^2 * 0.0188`, about 19,300: a spread of 139. The active-time
+term `(lambda_per_hour / (1 - P_loud))^2 * E[T]^2 * (exp(s'^2) - 1)` is added. Run cost
+is exact in `cost_sd` and in the draw: its spread enters the credit check only. Thompson sampling
 considers every cell of the pool whose posterior cost overlaps the pool's mean-best
 cell: `J - J_best <= uncertainty_multiplier * (sd_best + sd_cell)`. Only an explicit
 risk-class `explore_within` additionally caps that gap at `explore_within * |J_best|`.
 Thompson sampling draws each cell's active time from `ln T ~ Normal(m', s'^2)` in
 `parts["time"]`. Receipts retain the scored `evidence_candidates`, the
 `outcome_observations` and `duration_observations` counted from them, each sampled cell's
-`outcome_posterior` (`prior`, `prior_concentration`, `counts`, `evidence_weight`,
-`alpha`), concentrations, each cell's beliefs, `pi`, `tier` and
-`admission_risk`, the seed and the reason for a sampled non-best choice. `summary`
-returns the same posterior means, intervals, beliefs and tiers without sampling a selection. A
+`outcome_beliefs`, each cell's beliefs for active time and tokens, `pi`, `tier` and
+`admission_risk`, the seed and the reason for a sampled non-best choice.
+`outcome_beliefs.loud` and `outcome_beliefs.silent` each hold `prediction`,
+`stated_spread`, `n_start`, `spread`, `centre`, `counts` (`[n_yes, n_no]`), `mean`,
+`lower` and `upper`; `silent` adds `pi`, and `loud` adds `attempts` and `odds`, the two
+expectations above. `summary`
+returns the same means, ranges, beliefs and tiers without sampling a selection. A
 fixed seed reproduces selection given frozen forecasts and the request's scored evidence
 candidates; it does not make inference deterministic. A receipt records the time its
 request was prepared, because the age of every counted run is measured to that moment,
 so two decisions prepared at different times are different receipts even when nothing
-else differs. Loading a stored decision recomputes `pi` from its frozen forecasts,
-expert weights and outcome observations and refuses a receipt whose `pi`, `tier`,
-`admissible`, `exploration.pool`, chosen cell or flags disagree with them.
+else differs. Loading a stored decision recomputes both beliefs of every forecast cell
+from its frozen forecasts, expert weights, outcome observations and policy, and refuses
+a receipt in which a belief, a `P_*` field, `pi`, `tier`, `admissible`, `J`,
+`exploration.pool`, the chosen cell or a flag disagrees with them.
 
 Loud attempts are retried on the same cell until a non-loud result is accepted.
 `1/(1-P_loud)` charges the expected attempts; `C_loud` is extra detection/rework overhead
@@ -466,18 +574,21 @@ permit exploration outside it. Each cheaper alternative is explained in `why`:
 otherwise `sampled-cost` with signed cost components.
 
 New receipts use `howhard-decision-v11` (`howhard-semantic-v8`, reader prompt
-`semantic-reader-v8`, interval kind `dirichlet-posterior-mixture`). Loading a v11
+`semantic-reader-v8`, interval kind `log-odds-grid`). Loading a v11
 receipt recomputes every belief from its stored forecasts, expert weights,
-`duration_observations` and sampling policy, then `T`, the three credit numbers,
-`session_cost_usd` and `credit_ok`; a receipt whose stored values differ is refused.
-Frozen `howhard-decision-v10` receipts use the same outcome posterior without a host
-name, agent labels, ranges on active time and token kinds, tiers or beliefs: they keep the
+`outcome_observations`, `duration_observations` and sampling policy, then the `P_*`
+fields, `pi`, `T`, the three credit numbers, `session_cost_usd`, `credit_ok` and `J`; a
+receipt whose stored values differ is refused.
+Frozen `howhard-decision-v10` and `howhard-decision-v9` receipts keep the outcome
+posterior they recorded (interval kind `dirichlet-posterior-mixture`): each expert's
+forecast as a Dirichlet prior of at most `prior_strength` pseudo-observations plus the
+cell's counts, mixed over the experts, with v10's decay of that prior over the first two
+counted runs and without it in v9. v10 also lacks a host name, agent labels, ranges on
+active time and token kinds, tiers and beliefs: these receipts keep the
 per-expert active-time calibration they were made with (each expert's forecast worth one
 run against the same-cell runs, log spread capped at 2, averaged over the experts), price
 each expert's forecast directly, and check `needed_credit_usd <= available_credit_usd`.
-Frozen
-`howhard-decision-v9` receipts keep undecayed `kappa_0 * p_0 + counts` posteriors, while
-frozen `howhard-decision-v8` and `howhard-decision-v7` receipts keep their original weighted
+Frozen `howhard-decision-v8` and `howhard-decision-v7` receipts keep their original weighted
 forecast envelopes, upper-envelope admission and sampling policy shape; all load,
 validate, accept outcomes and replay into predictive weights. Receipts older than v11
 keep the cap as they recorded it:
@@ -488,8 +599,9 @@ keep the cap as they recorded it:
 | No cell passes | No draw; `selection.on_cap_unmet` records the policy and `exploration.reason` is `disabled-cap-unmet` | A draw over the second pool |
 | `semantic.sampling.enabled` | Equals `cap_met` | Always true |
 | `exploration.enabled` | `cap_met` and more than one eligible cell | More than one eligible cell |
-| Cell fields | `admissible`, and `admission_risk` from v9 | Also `pi` and `tier` |
-| `selection.sampling_policy` | Without the two tier constants | With `trial_probability` and `all_excluded_factor` |
+| Cell fields | `admissible`, and `admission_risk` from v9; four `{mean, lower, upper}` probabilities | Also `pi` and `tier`; `P_clean` and `P_silent` carry `mean` only |
+| `selection.sampling_policy` | Without the two tier constants; with `prior_strength`, `min_concentration` and `max_concentration` | With `trial_probability`, `all_excluded_factor`, `model_worth`, `task_worth_silent` and `task_worth_loud` |
+| `semantic.sampling.cells[]` | `outcome_posterior` and `concentration` from v9 | `outcome_beliefs.loud` and `outcome_beliefs.silent` |
 | Widening labels | Trigger `silent-cap-unmet`; stop `cap-met` | Trigger `all-excluded`; stop `pickable` |
 
 ## Prices and measurements

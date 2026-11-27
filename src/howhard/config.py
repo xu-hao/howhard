@@ -119,8 +119,14 @@ def load_config(path=None, *, directory=None, state_directory=None):
         data = default
     keys(data, ["project", "journal", "logs", "classes", "models"],
          ["task_types", "retrieval", "inventories", "capability", "sampling"], "config")
-    from .success import DEFAULTS as SAMPLING, validate_policy as validate_sampling
+    from .success import DEFAULTS as SAMPLING, RETIRED, validate_policy as validate_sampling
     sampling = dict(table(data.get("sampling", {}), "config.sampling"))
+    for key in RETIRED:
+        if key in sampling:
+            # Outcome beliefs on the log-odds scale have no Dirichlet concentration to bound.
+            del sampling[key]
+            notice(f"sampling.{key} is retired and ignored; an outcome belief starts from the forecast at the "
+                   "worth sampling.model_worth and the task worths give it")
     if "outcome_recency" in sampling:
         # Evidence ages by time, so the former per-observation decay is accepted and ignored.
         del sampling["outcome_recency"]

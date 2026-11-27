@@ -30,7 +30,9 @@ FIELDS = ("family", "effort", "clean", "loud", "silent", "tokens", "seconds")
 # Stated 95% ranges on the two failure rates, and on active time and each token kind.
 INTERVAL_FIELDS = ("loud_ci", "silent_ci")
 RANGE_FIELDS = ("seconds_ci", "token_usage_ci")
-INTERVAL_KIND = "dirichlet-posterior-mixture"
+INTERVAL_KIND = "log-odds-grid"
+# v9 and v10 receipts report mixtures of Dirichlet posteriors; v7 and v8 ones forecast envelopes.
+DIRICHLET_INTERVAL_KIND = "dirichlet-posterior-mixture"
 LEGACY_INTERVAL_KIND = "weighted-forecast-envelope"
 INTERVAL_CONTRACT = ("Every range is optional and is a central 95% range [lo, hi] that contains its value with "
                      "0 <= lo <= value <= hi. loud_ci and silent_ci: ranges on those outcome probabilities, also "
@@ -649,7 +651,7 @@ def duration_observations(candidates, outcome_obs):
 
 
 def augment(engine, prepared, response, payload, snapshot, usage, *, candidates):
-    from .success import admission_tier, cell_beliefs, cost, credit_fits, denominator, posterior_intervals
+    from .success import admission_tier, belief_intervals, cell_beliefs, cost, credit_fits, denominator, outcome_beliefs
     result, cells = deepcopy(prepared[0]), prepared[1]
     # The readers only weigh the request's scored candidates; nothing is compared again here.
     outcome_obs = outcome_observations(candidates, {(row["family"], row["effort"]) for row in result["cells"]})
@@ -676,13 +678,12 @@ def augment(engine, prepared, response, payload, snapshot, usage, *, candidates)
     indexed = {key: panel_lookup(panel) for key, panel in worlds.items()}
     for row in result["cells"]:
         pair = row["family"], row["effort"]
-        intervals, _ = posterior_intervals(indexed, weights, pair, outcome_obs, policy,
-                                           epsilon=result["constants"]["epsilon"])
-        for field in ("P_clean", "P_loud", "P_silent", "P_silent_accepted"):
-            row[field] = intervals[field]
-        row["admission_risk"] = intervals["admission_risk"]
-        # pi is the chance that the accepted-defect share is within epsilon; it sorts the cell into a tier.
-        row["pi"] = intervals["pi"]
+        # One belief each for the loud rate and the accepted-defect share, from the merged forecast
+        # and this cell's counted runs. pi is the share of the second belief within epsilon; it
+        # sorts the cell into a tier.
+        beliefs = outcome_beliefs(indexed, state["experts"], pair, outcome_obs, policy,
+                                  epsilon=result["constants"]["epsilon"])
+        row.update(belief_intervals(beliefs, policy))
         row["tier"] = admission_tier(row["pi"], policy)
         # One belief per value: the experts' forecasts are merged, then the cell's own runs update it.
         row.update(cell_beliefs([(weights[k], indexed[k][pair]) for k in weights], pair, duration_obs, policy))
@@ -728,7 +729,7 @@ def forecast_session_cost(token_beliefs, cell):
 
 
 def sample(prepared, seed):
-    from .success import calibration, denominator
+    from .success import belief_point, calibration
     result, cells = prepared
     state = result["semantic"]
     parts = {k: np.zeros((1, len(cells))) for k in ("run", "loud", "silent", "time")}
@@ -739,23 +740,24 @@ def sample(prepared, seed):
     chosen = str(rng.choice([e["key"] for e in experts], p=[e["weight"] for e in experts]))
     state["sampled_expert"] = chosen
     expert = next(e for e in experts if e["key"] == chosen)
-    panel = panel_lookup(state["worlds"][chosen])
     indexed = panel_lookup(result["cells"])
     calibration_rows = []
     for i, cell in enumerate(cells):
-        row = panel[cell["family"], cell["effort"]]
-        calibrated = calibration(result, state, expert, cell, row)
+        calibrated = calibration(result, state, expert, cell)
         calibration_rows.append(calibrated)
-        p = rng.dirichlet(np.asarray(calibrated["outcome_posterior"]["alpha"]))
+        # One uniform number per rate, read at the first grid point whose running total reaches it.
+        beliefs = calibrated["outcome_beliefs"]
+        loud = belief_point(beliefs["loud"], float(rng.random()))
+        share = belief_point(beliefs["silent"], float(rng.random()))
         # Active time is drawn from the cell's belief; run cost stays at its average.
         summary = indexed[cell["family"], cell["effort"]]
         sampled_seconds = float(rng.lognormal(summary["active_time"]["centre"], summary["active_time"]["spread"]))
-        d = denominator(p[1])
+        d = 1. - loud  # The grid's top rate is 0.99988, so a sampled loud rate never reaches 1.
         parts["run"][0, i] = summary["session_cost_usd"]/d if cell["money_included"] else 0.
-        parts["loud"][0, i] = p[1]*constants["C_loud"]/d
-        parts["silent"][0, i] = p[2]*constants["C_silent"]/d
+        parts["loud"][0, i] = constants["C_loud"]*loud/d
+        parts["silent"][0, i] = constants["C_silent"]*share
         parts["time"][0, i] = sampled_seconds/3600*constants["lambda_per_hour"]/d
-    state["sampling"] = {"enabled": True, "reason": "per-cell-dirichlet-posterior",
+    state["sampling"] = {"enabled": True, "reason": "per-cell-log-odds-grid-beliefs",
                          "policy": deepcopy(result["sampling_policy"]), "cells": calibration_rows}
     return parts
 
@@ -785,7 +787,7 @@ def validate_receipt(state, *, decision_format=DECISION_FORMAT, selection=None):
         raise HowHardError("decision.semantic: unsupported forecast format or prompt version")
     if type(state["memory_revision"]) is not int or state["memory_revision"] < 0:
         raise HowHardError("decision.semantic.memory_revision: expected non-negative integer")
-    if state["interval_kind"] != (LEGACY_INTERVAL_KIND if legacy else INTERVAL_KIND):
+    if state["interval_kind"] != (LEGACY_INTERVAL_KIND if legacy else INTERVAL_KIND if tiered else DIRICHLET_INTERVAL_KIND):
         raise HowHardError("decision.semantic.interval_kind: unsupported credible interval kind")
     text(state["backend"], "decision.semantic.backend")
     text(state["reason"], "decision.semantic.reason")
@@ -843,8 +845,8 @@ def validate_receipt(state, *, decision_format=DECISION_FORMAT, selection=None):
             raise HowHardError("decision.semantic.expert.evidence_count: expected non-negative integer")
     if not {"llm"} <= seen or abs(mass - 1) > 1e-6 or set(state["worlds"]) - seen:
         raise HowHardError("decision.semantic.beliefs: expert weights must cover forecasts and sum to one")
-    from .success import (EMPIRICAL_FLOOR, POSTERIOR_FIELDS, calibrate_duration, cell_beliefs, outcome_posterior,
-                          same_number, validate_policy as validate_sampling)
+    from .success import (BELIEF_FIELDS, EMPIRICAL_FLOOR, POSTERIOR_FIELDS, RATES, belief_probabilities, calibrate_duration,
+                          cell_beliefs, outcome_beliefs, outcome_posterior, same_number, validate_policy as validate_sampling)
     if scored:
         # Recompute what each reader counted from the stored candidates; the counts follow below.
         from . import evidence
@@ -931,16 +933,21 @@ def validate_receipt(state, *, decision_format=DECISION_FORMAT, selection=None):
         if {(c["family"], c["effort"]) for c in sampling["cells"]} != allowed or len(sampling["cells"]) != len(allowed):
             raise HowHardError("decision.semantic.sampling: calibration must cover forecasted cells")
         panels_by_key = {k: panel_lookup(p) for k, p in state["worlds"].items()}
-        min_conc = (
+        min_conc = None if tiered else (
             min(EMPIRICAL_FLOOR, sampling["policy"]["min_concentration"])
             if per_cell_evidence
             else sampling["policy"]["min_concentration"]
         )
         for c in sampling["cells"]:
-            number(c["concentration"], "sampling concentration", positive=True)
+            if tiered:
+                # Checked before any field is read: v11 has beliefs in place of a concentration.
+                keys(c, ["family", "effort", "expert", "outcome_beliefs", "probabilities", "cost_sd"],
+                     where="decision.semantic.sampling.cell")
+            else:
+                number(c["concentration"], "sampling concentration", positive=True)
+                if not min_conc <= c["concentration"] <= sampling["policy"]["max_concentration"]:
+                    raise HowHardError("decision.semantic.sampling: concentration outside bounds")
             number(c["cost_sd"], "sampling cost standard deviation", nonnegative=True)
-            if not min_conc <= c["concentration"] <= sampling["policy"]["max_concentration"]:
-                raise HowHardError("decision.semantic.sampling: concentration outside bounds")
             if decision_format in (LEGACY_DECISION_V7, DECISION_FORMAT):
                 # v7 has no active-time calibration; v11 keeps the belief on the selection cell.
                 if "duration" in c:
@@ -969,9 +976,35 @@ def validate_receipt(state, *, decision_format=DECISION_FORMAT, selection=None):
                 for field, expected_val in expected_dur.items():
                     if abs(dur[field] - expected_val) > 1e-10 * max(1.0, abs(expected_val)):
                         raise HowHardError("decision.semantic.sampling: inconsistent duration calibration")
-            if not legacy:
-                keys(c, ["family", "effort", "expert", "outcome_posterior", "probabilities", "concentration", "cost_sd",
-                         *([] if ranges else ["duration"])], where="decision.semantic.sampling.cell")
+            if tiered:
+                pair = c["family"], c["effort"]
+                if c["expert"] not in panels_by_key:
+                    raise HowHardError("decision.semantic.sampling: unknown calibrated expert")
+                # Recompute both beliefs from the frozen forecasts, expert weights, counted runs and policy.
+                expected = outcome_beliefs(panels_by_key, belief["experts"], pair, state["outcome_observations"],
+                                           sampling["policy"])
+                stored = c["outcome_beliefs"]
+                keys(stored, list(RATES), where="sampling.outcome_beliefs")
+                actual, wanted = [], [*belief_probabilities(expected)]
+                for rate, (_, extra) in RATES.items():
+                    keys(stored[rate], [*BELIEF_FIELDS, *extra], where="sampling.outcome_beliefs." + rate)
+                    if not isinstance(stored[rate]["counts"], list) or len(stored[rate]["counts"]) != 2:
+                        raise HowHardError("decision.semantic.sampling: invalid per-cell outcome belief")
+                    # pi needs the silent limit of the risk class, so the selection check recomputes it.
+                    fields = [f for f in (*BELIEF_FIELDS, *extra) if f not in ("counts", "pi")]
+                    actual += [*(stored[rate][f] for f in fields), *stored[rate]["counts"]]
+                    wanted += [*(expected[rate][f] for f in fields), *expected[rate]["counts"]]
+                share = stored["silent"]["pi"]
+                if not isinstance(share, (int, float)) or isinstance(share, bool) or not 0 <= share <= 1:
+                    raise HowHardError("decision.semantic.sampling: invalid per-cell outcome belief")
+                if not isinstance(c["probabilities"], list) or len(c["probabilities"]) != 3:
+                    raise HowHardError("decision.semantic.sampling: invalid per-cell outcome belief")
+                actual = [*c["probabilities"], *actual]
+                if any(not isinstance(a, (int, float)) or isinstance(a, bool)
+                       or abs(a - b) > 1e-10 * max(1., abs(b)) for a, b in zip(actual, wanted)):
+                    raise HowHardError("decision.semantic.sampling: inconsistent per-cell outcome belief")
+            elif not legacy:
+                keys(c, ["family", "effort", "expert", "outcome_posterior", "probabilities", "concentration", "duration", "cost_sd"], where="decision.semantic.sampling.cell")
                 pair = c["family"], c["effort"]
                 if c["expert"] not in panels_by_key:
                     raise HowHardError("decision.semantic.sampling: unknown calibrated expert")

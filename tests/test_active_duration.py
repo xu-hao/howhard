@@ -201,7 +201,7 @@ def test_active_time_belief_updated_by_slow_runs_prices_out_slow_cheap_cell(tmp_
     assert abs(cells_zero["fixture/cheap-thrasher"]["J"] - cells_zero["fixture/fast-strong"]["J"]) < 1.0
 
     # 2. Multi-hour active runtime reality pulls the belief E[T] = exp(m' + s'^2/2) toward the runs,
-    #    raises cost_sd, and prices out the slow cheap cell in J and Thompson sampling.
+    #    raises the active-time term of cost_sd, and prices out the slow cheap cell in J and Thompson sampling.
     thrash_engine = Engine(directory=tmp_path / "thrash", retrieval=SimilarityDouble())
     for i, active in enumerate((7200.0, 10800.0, 14400.0, 10800.0)):
         thrash_engine.observe(
@@ -219,14 +219,19 @@ def test_active_time_belief_updated_by_slow_runs_prices_out_slow_cheap_cell(tmp_
     assert cells_cal["fixture/cheap-thrasher"]["J"] > cells_cal["fixture/fast-strong"]["J"] + 30.0
 
     cal_by_family = {c["family"]: c for c in calibrated_result["semantic"]["sampling"]["cells"]}
-    zero_by_family = {c["family"]: c for c in zero_result["semantic"]["sampling"]["cells"]}
     weak_family = cells_cal["fixture/cheap-thrasher"]["family"]
     belief = cells_cal["fixture/cheap-thrasher"]["active_time"]
     assert belief["evidence_weight"] > 3 and 0 < belief["spread"] < belief["prior_spread"]
-    assert cal_by_family[weak_family]["cost_sd"] > zero_by_family[weak_family]["cost_sd"]
+
+    def time_spread(row):
+        """The active-time part of cost_sd: lambda / (1 - P_loud) * E[T] * sqrt(exp(s'^2) - 1)."""
+        return 25. * row["expected_attempts"] * row["T"] * math.sqrt(math.expm1(row["active_time"]["spread"] ** 2))
+    # The same four clean runs also sharpen the cell's two outcome beliefs, so only the time term must grow.
+    assert time_spread(cells_cal["fixture/cheap-thrasher"]) > 2 * time_spread(cells_zero["fixture/cheap-thrasher"])
+    assert cal_by_family[weak_family]["cost_sd"] > time_spread(cells_cal["fixture/cheap-thrasher"])
 
     # Across 200 Thompson seeds, multi-hour active duration shifts selection strongly to the fast strong cell
-    # (unseen fast-strong retains bounded Dirichlet outcome uncertainty and its own active-time spread,
+    # (unseen fast-strong keeps the outcome uncertainty of its start and its own active-time spread,
     # so rare high-silent or slow draws still explore).
     zero_wins = [zero_engine.decide(zero_req, zero_resp, seed=s)["chosen"]["model"] for s in range(200)].count("fixture/fast-strong")
     thrash_wins = [thrash_engine.decide(thrash_req, thrash_resp, seed=s)["chosen"]["model"] for s in range(200)].count("fixture/fast-strong")

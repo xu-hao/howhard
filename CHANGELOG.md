@@ -96,6 +96,45 @@
   observe, replay and report as before. Hosts are asked to record usage by token kind and
   active time apart from waiting.
 
+- Outcome beliefs on the log-odds scale (#133). A cell now holds two independent
+  beliefs in place of each expert's Dirichlet posterior: one for its loud rate and one
+  for its accepted-defect share (silent results / accepted results). The experts'
+  forecasts for a cell are first merged by their weights on the log-odds scale into one
+  forecast per rate, so experts that disagree make it less certain. Each belief starts
+  as a bell curve on one fixed grid of 2,501 log-odds points whose average equals that
+  forecast and whose width is that of a record worth `N_start` runs (4.32 runs for the
+  accepted-defect share, 3.81 for the loud rate); a stated `loud_ci` or `silent_ci` can
+  widen the start, up to the flat belief, and never narrows it. The cell's counted runs
+  then reshape it. **Changed behaviour:** the forecast no longer fades out after two
+  counted runs and there is no unit base of `(0.88, 0.08, 0.04)`; the forecast keeps
+  the weight of `N_start` runs however many are counted, so `pi`, tiers, `J`, `cost_sd`
+  and sampled costs differ from earlier builds for the same inputs. `pi` and
+  `admission_risk` are read from the accepted-defect belief. `P_loud` and
+  `P_silent_accepted` keep `{mean, lower, upper}`; **`P_clean` and `P_silent` now carry
+  `mean` only**, because neither has a belief of its own, and the rendered table prints
+  no range for them. Until the cost is averaged over the beliefs, `J` is the same
+  formula at `P_loud = E[theta_l]` and `P_silent = (1 - E[theta_l]) * E[S]`, and the
+  draw takes one uniform number per rate and cell, read at the first grid point whose
+  running total reaches it. Every value of a cell is now one belief merged over the
+  experts, so `cost_sd` adds the variances of the two rates to the active-time term and
+  has no separate between-expert term, and its sampling cell no longer depends on the
+  sampled expert. New optional `[sampling]` settings, each positive:
+  `task_worth_silent = 32` and `task_worth_loud = 16`, beside the shared
+  `model_worth = 5`. **Retired:**
+  `sampling.prior_strength`, `sampling.min_concentration` and
+  `sampling.max_concentration`; a file that still sets one loads with the value ignored
+  and one notice per key on standard error, and decisions are the same as without it.
+  A v11 receipt has `semantic.interval_kind` `log-odds-grid`, stores
+  `outcome_beliefs.loud` and `outcome_beliefs.silent` (`prediction`, `stated_spread`,
+  `n_start`, `spread`, `centre`, `counts`, `mean`, `lower`, `upper`, plus `pi` on
+  `silent` and `attempts` and `odds` on `loud`) in each `semantic.sampling.cells` entry
+  in place of `outcome_posterior` and `concentration`, and stores the three worths, not
+  the retired keys, in its sampling policy. Loading a v11 decision recomputes both
+  beliefs, the `P_*` fields, `pi` and `J`, and refuses a receipt with a changed number.
+  v11 decisions stored by earlier unreleased builds no longer load. `v10`, `v9`, `v8`
+  and `v7` receipts keep their recorded posteriors and policy and keep loading,
+  observing, replaying and reporting.
+
 - Host-aware forecast band and reserved forecast slots (#131). Both edges of the fit
   band's clearing interval now follow the share of its failures that the asking host
   catches before acceptance. From the failed routed runs on record (finished `loud` or
@@ -120,8 +159,9 @@
   model families with no run among the evidence candidates (at `P_clear >= 0.2`), then
   for agents with no core cell (at `P_clear >= e`): a proven family whose `agent` is
   missing takes at most one slot for that agent, and an agent whose unproven family
-  already took a slot counts as served. Each slot goes to the nearest qualifying cell. A slot that no family takes goes back to the
-  band, so with no family to reserve for the forecast cells are the band as before. A
+  already took a slot counts as served. Each slot goes to the nearest qualifying cell.
+  A slot that no family takes goes back to the band, so with no family to reserve for
+  the forecast cells are the band as before. A
   forecast request can therefore include a cell classified `underpowered` or
   `overpowered`. Widening takes the next stronger cell with no forecast: band cells
   beyond the core, then overpowered cells, skipping reserved cells. New optional

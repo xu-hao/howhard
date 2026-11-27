@@ -123,7 +123,7 @@ def render(result):
         lines.append(f"Backend: {backend.get('name', backend['mode'])}" + (f" ({backend['reason']})" if "reason" in backend else ""))
     if "semantic" in result:
         lines.append(result["semantic"]["reason"])
-        lines.append("Intervals: approximate weighted LLM forecast envelope")
+        lines.append("Ranges: 95% points of each cell's beliefs for its loud rate and accepted-defect share")
     if not result["cost_policy"]["worker_money_included"]:
         lines.append("Worker monetary cost is unknown for at least one candidate and omitted uniformly from comparison; J includes risk and time only.")
     if result.get("host") is not None:
@@ -141,12 +141,13 @@ def render(result):
         if result["needs_review"]:
             lines.append("The chosen cell is not trusted: independent review is advised before release.")
     lines.append(f"Task: {result['task_type']}  Risk: {result['risk_class']}  Constants: {json.dumps(result['constants'], sort_keys=True)}")
-    lines.append("family/effort  P_clean [95%]  P_loud [95%]  P_silent [95%]  P_silent accepted [95%]  session_cost_usd (cost)  needed_credit_usd (credit)  credit_p80_usd (80% credit)  time h  J* USD  sampled J*  tier (pi; accepted-risk quantile)")
+    lines.append("family/effort  P_clean  P_loud [95%]  P_silent  P_silent accepted [95%]  session_cost_usd (cost)  needed_credit_usd (credit)  credit_p80_usd (80% credit)  time h  J* USD  sampled J*  tier (pi; accepted-risk quantile)")
     for row in result["cells"]:
         fields = [f"{row['family']}/{row['effort']}"]
         for name in ("P_clean", "P_loud", "P_silent", "P_silent_accepted"):
+            # Only the loud rate and the accepted-defect share have a belief, so only they have a range.
             p = row[name]
-            fields.append(f"{p['mean']:.3f} [{p['lower']:.3f}, {p['upper']:.3f}]")
+            fields.append(f"{p['mean']:.3f}" + (f" [{p['lower']:.3f}, {p['upper']:.3f}]" if "lower" in p else ""))
         fields.extend((f"{row['session_cost_usd']:.4f}" if row["session_cost_usd"] is not None else "unknown",
                        f"{row['needed_credit_usd']:.4f}" if row["needed_credit_usd"] is not None else "unknown",
                        f"{row['credit_p80_usd']:.4f}" if row["credit_p80_usd"] is not None else "unknown",
