@@ -90,7 +90,8 @@ concurrency
 - [Packaging and release](releasing.md) — versioning, distribution validation
   and publication.
 - [Changelog](changelog.md) — release history and links to archived upgrade guides.
-- [Image provenance](assets/README.md) — origin and presentation of the project mark.
+- [Image provenance](assets/README.md) — origin and presentation of the project mark
+  and the technical report's figure.
 - [Session handoff](session_handoff_format.md) — reporting completed and open work.
 
 ```{toctree}
