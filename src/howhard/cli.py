@@ -277,7 +277,7 @@ def main(argv=None):
             result = report(engine)
         elif args.command == "usage":
             result = {"observed": engine.attach_usage(args.execution_id, read_json(args.manifest), id=args.id),
-                      "memory_update": engine.last_memory_update}
+                      "memory_update": engine.last_memory_update, "refinement": engine.last_refinement}
         elif args.command == "observe":
             options = {key: getattr(args, key) for key in ("cause", "tokens", "seconds", "active_seconds", "queue_wait_seconds", "cost_usd", "ticket", "note", "amends", "date", "id") if getattr(args, key) is not None}
             if args.execution_usage is not None:
@@ -292,10 +292,11 @@ def main(argv=None):
                 observed = engine.observe(args.task_type, args.model, args.effort, args.outcome, decision=args.decision, native=args.native, **context_options, **options)
             else:
                 raise HowHardError("observe: expected DECISION_ID OUTCOME, or TASK_TYPE MODEL EFFORT OUTCOME")
-            result = {"observed": observed, "memory_update": engine.last_memory_update}
+            result = {"observed": observed, "memory_update": engine.last_memory_update,
+                      "refinement": engine.last_refinement}
         elif args.command == "flush":
             ids = engine.flush()
-            result = {"moved": len(ids), "ids": ids}
+            result = {"moved": len(ids), "ids": ids, "refinement": engine.last_refinement}
         print(json.dumps(result, allow_nan=False, sort_keys=True) if args.json else render(result))
         return 0
     except KeyboardInterrupt:

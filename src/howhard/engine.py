@@ -89,6 +89,10 @@ class Engine:
         self.llm = llm
         self.backend = {"mode": "explicit", "backend": str(getattr(llm, "identity", type(llm).__name__))} if llm is not None else {"mode": "calling-agent"}
         self.last_memory_update = {"status": "not-requested"}
+        self.last_refinement = {"status": "not-requested"}
+        if not self.config.unrefined:
+            from .refine import KEYS
+            self.config.unrefined = {(name, key): self.config.data[name][key] for name, key in KEYS}
         self._summaries = {}
         self.receipt_hosts = {}
         self.receipt_forecasts = {}
@@ -102,15 +106,18 @@ class Engine:
         claimed = (config.state_root / "store.json").exists()
         boundary = storage.reading(config) if claimed else storage.locked(config, operation="store initialize")
         with boundary:
-            from . import native, state
+            from . import native, refine, state
             state.check(config)
             native.apply(config, native.read(config))
             raw_rows, _ = storage.snapshot(config)
+            refined = refine.read(config)
             if not claimed:
                 state.claim(config)
             from . import names
             # Imported names for runs whose receipt stores none, read with the same rows.
             self.names = names.read(config)
+        # Each refinable constant is its default, then its refined value, then its configured one.
+        refine.apply(config, refined)
         self.raw_rows = raw_rows
         self.rows = storage.effective_rows(config, raw_rows)
         # Historical identity admission does not change forecasts for a disjoint
@@ -589,7 +596,13 @@ class Engine:
         except HowHardError as exc:
             # The observation is durable. Retrying the writer must not duplicate it.
             self.last_memory_update = {"status": "failed", "error": str(exc), "evidence_id": row["id"]}
+        self.last_refinement = self._refine("observe")
         return row
+
+    def _refine(self, after):
+        """Re-estimate the refined constants when due; a failure is a status, never an error."""
+        from .refine import refine
+        return refine(self, after=after)
 
     def observe_decision(self, decision, outcome, **options):
         receipt = decisions.load(self.config, decision)
@@ -639,4 +652,5 @@ class Engine:
     def flush(self):
         ids = storage.flush(self.config)
         self.refresh()
+        self.last_refinement = self._refine("flush")
         return ids

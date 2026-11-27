@@ -27,7 +27,8 @@ def validate_store(path):
     names = {entry.name for entry in path.iterdir()}
     known = {"pending.jsonl", "pending.lock", "outcomes.jsonl", "posterior.npz", "memory.sqlite3",
              "llm-cache", "inference.jsonl", "decision-events.jsonl",
-             "imported-prior.json", "native-models.json", "store.json", "project.json", "project.lock"}
+             "imported-prior.json", "native-models.json", "store.json", "project.json", "project.lock",
+             "refined-constants.json"}
     known.update({"write-queue", "write-queue.lock", "storage.lock", "retrieval.sqlite3", "payloads.sqlite3", "models"})
     if names and not names & known:
         raise HowHardError(f"state: refusing unrelated existing directory {path}")

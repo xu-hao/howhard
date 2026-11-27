@@ -1150,6 +1150,70 @@ budget; one trusted or on-trial cell stops this widening. The
 {ref}`selection reference <admission-tiers>` defines the receipt fields, and the
 [capability filter](capability.md) defines widening.
 
+### Refined constants
+
+The half-life, the three discounts, the rung worth, the three task worths, the miss
+{math}`D`, the scatter share and the caught-share worth are estimated constants. Their
+defaults work on an empty record; once the store's own record is large enough, each is
+re-estimated from it, outside the decision path and with no tuning by the user. A
+decision only reads the cached result.
+
+A scored run is a finished routed run with a v11 receipt. Its beliefs are rebuilt with a
+value tried, from the receipt (the candidates with their similarity, days, weight,
+cell, agent and ticket; the forecasts; the host) and from the rows and amendments
+observed before its decision. The score is the log probability those beliefs gave to
+what happened:
+
+```{math}
+\begin{aligned}
+\text{outcome}_i&=\begin{cases}
+\ln E[\theta_l] & \text{loud}\\
+\ln(1-E[\theta_l])+\ln E[S] & \text{silent}\\
+\ln(1-E[\theta_l])+\ln(1-E[S]) & \text{clean}
+\end{cases}\\
+\text{time}_i&=\ln \phi\bigl(y_i;\ m',\ s'^2+\tau^2\bigr),\qquad
+\text{caught}_i=\begin{cases}\ln d & \text{loud}\\ \ln(1-d) & \text{silent}\end{cases}
+\end{aligned}
+```
+
+- {math}`E[\theta_l]`, {math}`E[S]`: the averages of the run's cell's two outcome
+  beliefs, rebuilt with the value tried.
+- {math}`y_i`: the log of the run's recorded active time; {math}`m'`, {math}`s'`: the
+  centre and spread of the cell's active-time belief; {math}`\tau=D\sqrt{\text{scatter share}}`
+  the run-to-run scatter; {math}`\phi(y;\mu,v)` the normal density with mean
+  {math}`\mu` and variance {math}`v`.
+- {math}`d`: the host's caught share before the decision.
+
+The constants are tried one at a time, in a fixed order, each with the earlier ones at
+their refined values:
+
+```{math}
+\begin{aligned}
+d_i&=\text{score}_i(\text{tried})-\text{score}_i(\text{current}),\qquad
+\text{gain}=\bar d,\qquad \text{se}=\frac{\operatorname{sd}(d)}{\sqrt n},\\
+\text{move}&\iff n\ge 200\ \text{and}\ \text{gain}>2\,\text{se}.
+\end{aligned}
+```
+
+- {math}`n`: the scored runs of the constant's score: finished, accepted, timed or
+  failed runs. At most the 2,000 most recent are scored.
+- {math}`\operatorname{sd}(d)`: the sample standard deviation of the differences.
+
+In plain words, a constant leaves its default only when the record is large enough and
+the gain is more than twice its noise; the best passing value wins and a tie keeps the
+one nearer the default. {math}`D` and the scatter share also try the values the record
+measures, {math}`D=\sqrt{\overline{e^2}}` from the timed runs' misses
+{math}`e_i=\ln(T_i/\text{prediction}_i)` and {math}`\tau=\sqrt{\overline{p^2}/2}` from
+the differences {math}`p_j` between consecutive runs of one cell on one ticket, once 30
+pairs exist.
+
+Example: 400 runs whose differences average 0.012 with a standard deviation of 0.10
+give {math}`\text{se}=0.005`, so the constant moves; an average of 0.008 does not.
+
+A constant set in the configuration file is never tried. A refined value enters the
+receipt's policy blocks like any other value, and the
+{ref}`reference <refined-constants>` defines the cached file and when it is written.
+
 ## 6 Retrospective defect attribution
 
 Delayed feedback matters because a task that passes today's checks can contain
@@ -1281,11 +1345,11 @@ The components have distinct statistical meanings:
 | --- | --- | --- |
 | Independent LLM judgments | Cold-start task-specific prototype orders and forecasts | LLM judgment needs empirical validation |
 | Capability threshold | Generalized Bayesian update with weighted noisy likelihoods | Scalar order and heuristic transfer from related tasks |
-| Evidence weights | Task similarity, a 14-day half-life and at most one run's weight per ticket, over the runs of matched prototypes | Similarity is a heuristic transfer strength; the half-life and the 256-run cap are defaults, not fitted values |
+| Evidence weights | Task similarity, a half-life (14 days by default, refined from the record) and at most one run's weight per ticket, over the runs of matched prototypes | Similarity is a heuristic transfer strength; the 256-run cap is fixed, and the half-life moves only on a clear gain over 200 or more scored runs |
 | Cross-model ordering | Constrained local posterior/MAP search | Approximate search over rankings |
 | Memory support | Tempered, recency-weighted predictive evidence | Forecast support does not establish truth or causality |
-| Outcome beliefs | Two independent per-cell beliefs on a fixed log-odds grid, for the loud rate and the accepted-defect share: a bell-curve start worth `N_start` runs, reshaped by the cell's weighted counts | The two rates are treated as independent; the worths (5, 32 and 16) and the 14-day evidence half-life are fixed modelling choices |
-| Active time and token beliefs | Per-cell log-normal belief with a conjugate update from same-cell runs | The miss `D`, scatter share and worths are fixed modelling choices; token kinds are taken to move together |
+| Outcome beliefs | Two independent per-cell beliefs on a fixed log-odds grid, for the loud rate and the accepted-defect share: a bell-curve start worth `N_start` runs, reshaped by the cell's weighted counts | The two rates are treated as independent; `model_worth` (5) is fixed, and the task worths (32 and 16), the discounts and the half-life are defaults refined from the record |
+| Active time and token beliefs | Per-cell log-normal belief with a conjugate update from same-cell runs | The miss `D`, scatter share and amount worth are defaults refined from the record; token kinds are taken to move together |
 | Credit check | 80% point of a log-normal matched to the average and variance of run credit | A moment match, not the exact distribution of a sum |
 | Admission tiers | Share of the accepted-defect belief within epsilon, cut at 0.80 and 0.20 | No calibrated coverage guarantee; the two lines are policy choices |
 | Cost and its spread | The cost to an accepted result averaged over four independent per-cell beliefs, with the exact variance of that cost | Credit, active time, the loud rate and the accepted-defect share are treated as independent; same-cell retries are taken to be stationary |

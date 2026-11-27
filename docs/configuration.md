@@ -419,6 +419,51 @@ rate. Review these meanings when writing a custom policy. See
 [estimator assumptions](capability.md) and the
 {ref}`selection objective <accepted-result-selection>`.
 
+(refined-constants-configuration)=
+### Refined constants
+
+Eleven of the estimated constants are re-estimated from the store's own record, with no
+setting and no tuning. Until the record holds 200 scored runs every one keeps its
+default, and decisions are the same as with no refinement.
+
+| Constant | Values tried | Judged by |
+| --- | --- | --- |
+| `sampling.half_life_days` | 7, 10, **14**, 21, 30 | outcomes |
+| `sampling.agent_discount` | 0, 0.1, **0.25**, 0.5 | outcomes |
+| `sampling.model_discount` | 0.1, **0.25**, 0.5 | outcomes |
+| `sampling.effort_discount` | 0.25, **0.5**, 0.75, 1 | outcomes |
+| `sampling.rung_worth` | 20, **40**, 80 | outcomes |
+| `sampling.task_worth_silent` | 8, 16, **32**, 64 | outcomes of accepted runs |
+| `sampling.task_worth_loud` | 8, **16**, 32, 64 | outcomes |
+| `sampling.duration_miss` | **1.3**, the measured miss | active time |
+| `sampling.scatter_share` | **0.5**, the measured share | active time |
+| `sampling.task_worth_amount` | 0.5, **1**, 2, 4 | active time |
+| `capability.caught_share_worth` | 6, **12**, 24, 40 | caught failures |
+
+The default is in bold. The constants are tried one at a time in this order, each with
+the earlier ones at their refined values. A value replaces the default only when the
+record is large enough and the gain is more than twice its noise
+({ref}`the rule <refined-constants>`). No other constant is refined: `model_worth`,
+`comparison_cap` and the policy constants keep their configured or default values.
+
+The refinement runs after `observe` and `flush`, never inside `summary`, `context`,
+`retrieve`, `decide` or `pick`; a decision only reads the cached result,
+`refined-constants.json` in the state root. Each constant is its default, then its
+refined value, then its configured value: a key set in the configuration file is never
+tried and always wins. To pin a constant at its default, or at any other valid value,
+set it:
+
+```toml
+[sampling]
+half_life_days = 14.0
+```
+
+A refined value enters each receipt's sampling or capability policy like any other
+value. A refinement that moves a constant changes the configuration digest, so a request
+prepared before it is refused as stale and must be prepared again. `observe --json`,
+`usage attach --json` and `flush --json` report the refinement's status under
+`refinement`, beside `memory_update`.
+
 (retired-settings)=
 ## Retired settings
 

@@ -1073,6 +1073,136 @@ fields, `pi`, `T`, the three credit numbers, `session_cost_usd`, `credit_ok`, `J
 from the seed; a receipt whose stored values differ is refused. Receipts older than v11
 keep the rules they were made with ({ref}`older receipts <frozen-formats>`).
 
+(refined-constants)=
+### Refined constants
+
+Eleven estimated constants are re-estimated from the store's own record, outside the
+decision path: `half_life_days`, the three discounts, `rung_worth`, `task_worth_silent`,
+`task_worth_loud`, `duration_miss`, `scatter_share`, `task_worth_amount` and
+`caught_share_worth`. The values tried and the order are listed in the
+{ref}`configuration guide <refined-constants-configuration>`. No formula, policy
+constant or receipt field changes; a refined value only replaces a default.
+
+**Scored runs.** A scored run is a finished routed run (`clean`, `loud` or `silent`)
+whose decision is a `howhard-decision-v11` receipt holding a forecast for the cell that
+ran. At most the 2,000 most recent are scored, so the result is a pure function of the
+record and the configuration. Runs under older receipts are history only: they enter the
+ladders and the caught shares of later decisions, as they do at decision time.
+
+Each scored run is predicted only from the rows and amendments observed before its
+decision was prepared (`semantic.evidence_candidates.prepared_at`). The receipt stores
+each candidate's similarity, days, weight on record, cell, agent, outcome, active time
+and ticket, so the candidates are weighed again at any half-life and discount without
+the reranker. The corrected prediction is rebuilt from the routed runs observed before
+the decision, each as amended then, without the receipt's candidates; the guesses,
+hosts and agent labels come from the receipts. The caught share is rebuilt from the
+failed routed runs observed before the decision. At a receipt's own constants every
+rebuilt belief equals the stored one. The prototype match, the reranker and
+`comparison_cap` fix which candidates a receipt holds, so they are not refined; a
+receipt whose prototypes matched more than `comparison_cap` runs names only the
+candidates it scored, and the others read as history.
+
+**Scores.**
+
+```text
+outcome:  ln E[theta_l]                        the run ended loud
+          ln(1 - E[theta_l]) + ln E[S]         it ended silent
+          ln(1 - E[theta_l]) + ln(1 - E[S])    it ended clean
+time:     ln density of y = ln T  under  Normal(m', s'^2 + tau^2)
+caught:   ln d(host)       for a failed run that ended loud
+          ln(1 - d(host))  for one that ended silent
+```
+
+- `E[theta_l]`, `E[S]`: the averages of the cell's loud-rate and accepted-defect-share
+  {ref}`beliefs <outcome-posterior>`, rebuilt with the value tried.
+- `T`: the run's recorded active time, held at 1 second or more; `y = ln T`.
+- `m'`, `s'`: the centre and spread of the cell's active-time
+  {ref}`belief <amount-beliefs>` after its own candidate runs, rebuilt with the value
+  tried.
+- `tau = D * sqrt(scatter_share)`: the run-to-run scatter, with `D` the cell's
+  remaining miss of the prediction.
+- `d(host)`: the {ref}`caught share <host-aware-band>` of the decision's host before
+  the decision, at its risk class's epsilon.
+
+In plain words: a value is better when the beliefs it gives put more probability on what
+then happened. Example: with `E[theta_l] = 0.20` and `E[S] = 0.05`, a clean run scores
+`ln 0.8 + ln 0.95 = -0.274`, a silent one `ln 0.8 + ln 0.05 = -3.219` and a loud one
+`ln 0.2 = -1.609`.
+
+**The rule for leaving a default.**
+
+```text
+d_i  = score_i(tried) - score_i(current)      for each scored run i
+gain = mean(d_i)
+se   = sd(d_i) / sqrt(n)
+move <=> n >= 200  and  gain > 2 * se
+```
+
+- `current`: the constant's default (its value before any refinement), with every
+  earlier constant at its refined value.
+- `n`: the scored runs of the constant's score: finished runs for the outcome score
+  (accepted runs, `clean` or `silent`, for `task_worth_silent`), runs with a recorded
+  active time above zero for the time score, and `loud` or `silent` runs for the caught
+  score.
+- `sd`: the sample standard deviation of the differences.
+
+In plain words: a constant leaves its default only when the record is large enough and
+the gain is more than twice its noise. Of the values that pass, the one with the highest
+gain wins, and a tie keeps the one nearer the default. There is one pass, in the listed
+order. A key set in the configuration file is never tried. Example: `n = 400`,
+`gain = 0.012` and `sd = 0.10` give `se = 0.005`, so the constant moves; with
+`gain = 0.008` it stays.
+
+**The two measured values.** `duration_miss` and `scatter_share` try their default and
+a value the record measures:
+
+```text
+D             = sqrt(mean(e_i^2))           e_i = ln(T_i / prediction_i)
+tau           = sqrt(mean(p_j^2) / 2)
+scatter_share = min(1, tau^2 / D^2)
+```
+
+- `e_i`: the miss of a timed scored run: its log active time minus the log of its
+  cell's corrected prediction, at the current constants.
+- `p_j`: the difference in log active time between two consecutive timed scored runs
+  of one cell on one ticket. `tau` is offered once 30 such pairs exist; until then
+  `scatter_share` keeps its default.
+
+In plain words: `D` is the typical miss of the prediction, and the share is the part of
+that miss two runs of one task already show. Example: misses of 1, -1, 2 and -2 give
+`D = 1.581`; pairs that differ by 0.6 and 0.8 give `tau = 0.5`, so
+`scatter_share = 0.25 / 2.5 = 0.1`.
+
+**When it runs.** Never inside `summary`, `context`, `retrieve`, `decide` or `pick`.
+After `observe` (and `usage attach`), once the row is durable and memory learning has
+run, when 200 scored runs exist and the cached result covers 25 fewer or is missing.
+After `flush`, when 200 scored runs exist and the cached result names another record or
+is missing. The work reads one snapshot of the store outside the write turn; publishing
+the file is the only admitted write, and a result that covers fewer scored runs than
+the cached one is dropped. A failure never fails the observation or the flush. Its
+status is returned as `refinement` beside `memory_update` (Python
+`Engine.last_refinement`): `not-due` with a `reason`, `published` with `scored_runs`
+and `moved` (each constant that left its default, with its value), `dropped`, or
+`failed` with an `error`.
+
+**The cached file.** `refined-constants.json` in the state root, written atomically as
+canonical JSON, so two refinements of one record give byte-identical files:
+
+| Field | Content |
+| --- | --- |
+| `format` | `howhard-refined-v1` |
+| `rows` | The SHA-256 digest of the rows read |
+| `scored_runs` | The number of scored runs on record |
+| `constants.<key>` | For each of the eleven keys: `value` (the value decisions use unless the configuration file sets the key), `n`, and `gain` and `se` of the value chosen, or of the best other value tried when none passed (null when none was tried). A key the configuration file set has every field null. |
+
+The engine applies it at refresh, in the order default, refined, configured, and
+refuses a malformed file by name; deleting the file returns every constant to its default
+or configured value until the next refinement. Refined values enter `selection.sampling_policy` and
+`capability.policy` and are checked there when a receipt loads; no receipt field is
+added. A refinement that moves a constant changes the configuration digest, so a request
+prepared before it is refused as {ref}`stale <inference-cache>`. With fewer than 200
+scored runs nothing is written and every constant keeps its default.
+
 ## Prices and measurements
 
 Prices belong to the host inventory. If any forecasted band/widened candidate is unpriced, worker money is
