@@ -18,8 +18,9 @@ from . import semantic
 
 REQUEST_FORMAT = "howhard-agent-request-v7"
 # What a request scored when it was prepared: the candidate runs, the capability reader's
-# observations, the failed runs behind the host's caught share and the record on other tasks.
-LEARNED_FIELDS = ("weights_policy", "evidence_candidates", "capability_observations", "caught_record", "prediction")
+# observations and the record on other tasks. A request stored without the failed runs behind
+# the host's caught share has them read when it is used.
+LEARNED_FIELDS = ("weights_policy", "evidence_candidates", "capability_observations", "prediction")
 
 
 class Engine:
@@ -326,12 +327,9 @@ class Engine:
         from .native import host_name
         host_name(bundle["host"])
         if "learned_state" in bundle:
-            # A request keeps what it scored when it was prepared. One prepared by a build whose
-            # scored shape differs is refused here, not part-way through a decision.
-            from . import evidence
-            keys(bundle["learned_state"], LEARNED_FIELDS, where="request.learned_state")
-            evidence.validate(bundle["learned_state"]["evidence_candidates"],
-                              where="request.learned_state.evidence_candidates")
+            # A request keeps what it scored when it was prepared. One prepared by a build that
+            # scored no record on other tasks is refused here, not part-way through a decision.
+            keys(bundle["learned_state"], LEARNED_FIELDS, ["caught_record"], where="request.learned_state")
         with storage.reading(self.config):
             self._check_request(bundle)
         return bundle

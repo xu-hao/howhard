@@ -67,8 +67,8 @@ all change, and v11 is frozen.
   anything larger is still refused. `report` gains `receipts`: the count of stored
   receipts by format, and `rounded_probabilities`, the number that hold a probability
   in that band, which makes `howhard report --json` the sweep of a store's receipts. A
-  prepared request whose scored candidates or record have the shape of another build is
-  refused with an error naming the field instead of failing part-way through a decision.
+  prepared request whose scored state holds no record on other tasks is refused with an
+  error naming the missing field instead of failing part-way through a decision.
   The compatibility tests start from an authentic v10 receipt that a 5.0.0 build stored
   for a synthetic task.
 

@@ -1350,8 +1350,9 @@ A stored `P_clear` or `P_timely` may exceed 1 by at most `1e-10`
 masses can leave; a larger value is refused. The tolerance holds for every receipt
 format.
 
-A request prepared under another format, or whose scored candidates and record have
-another shape, is refused with an error that names the field; prepare a new request.
+A request prepared under another format is refused, and so is one whose scored state
+holds no record on other tasks (`request.learned_state` names the missing field);
+prepare a new request.
 A receipt labelled `howhard-decision-v11` whose shape differs from the frozen one is
 refused by the ordinary checks of its fields.
 
