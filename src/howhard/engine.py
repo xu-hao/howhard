@@ -96,6 +96,7 @@ class Engine:
         self._summaries = {}
         self.receipt_hosts = {}
         self.receipt_forecasts = {}
+        self.receipt_formats = {}  # The format label each receipt records, for the refinement's count.
         self.refresh()
         from .retrieval import RetrievalPipeline
         self.retrieval = retrieval if retrieval is not None else RetrievalPipeline.from_config(self.config)

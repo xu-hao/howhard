@@ -1097,10 +1097,16 @@ the reranker. The corrected prediction is rebuilt from the routed runs observed 
 the decision, each as amended then, without the receipt's candidates; the guesses,
 hosts and agent labels come from the receipts. The caught share is rebuilt from the
 failed routed runs observed before the decision. At a receipt's own constants every
-rebuilt belief equals the stored one. The prototype match, the reranker and
-`comparison_cap` fix which candidates a receipt holds, so they are not refined; a
-receipt whose prototypes matched more than `comparison_cap` runs names only the
-candidates it scored, and the others read as history.
+rebuilt belief equals the stored one, with one exception. The rebuild leaves out of the
+ladders only the candidates a receipt stores. When a decision's prototypes matched more
+than `comparison_cap` runs, the extra matched runs count in the rebuilt ladders, although
+the decision's own ladders left every matched run out; such a decision is rescored with
+more history than it had. The prototype match, the reranker and
+`comparison_cap` fix which candidates a receipt holds, so they are not refined.
+
+The refinement finds the receipts it may score by the format label each one records,
+`howhard-decision-v11`, before it loads and validates them to count the scored runs
+exactly.
 
 **Scores.**
 

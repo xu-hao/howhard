@@ -22,7 +22,10 @@ values, and one leaves its default only on a large enough record with a clear ga
 A receipt stores what each candidate run weighs before the half-life and the discounts
 (its similarity, its days, its weight on record, its cell, agent and ticket), so the weights
 are recomputed without the reranker; the corrected prediction and the host's caught share
-are rebuilt from the rows and from the forecasts and labels in receipts.
+are rebuilt from the rows and from the forecasts and labels in receipts. The rebuilt ladders
+leave out only the candidates a receipt stores: when its prototypes matched more than
+``comparison_cap`` runs, the extra matched runs count in the rebuilt ladders, although the
+decision's own ladders left every matched run out.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -705,20 +708,33 @@ def estimate(engine, *, record=None):
 # When it runs
 
 
-def _possible(engine):
-    """An upper bound on the scored runs, from the indexed decision summaries alone.
+def receipt_format(config, decision_id):
+    """The format label a stored receipt records, read without validating it; ``None`` when unreadable."""
+    import json
+    from .payload_store import get
+    try:
+        blob = get(config, "decisions", decision_id)
+        value = json.loads(blob) if blob is not None else None
+    except (HowHardError, ValueError, UnicodeError):
+        return None
+    return value.get("format") if isinstance(value, dict) else None
 
-    Receipts older than v11 index the cap-unmet policy they recorded; v11 retired it, so a
-    summary without it may name a v11 receipt. No receipt is loaded here.
+
+def _possible(engine, below=None):
+    """An upper bound on the scored runs: finished runs whose receipt records ``howhard-decision-v11``.
+
+    The format label is read from each named receipt without validating it, once per engine;
+    the refinement counts the scored runs exactly. With ``below``, the count stops early,
+    without reading a receipt, when even every finished run with a decision falls short of it.
     """
-    from .payload_store import decision_summaries
-    summaries = {s["decision_id"]: s for s in decision_summaries(engine.config)}
-    possible = 0
-    for row in engine.rows:
-        summary = summaries.get(row.get("decision_id")) if row["outcome"] in OUTCOMES else None
-        if summary is not None and "on_cap_unmet" not in (summary["selection"] or {}):
-            possible += 1
-    return possible
+    routed = [row["decision_id"] for row in engine.rows if row["outcome"] in OUTCOMES and row.get("decision_id")]
+    if below is not None and len(routed) < below:
+        return len(routed)
+    formats = engine.receipt_formats
+    for decision_id in dict.fromkeys(routed):
+        if decision_id not in formats:
+            formats[decision_id] = receipt_format(engine.config, decision_id)
+    return sum(formats[decision_id] == DECISION_FORMAT for decision_id in routed)
 
 
 def publish(engine, result):
@@ -746,7 +762,8 @@ def refine(engine, *, after):
     try:
         from .request_state import capture
         cached = read(engine.config)
-        possible = _possible(engine)
+        needed = cached["scored_runs"] + RESCORE_RUNS if after == "observe" and cached is not None else 0
+        possible = _possible(engine, below=max(MINIMUM_RUNS, needed))
         if possible < MINIMUM_RUNS:
             return {"status": "not-due", "reason": f"fewer than {MINIMUM_RUNS} scored runs"}
         if after == "observe" and cached is not None and possible < cached["scored_runs"] + RESCORE_RUNS:

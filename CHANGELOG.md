@@ -9,7 +9,9 @@
   is a finished routed run with a `howhard-decision-v11` receipt; its beliefs are
   rebuilt with each value tried, only from the rows and amendments observed before its
   decision, and scored by the log probability they gave to its outcome, its active time
-  or, for a failed run, whether its host caught it. The constants are tried one at a
+  or, for a failed run, whether its host caught it. Only the candidates a receipt stores are left out
+  of its rebuilt ladders, so a decision whose prototypes matched more than
+  `comparison_cap` runs is rescored with the extra matched runs as history. The constants are tried one at a
   time in a fixed order, and one leaves its default only when at least 200 runs are
   scored and the mean gain exceeds twice its standard error; `duration_miss` and
   `scatter_share` also try the values the record measures. **Changed behaviour:** once

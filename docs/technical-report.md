@@ -1161,8 +1161,10 @@ decision only reads the cached result.
 A scored run is a finished routed run with a v11 receipt. Its beliefs are rebuilt with a
 value tried, from the receipt (the candidates with their similarity, days, weight,
 cell, agent and ticket; the forecasts; the host) and from the rows and amendments
-observed before its decision. The score is the log probability those beliefs gave to
-what happened:
+observed before its decision. The rebuilt ladders leave out only the candidates the
+receipt stores, so when the decision's prototypes matched more than `comparison_cap`
+runs, the extra matched runs count as history there although the decision itself left
+them out. The score is the log probability those beliefs gave to what happened:
 
 ```{math}
 \begin{aligned}

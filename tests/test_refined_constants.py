@@ -420,6 +420,7 @@ def test_v7_to_v10_receipts_load_observe_replay_and_report_beside_a_refinement(s
     observe(engine, shared, RUNS - 2)
     assert observe(engine, shared, RUNS - 1)["status"] == "published"
     current = load(engine.config, shared.last["decision_id"])
+    assert refine.receipt_format(engine.config, shared.last["decision_id"]) == "howhard-decision-v11"
     ids = {}
     for name, build in (("v10", to_v10), ("v9", to_v9), ("v8", to_v8), ("v7", to_v7)):
         legacy = build(current)
@@ -428,6 +429,8 @@ def test_v7_to_v10_receipts_load_observe_replay_and_report_beside_a_refinement(s
             put(engine.config, "decisions", ids[name], canonical(legacy) + b"\n")
         loaded = load(engine.config, ids[name])
         assert loaded == legacy and loaded["format"] == f"howhard-decision-{name}"
+        # The refinement tells the receipts it may score by the format label each one records.
+        assert refine.receipt_format(engine.config, ids[name]) == f"howhard-decision-{name}"
         # An older receipt keeps its own frozen policy, which names no refined constant it lacks.
         assert "rung_worth" not in loaded["selection"]["sampling_policy"]
     for name, decision_id in ids.items():
