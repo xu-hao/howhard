@@ -84,6 +84,21 @@ def cell(summary, family, effort):
     return next(c for c in summary["cells"] if (c["family"], c["effort"]) == (family, effort))
 
 
+def averaged_cost(result, row):
+    """A cell's cost to an accepted result, averaged over the beliefs its decision stores.
+
+    Every attempt costs its run and its time, a loud run is retried, and each loud failure
+    and each accepted defect has its price: ``E[R]`` is the loud belief's ``attempts`` and
+    ``E[S]`` the average of the accepted-defect belief.
+    """
+    constants = result["constants"]
+    loud = next(c for c in result["semantic"]["sampling"]["cells"]
+                if (c["family"], c["effort"]) == (row["family"], row["effort"]))["outcome_beliefs"]["loud"]
+    run = row["C_run"] if result["cost_policy"]["worker_money_included"] else 0.
+    return ((run + constants["lambda_per_hour"] * row["T"]) * loud["attempts"]
+            + constants["C_loud"] * (loud["attempts"] - 1) + constants["C_silent"] * row["P_silent_accepted"]["mean"])
+
+
 # Synthetic host inventory and prices; these are fixture inputs, not provider claims.
 MODELS = {"haiku": "claude-haiku-5-5", "sonnet": "claude-sonnet-5-5",
           "opus": "claude-opus-5-5", "fable": "claude-fable-5-1"}

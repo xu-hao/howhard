@@ -11,11 +11,11 @@ from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 import json
 import math
+import statistics
 
-import numpy as np
 import pytest
 
-from conftest import own_runs_only, row
+from conftest import averaged_cost, own_runs_only, row
 from howhard import Engine
 from howhard.context import canonical, digest
 from howhard.decisions import load
@@ -23,7 +23,7 @@ from howhard.payload_store import put
 from howhard.report import report
 from howhard.storage import locked
 from howhard.prediction import assemble, by_cell
-from howhard.success import DEFAULTS, cost, merged_forecast, outcome_beliefs
+from howhard.success import DEFAULTS, merged_forecast, outcome_beliefs, uniforms
 from howhard.validation import HowHardError
 from legacy_receipts import to_v7, to_v8, to_v9, to_v10
 from test_capability_filter import SimilarityDouble, filtering
@@ -78,6 +78,7 @@ def reference_belief(prediction, stated_spread=0., n_yes=0., n_no=0., worth=5., 
             "variance": math.fsum(share * rate ** 2 for share, rate in zip(b, rates)) - mean ** 2,
             "pi": lambda epsilon: math.fsum(share for share, rate in zip(b, rates) if rate <= epsilon),
             "attempts": math.fsum(share * (1 + math.exp(x)) for share, x in zip(b, xs)),
+            "attempts_sq": math.fsum(share * (1 + math.exp(x)) ** 2 for share, x in zip(b, xs)),
             "odds": math.fsum(share * math.exp(x) for share, x in zip(b, xs))}
 
 
@@ -175,7 +176,7 @@ def test_the_worked_examples_of_the_start_reproduce_at_the_decision_boundary(tmp
     assert set(result["semantic"]["worlds"]) == {"llm"} and result["constants"]["epsilon"] == EPSILON
     assert result["semantic"]["interval_kind"] == "log-odds-grid"
     cell = calibration(result, "fixture/worker")
-    assert set(cell) == {"family", "effort", "expert", "outcome_beliefs", "probabilities", "cost_sd"}
+    assert set(cell) == {"family", "effort", "outcome_beliefs", "probabilities", "cost_sd", "sampled"}
     loud, silent = cell["outcome_beliefs"]["loud"], cell["outcome_beliefs"]["silent"]
     common = {"prediction", "stated_spread", "n_start", "spread", "centre", "counts", "mean", "lower", "upper"}
     assert set(silent) == common | {"pi"} and set(loud) == common | {"attempts", "odds"}
@@ -207,23 +208,25 @@ def test_the_worked_examples_of_the_start_reproduce_at_the_decision_boundary(tmp
     assert row["P_silent"] == {"mean": pytest.approx(.8 * .1)} and row["P_clean"] == {"mean": pytest.approx(.8 * .9)}
     assert cell["probabilities"] == [row["P_clean"]["mean"], row["P_loud"]["mean"], row["P_silent"]["mean"]]
     assert row["pi"] == silent["pi"] and row["tier"] == "on-trial"
-    # run = 2, one hour at 25, C_loud = 50, C_silent = 1000: J = 146.25, and until the cost is
-    # averaged over the beliefs it is the cost formula at P_loud and P_silent.
+    # run = 2, one hour at 25, C_loud = 50, C_silent = 1000. The cost is averaged over the beliefs:
+    # 27 for each of E[R] attempts, 50 for each of E[R] - 1 loud failures and 1000 * E[S].
     constants = result["constants"]
     assert (constants["C_loud"], constants["C_silent"], constants["lambda_per_hour"]) == (50., 1000., 25.)
     assert row["session_cost_usd"] == pytest.approx(2.) and row["T"] == pytest.approx(1.)
-    assert row["J"] == pytest.approx(146.25)
-    assert row["J"] == pytest.approx(cost(2., 1., row["P_loud"]["mean"], row["P_silent"]["mean"], constants))
-    assert row["expected_attempts"] == pytest.approx(1.25)
-    # Var(theta_l) = 0.0314 and Var(S) = 0.0188 give Var_rates(J) of about 19,300: a spread of 139.
-    variances = [reference_belief(.20, 0., 0., 0., *WORTHS["loud"])["variance"],
-                 reference_belief(.10, 0., 0., 0., *WORTHS["silent"])["variance"]]
-    assert variances == pytest.approx([.0314, .0188], abs=5e-5)
-    rates = ((50 + 146.25 - 1000 * .10) / .8) ** 2 * variances[0] + 1000 ** 2 * variances[1]
-    assert math.sqrt(rates) == pytest.approx(139, abs=.5)
-    # The spread of active time adds its own term; run cost is exact.
-    time = (25 / .8) ** 2 * 1. ** 2 * math.expm1(row["active_time"]["spread"] ** 2)
-    assert cell["cost_sd"] == pytest.approx(math.sqrt(rates + time)) and time > 0
+    assert row["expected_attempts"] == loud["attempts"] > 1.25
+    assert row["J"] == pytest.approx(27 * loud["attempts"] + 50 * (loud["attempts"] - 1) + 1000 * silent["mean"])
+    assert row["J"] == pytest.approx(averaged_cost(result, row))
+    # The cost at the two averages is 146.25; the curved retry factor makes the average over the belief dearer.
+    assert row["J"] > 146.25 == pytest.approx((2 + 25 + 50 * .2 + 1000 * .08) / .8)
+    # The exact spread: X = K + 25 T + 50 is what one attempt costs plus C_loud, and
+    # Var(J) = E[X^2] E[R^2] - (E[X] E[R])^2 + C_silent^2 Var(S).
+    reference = {rate: reference_belief(belief["prediction"], belief["stated_spread"], *belief["counts"], *WORTHS[rate])
+                 for rate, belief in (("loud", loud), ("silent", silent))}
+    mean_x = 2 + 25 + 50
+    second_x = row["credit_variance"] + 25 ** 2 * 1. ** 2 * math.expm1(row["active_time"]["spread"] ** 2) + mean_x ** 2
+    variance = (second_x * reference["loud"]["attempts_sq"] - (mean_x * reference["loud"]["attempts"]) ** 2
+                + 1000 ** 2 * reference["silent"]["variance"])
+    assert cell["cost_sd"] == pytest.approx(math.sqrt(variance)) and row["credit_variance"] > 0
     receipt = load(engine.config, result["decision_id"])
     assert receipt["format"] == "howhard-decision-v11" and receipt["semantic"]["outcome_observations"] == []
     assert receipt["semantic"]["sampling"]["cells"] == result["semantic"]["sampling"]["cells"]
@@ -244,8 +247,7 @@ def test_with_no_counted_run_each_belief_averages_its_prediction(tmp_path, clean
         assert 0 < belief["lower"] <= belief["mean"] <= belief["upper"] < 1
     row = result["cells"][0]
     assert sum(row[field]["mean"] for field in ("P_clean", "P_loud", "P_silent")) == pytest.approx(1.)
-    assert row["J"] == pytest.approx(cost(row["session_cost_usd"], row["T"], row["P_loud"]["mean"],
-                                          row["P_silent"]["mean"], result["constants"]))
+    assert row["J"] == pytest.approx(averaged_cost(result, row))
 
 
 def test_experts_merge_into_one_forecast_per_rate_and_disagreement_widens_it():
@@ -430,8 +432,7 @@ def test_without_discounts_counted_runs_change_only_their_own_cell_and_the_forec
     seen_row, unseen_row = by_model(result)["fixture/seen"], by_model(result)["fixture/unseen"]
     assert seen_row["P_clean"]["mean"] > .65 > unseen_row["P_clean"]["mean"]
     assert seen_row["pi"] > unseen_row["pi"] and seen["cost_sd"] < unseen["cost_sd"]
-    assert seen_row["J"] == pytest.approx(cost(seen_row["session_cost_usd"], seen_row["T"], seen_row["P_loud"]["mean"],
-                                               seen_row["P_silent"]["mean"], result["constants"]))
+    assert seen_row["J"] == pytest.approx(averaged_cost(result, seen_row))
     load(engine.config, result["decision_id"])
 
 
@@ -509,7 +510,7 @@ def test_the_same_request_record_and_seed_give_the_same_decision_and_sampled_val
     sampled = lambda result: {c["model"]: c["sampled_J"] for c in result["cells"]}
     assert sampled(first) == sampled(again)
     assert first["semantic"]["sampling"] == again["semantic"]["sampling"]
-    assert first["semantic"]["sampled_expert"] == again["semantic"]["sampled_expert"]
+    assert "sampled_expert" not in first["semantic"]
     assert any(sum(c["outcome_beliefs"]["loud"]["counts"]) > 2 for c in first["semantic"]["sampling"]["cells"])
     # The same record in another store, prepared a moment later, chooses the same cell.
     other = decide(recorded("second"), candidates, specs, seed=7)
@@ -518,23 +519,30 @@ def test_the_same_request_record_and_seed_give_the_same_decision_and_sampled_val
     # Other seeds draw other values from the same beliefs.
     others = [engine.decide(request_id, response, seed=seed) for seed in range(8)]
     assert len({tuple(sorted(sampled(result).items())) for result in others}) == 8
-    assert all(result["semantic"]["sampling"]["cells"] == first["semantic"]["sampling"]["cells"] for result in others)
+    # The seed moves the sampled values alone: the beliefs, the cost and its spread stay.
+    frozen = lambda result: [{k: v for k, v in c.items() if k != "sampled"} for c in result["semantic"]["sampling"]["cells"]]
+    assert all(frozen(result) == frozen(first) for result in others)
     assert all(result["cells"][0]["J"] == first["cells"][0]["J"] for result in others)
 
-    # One cell: the seed picks the expert, then one uniform number for theta_l and one for S, each
-    # read at the first grid point whose running total reaches it, then the active-time draw.
+    # One cell: four uniform numbers in the order S, theta_l, active time, credit. Each rate is read
+    # at the first grid point whose running total reaches its number.
     single = Engine(directory=tmp_path / "single")
+    z = statistics.NormalDist().inv_cdf
     for seed in (0, 1, 2, 11):
         result = decide(single, WORKER, {"fixture/worker": spec(.72, .20, .08)}, seed=seed)
-        rng = np.random.default_rng(seed)
-        rng.choice(["llm"], p=[1.])
-        theta = reference_belief(.20, 0., 0., 0., *WORTHS["loud"])["point"](float(rng.random()))
-        share = reference_belief(.10, 0., 0., 0., *WORTHS["silent"])["point"](float(rng.random()))
+        u_share, u_loud, u_time, u_credit = uniforms(seed, 4)
+        share = reference_belief(.10, 0., 0., 0., *WORTHS["silent"])["point"](u_share)
+        theta = reference_belief(.20, 0., 0., 0., *WORTHS["loud"])["point"](u_loud)
         row, constants = result["cells"][0], result["constants"]
-        hours = float(rng.lognormal(row["active_time"]["centre"], row["active_time"]["spread"])) / 3600
-        expected = (row["session_cost_usd"] / (1 - theta) + constants["C_loud"] * theta / (1 - theta)
-                    + constants["C_silent"] * share + constants["lambda_per_hour"] * hours / (1 - theta))
+        hours = math.exp(row["active_time"]["centre"] + row["active_time"]["spread"] * z(u_time)) / 3600
+        tokens = row["token_beliefs"]["tokens"]
+        run = math.exp(tokens["centre"] + tokens["spread"] * z(u_credit)) * 1. / 1e6
+        expected = ((run + constants["lambda_per_hour"] * hours) / (1 - theta) + constants["C_loud"] * theta / (1 - theta)
+                    + constants["C_silent"] * share)
         assert row["sampled_J"] == pytest.approx(expected)
+        sampled = result["semantic"]["sampling"]["cells"][0]["sampled"]
+        assert sampled == {"S": pytest.approx(share), "u": pytest.approx(logit(theta)),
+                           "seconds": pytest.approx(3600 * hours), "credit": pytest.approx(run)}
 
 
 def test_a_v11_receipt_stores_both_beliefs_and_refuses_one_altered_number(tmp_path):

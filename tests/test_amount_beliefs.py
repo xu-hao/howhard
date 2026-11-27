@@ -427,7 +427,7 @@ def test_a_stated_range_of_any_width_keeps_every_number_finite(tmp_path):
     assert all(math.isfinite(engine.decide(request_id, response, seed=s)["cells"][0]["sampled_J"]) for s in range(20))
 
 
-# --- 5. The cost spread and the draw keep their shape ---------------------------------------
+# --- 5. The cost spread and the draw ---------------------------------------------------------
 
 def timed_engine(directory):
     """A risk class with no failure costs: the cost to an accepted result is run cost plus priced time."""
@@ -439,7 +439,7 @@ def timed_engine(directory):
 
 
 @pytest.mark.parametrize("stated", [{}, {"seconds_ci": [60, 216000]}])
-def test_cost_spread_time_term_is_the_belief_variance_and_run_cost_is_exact(tmp_path, stated):
+def test_cost_spread_reads_the_variances_of_the_active_time_and_credit_beliefs(tmp_path, stated):
     engine = timed_engine(tmp_path / "store")
     cells = [{"model": MODEL, "effort": "high", "usd_per_mtok": 10.}]
     _, _, result = decide(engine, cells, {(MODEL, "high"): forecast(3600, tokens=10_000, **stated)})
@@ -449,14 +449,16 @@ def test_cost_spread_time_term_is_the_belief_variance_and_run_cost_is_exact(tmp_
     assert spread == pytest.approx(math.log(3600) / 3.92 if stated else MIN_SPREAD)
     # T and C_run are the beliefs' averages whatever the stated width.
     assert row["T"] == pytest.approx(1.) and row["C_run"] == pytest.approx(.1)
-    d = 1 / row["expected_attempts"]
-    assert row["J"] == pytest.approx((.1 + 3600 * 1.) / d)
-    # With no failure costs the rates enter through retries alone: (J / (1 - P_loud))^2 * Var(theta_l).
+    assert row["J"] == pytest.approx((.1 + 3600 * 1.) * row["expected_attempts"])
+    # With no failure costs one attempt costs X = K + 3600 T, and the rates enter through retries alone:
+    # Var(J) = E[X^2] E[R^2] - (E[X] E[R])^2 with E[X^2] = Var(K) + 3600^2 Var(T) + E[X]^2.
     loud = sampled["outcome_beliefs"]["loud"]
-    outcome_variance = (row["J"] / d) ** 2 * reference_belief(
-        loud["prediction"], loud["stated_spread"], *loud["counts"], 5., 16.)["variance"]
-    time_variance = (3600 / d) ** 2 * row["T"] ** 2 * math.expm1(spread ** 2)
-    assert sampled["cost_sd"] == pytest.approx(math.sqrt(outcome_variance + time_variance))
+    attempts = reference_belief(loud["prediction"], loud["stated_spread"], *loud["counts"], 5., 16.)
+    assert row["expected_attempts"] == pytest.approx(attempts["attempts"])
+    time_variance = row["T"] ** 2 * math.expm1(spread ** 2)
+    second = row["credit_variance"] + 3600 ** 2 * time_variance + 3600.1 ** 2
+    assert row["credit_variance"] == pytest.approx(.01 * math.expm1(MIN_SPREAD ** 2))
+    assert sampled["cost_sd"] == pytest.approx(math.sqrt(second * attempts["attempts_sq"] - (3600.1 * attempts["attempts"]) ** 2))
 
 
 def test_draw_takes_active_time_from_the_belief_after_the_runs(tmp_path):

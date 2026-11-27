@@ -395,12 +395,30 @@ every token kind.
 A larger `duration_miss` widens every belief, which raises `credit_p80_usd` and the
 spread of the cost; a larger `scatter_share` makes each recorded run count for less.
 
-Thompson sampling considers every cell of the pool whose posterior cost overlaps the
-pool's mean-best cell: `J - J_best <= uncertainty_multiplier * (sd_best + sd_candidate)`
-using delta-method retry-cost standard deviations. A risk class's optional `explore_within`
-additionally caps the gap at that fraction of `|J_best|`; it applies only when set on
-the class. The former global `sampling.explore_within` is rejected with an error that
-points to the risk-class setting.
+`uncertainty_multiplier` sets which cells of the pool compete on the draw
+({ref}`eligibility <cost-spread-and-draw>`):
+
+```text
+eligible(c) <=> J(c) - J(c*) <= uncertainty_multiplier * (sd(c*) + sd(c))
+```
+
+- `c`, `c*`: a cell of the pool, and the pool's cell with the lowest `J`.
+- `J`: the cell's cost to an accepted result, averaged over its beliefs.
+- `sd`: the exact spread of that cost, `cost_sd`.
+- `uncertainty_multiplier`: 1 by default. A larger value lets cells further from the
+  best one compete; a smaller one keeps the choice nearer the best cost.
+
+In plain words, a cell competes when its cost and the best cost overlap within their
+spreads. Example: `c*` has `J` 70.6 and spread 34.2. A cell with `J` 110 and spread 20
+is eligible, because the gap of 39.4 is at most 54.2. A cell with `J` 140 and spread 10
+is not, because 69.4 exceeds 44.2. With `uncertainty_multiplier = 2` the second cell is
+eligible as well, because 69.4 is at most 88.4.
+
+A risk class's optional `explore_within` additionally caps the gap at that fraction of
+`|J(c*)|`; it applies only when set on the class and can only tighten the rule. The
+former global `sampling.explore_within` is rejected with an error that points to the
+risk-class setting. There is no key for the draw itself: the seed is `--seed` or 64
+random bits, and it is stored in the receipt.
 
 `on_cap_unmet` is retired. A file that still sets it loads: the key is accepted, its
 value is ignored, and one notice is printed on standard error. Standard output,

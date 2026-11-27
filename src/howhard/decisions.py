@@ -201,7 +201,8 @@ def load(config, source, *, for_scoring=False):
                             host=host(value))
         from .success import validate_selection
         validate_selection(value["selection"], value["semantic"], value["capability"], value["cost_policy"],
-                           decision_format=value["format"], chosen=value["chosen"], inventory=inventory)
+                           decision_format=value["format"], chosen=value["chosen"], inventory=inventory,
+                           seed=value["seed"])
         by_pair = {(c["model"], c["effort"]): c for c in inventory}
         for row in value["selection"]["cells"]:
             candidate = by_pair.get((row["model"], row["effort"]))

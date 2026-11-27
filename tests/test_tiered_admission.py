@@ -190,7 +190,7 @@ def test_trusted_and_on_trial_cells_compete_and_the_flags_describe_the_chosen_ce
         trusted = model == "fixture/trusted"
         assert result["cap_met"] is trusted and result["needs_review"] is (not trusted)
         assert result["selection"]["cap_met"] is trusted and result["selection"]["needs_review"] is (not trusted)
-        assert result["semantic"]["sampling"]["enabled"] and "sampled_expert" in result["semantic"]
+        assert result["semantic"]["sampling"]["enabled"] and "sampled_expert" not in result["semantic"]
         assert result["exploration"]["reason"] in ("sampled-within-posterior-overlap", "mean-best")
     # Nothing limits how often the on-trial cell is chosen: both win a fair share of the draws.
     assert chosen["fixture/trusted"] >= 15 and chosen["fixture/trial"] >= 15
@@ -199,7 +199,8 @@ def test_trusted_and_on_trial_cells_compete_and_the_flags_describe_the_chosen_ce
     again = decide(configured(tmp_path / "again"), candidates, OVERLAP, seed=7)
     original = decide(engine, candidates, OVERLAP, seed=7)
     assert again["chosen"] == original["chosen"] and again["selection"] == original["selection"]
-    assert again["semantic"]["sampled_expert"] == original["semantic"]["sampled_expert"]
+    sampled = lambda result: [c["sampled"] for c in result["semantic"]["sampling"]["cells"]]
+    assert sampled(again) == sampled(original) and all(set(c) == {"S", "u", "seconds", "credit"} for c in sampled(again))
 
 
 def test_excluded_and_credit_short_cells_never_win_while_a_pickable_cell_has_credit(tmp_path):
@@ -265,7 +266,7 @@ def test_when_every_cell_is_excluded_a_sample_is_drawn_among_the_cells_nearest_t
         assert result["exploration"]["pool"] == "all-excluded"
         # A sample is drawn: the frozen draw covers every forecast cell.
         sampling = result["semantic"]["sampling"]
-        assert sampling["enabled"] and len(sampling["cells"]) == 3 and "sampled_expert" in result["semantic"]
+        assert sampling["enabled"] and len(sampling["cells"]) == 3 and all("sampled" in c for c in sampling["cells"])
     assert set(chosen) == {"fixture/first", "fixture/second"} and min(chosen.values()) >= 15
     assert load(engine.config, first["decision_id"])["selection"]["exploration"]["pool"] == "all-excluded"
 
@@ -461,8 +462,8 @@ def test_a_stored_decision_revalidates_and_changed_tier_fields_are_refused(tmp_p
         "missing pool": (lambda r: r["selection"]["exploration"].pop("pool"), "exploration.pool"),
         "chosen outside the pool": (lambda r: executed(r, "fixture/excluded"), "outside the admission pool"),
         "chosen without credit": (lambda r: executed(r, "fixture/trusted"), "not schedulable within credit_budget"),
-        "no draw": (lambda r: (r["semantic"]["sampling"].update(enabled=False, reason="cap-unmet", cells=[]),
-                               r["semantic"].pop("sampled_expert")), "a sample is always drawn"),
+        "no draw": (lambda r: r["semantic"]["sampling"].update(enabled=False, reason="cap-unmet", cells=[]),
+                    "a sample is always drawn"),
         "retired policy": (lambda r: r["selection"].update(on_cap_unmet="flag-review"), "unknown keys"),
         "trial line": (lambda r: r["selection"]["sampling_policy"].update(trial_probability=.75),
                        "tier/admissible does not match pi"),

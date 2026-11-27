@@ -61,10 +61,11 @@ def choose(prepared, config, seed, parts):
         seed = secrets.randbits(64)
     if type(seed) is not int or seed < 0:
         raise HowHardError("seed: expected a non-negative integer")
-    j = sum(parts.values())
+    from .success import admission_pool, drawn_cell, eligible_cells, sampled_cost
     indices = {(cell["family"], cell["effort"]): i for i, cell in enumerate(cells)}
     for row in result["cells"]:
-        row["sampled_J"] = float(j[0, indices[row["family"], row["effort"]]])
+        i = indices[row["family"], row["effort"]]
+        row["sampled_J"] = sampled_cost(float(value[0, i]) for value in parts.values())
     available = result["cells"]
     if not available:
         raise HowHardError("candidates: no selectable cells")
@@ -76,23 +77,18 @@ def choose(prepared, config, seed, parts):
             f"candidates: no candidate has sufficient remaining credit to schedule task "
             f"(minimum {field} {min_checked:.6g} USD, maximum available_credit_usd {max_avail:.6g} USD)"
         )
-    from .success import admission_pool
     sampling = result["semantic"]["sampling"]
     policy = result["sampling_policy"]
     # Trusted and on-trial cells with enough credit compete as equals. When there is none,
     # the cells with enough credit nearest the best chance of meeting the limit compete instead.
     pool, pool_kind = admission_pool(schedulable, policy)
-    best = min(pool, key=lambda row: (row["J"], row["family"], row["effort"]))
-    # Posterior overlap gates Thompson eligibility. Only an explicit risk-class
-    # explore_within additionally caps the mean-cost gap.
+    # A cell competes when its cost and the best cost overlap within their spreads. Only an
+    # explicit risk-class explore_within additionally caps the mean-cost gap. The lowest
+    # sampled cost among the eligible cells wins.
     fraction = result["constants"].get("explore_within")
     uncertainty = {(c["family"], c["effort"]): c["cost_sd"] for c in sampling["cells"]}
-    best_sd = uncertainty[best["family"], best["effort"]]
-    def band(row):
-        overlap = policy["uncertainty_multiplier"]*(best_sd+uncertainty[row["family"], row["effort"]])
-        return overlap if fraction is None else min(abs(best["J"])*fraction, overlap)
-    eligible = [row for row in pool if row["J"]-best["J"] <= band(row) + 1e-12]
-    chosen = min(eligible, key=lambda row: (row["sampled_J"], row["J"], row["family"], row["effort"]))
+    best, eligible = eligible_cells(pool, uncertainty, result["constants"], policy)
+    chosen = drawn_cell(eligible)
     reason = "sampled-within-posterior-overlap" if chosen is not best else "mean-best" if len(eligible) > 1 else "disabled-no-supported-alternative"
     # The flag is advice to the caller: the chosen cell is not trusted. Nothing enforces it.
     cap_met = chosen["tier"] == "trusted"

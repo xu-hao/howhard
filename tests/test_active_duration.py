@@ -198,7 +198,7 @@ def test_active_time_belief_updated_by_slow_runs_prices_out_slow_cheap_cell(tmp_
     cells_zero = {c["model"]: c for c in zero_result["cells"]}
     assert cells_zero["fixture/cheap-thrasher"]["T"] == pytest.approx(0.25)
     assert cells_zero["fixture/cheap-thrasher"]["active_time"]["evidence_weight"] == 0
-    assert abs(cells_zero["fixture/cheap-thrasher"]["J"] - cells_zero["fixture/fast-strong"]["J"]) < 1.0
+    assert abs(cells_zero["fixture/cheap-thrasher"]["J"] - cells_zero["fixture/fast-strong"]["J"]) < 2.0
 
     # 2. Multi-hour active runtime reality pulls the belief E[T] = exp(m' + s'^2/2) toward the runs,
     #    raises the active-time term of cost_sd, and prices out the slow cheap cell in J and Thompson sampling.
@@ -224,7 +224,7 @@ def test_active_time_belief_updated_by_slow_runs_prices_out_slow_cheap_cell(tmp_
     assert belief["evidence_weight"] > 3 and 0 < belief["spread"] < belief["prior_spread"]
 
     def time_spread(row):
-        """The active-time part of cost_sd: lambda / (1 - P_loud) * E[T] * sqrt(exp(s'^2) - 1)."""
+        """At most the active-time part of cost_sd: lambda * E[R] * E[T] * sqrt(exp(s'^2) - 1)."""
         return 25. * row["expected_attempts"] * row["T"] * math.sqrt(math.expm1(row["active_time"]["spread"] ** 2))
     # The same four clean runs also sharpen the cell's two outcome beliefs, so only the time term must grow.
     assert time_spread(cells_cal["fixture/cheap-thrasher"]) > 2 * time_spread(cells_zero["fixture/cheap-thrasher"])

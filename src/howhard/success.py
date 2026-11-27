@@ -8,6 +8,7 @@ formats v9 and v10 stays below as a frozen reader for those receipts.
 from copy import deepcopy
 from functools import lru_cache
 import math
+from statistics import NormalDist
 import sys
 
 import numpy as np
@@ -49,7 +50,8 @@ GRID_P = 1. / (1. + np.exp(-GRID_X))        # logistic(x_j): the rate each grid 
 GRID_LOG_YES = -np.log1p(np.exp(-GRID_X))   # ln logistic(x_j)
 GRID_LOG_NO = -np.log1p(np.exp(GRID_X))     # ln (1 - logistic(x_j))
 GRID_ODDS = np.exp(GRID_X)                  # logistic(x_j) / (1 - logistic(x_j))
-for _grid in (GRID_X, GRID_P, GRID_LOG_YES, GRID_LOG_NO, GRID_ODDS):
+GRID_ATTEMPTS = 1. + GRID_ODDS              # R = 1 / (1 - logistic(x_j)): attempts until a run is not loud
+for _grid in (GRID_X, GRID_P, GRID_LOG_YES, GRID_LOG_NO, GRID_ODDS, GRID_ATTEMPTS):
     _grid.setflags(write=False)
 FLAT_SPREAD = 1.869                 # The spread of a 95% range of [0.025, 0.975]: the flat belief.
 RANGE_HOLD = (.0001, .9999)         # The ends of a stated 95% range are held in this interval.
@@ -142,12 +144,16 @@ def cell_beliefs(values, pair, duration_observations, policy):
 
     ``values`` is the cell's entry of the corrected prediction. Every token kind has a
     belief when every expert states usage by kind; otherwise total ``tokens`` has the one
-    belief. Runs are the cell's own rows from the active-time reader; a kind is updated by
-    the runs that record usage by kind, and the total by the runs that record ``tokens``.
+    belief. Runs are the cell's own rows from the active-time reader. Each belief is updated
+    by the runs that record its value: active time by the runs with an active time, a kind
+    by the runs that record usage by kind, and the total by the runs that record ``tokens``.
+    A run with usage by kind and no active time therefore moves the token beliefs and leaves
+    active time alone.
     """
     from .accounting import CATEGORIES
     runs = [obs for obs in duration_observations if (obs["family"], obs["effort"]) == pair]
-    active = amount_belief(values["seconds"], [(obs["weight"], obs["active_seconds"]) for obs in runs], policy, "seconds")
+    active = amount_belief(values["seconds"], [(obs["weight"], obs["active_seconds"]) for obs in runs
+                                               if obs["active_seconds"] is not None], policy, "seconds")
     if "tokens" not in values:
         measured = [obs for obs in runs if obs["token_usage"] is not None]
         tokens = {kind: amount_belief(values[kind], [(obs["weight"], obs["token_usage"][kind]) for obs in measured],
@@ -159,6 +165,23 @@ def cell_beliefs(values, pair, duration_observations, policy):
     return {"active_time": active, "token_beliefs": tokens}
 
 
+def credit_by_kind(counts, rate_card, credit_rate):
+    """The credit of token counts by kind at the cell's prices; ``None`` for an unpriced cell.
+
+    A rate card prices each kind at its own rate, and a single rate prices every count alike.
+    """
+    from .accounting import CATEGORIES, price
+    if rate_card is not None:
+        if counts.keys() != set(CATEGORIES):
+            raise HowHardError("decision.semantic: category rate card requires token_usage forecasts")
+        if any(rate_card["rates"][kind] is None for kind in CATEGORIES):
+            return None
+        return price(counts, rate_card, by_kind=True)
+    if credit_rate is None:
+        return None
+    return {kind: credit_rate * count / 1e6 for kind, count in counts.items()}
+
+
 def run_credit(token_beliefs, rate_card, credit_rate):
     """Average, variance and 80% point of the credit one run needs, at the cell's prices.
 
@@ -166,18 +189,10 @@ def run_credit(token_beliefs, rate_card, credit_rate):
     because no run records how they co-vary, and the 80% point is that of the
     log-normal with the same average and variance. An unpriced cell returns ``None``.
     """
-    from .accounting import CATEGORIES, price
-    expected = {kind: belief["expected_tokens"] for kind, belief in token_beliefs.items()}
-    if rate_card is not None:
-        if expected.keys() != set(CATEGORIES):
-            raise HowHardError("decision.semantic: category rate card requires token_usage forecasts")
-        if any(rate_card["rates"][kind] is None for kind in CATEGORIES):
-            return None
-        costs = price(expected, rate_card, by_kind=True)
-    elif credit_rate is None:
+    costs = credit_by_kind({kind: belief["expected_tokens"] for kind, belief in token_beliefs.items()},
+                           rate_card, credit_rate)
+    if costs is None:
         return None
-    else:
-        costs = {kind: credit_rate * count / 1e6 for kind, count in expected.items()}
     mean = math.fsum(costs.values())
     if mean <= 0:
         return 0., 0., 0.
@@ -510,15 +525,24 @@ def _belief_grid(belief):
     return _grid_belief(belief["prediction"], belief["spread"], *belief["counts"])
 
 
+def belief_index(belief, q):
+    """The first grid point whose running total of the belief reaches ``q``.
+
+    It is the last point when rounding keeps the running total below ``q``.
+    """
+    total = _belief_grid(belief)[2]
+    return min(len(GRID_P) - 1, int(np.searchsorted(total, q, side="left")))
+
+
 def belief_point(belief, q):
     """The rate at the first grid point whose running total of the belief reaches ``q``."""
-    total = _belief_grid(belief)[2]
-    return float(GRID_P[min(len(GRID_P) - 1, int(np.searchsorted(total, q, side="left")))])
+    return float(GRID_P[belief_index(belief, q)])
 
 
 def belief_variance(belief):
+    """The variance of the rate under the belief, summed on its grid."""
     b = _belief_grid(belief)[1]
-    return max(0., float(b @ GRID_P ** 2) - float(b @ GRID_P) ** 2)
+    return float(b @ (GRID_P - float(b @ GRID_P)) ** 2)
 
 
 def rate_belief(rate, start, counts, *, epsilon=None):
@@ -537,7 +561,7 @@ def rate_belief(rate, start, counts, *, epsilon=None):
     belief.update(centre=centre, mean=mean, lower=min(mean, lower), upper=max(mean, upper))
     if rate == "loud":
         # Expected attempts E[1 / (1 - theta_l)] and expected loud failures per accepted result.
-        belief.update(attempts=float(b @ (1. + GRID_ODDS)), odds=float(b @ GRID_ODDS))
+        belief.update(attempts=float(b @ GRID_ATTEMPTS), odds=float(b @ GRID_ODDS))
     elif epsilon is not None:
         within = int(np.searchsorted(GRID_P, epsilon, side="right"))
         belief["pi"] = min(1., float(total[within - 1])) if within else 0.
@@ -641,6 +665,7 @@ def posterior_intervals(panels, weights, pair, outcome_observations, policy, *, 
 
 
 def denominator(loud):
+    """Frozen reader of v7 to v10 receipts: ``1 - P_loud``, held above the probability floor."""
     return max(SETTINGS["belief"]["probability_floor"], 1-loud)
 
 
@@ -649,6 +674,7 @@ def accepted_risk(loud, silent):
 
 
 def cost(run, hours, loud, silent, constants):
+    """Frozen reader of v7 to v10 receipts: the cost at the posterior means; v11 uses ``cell_cost``."""
     return (run+constants["lambda_per_hour"]*hours+constants["C_loud"]*loud+constants["C_silent"]*silent)/denominator(loud)
 
 
@@ -665,14 +691,61 @@ def envelope(values, mean):
     return {"mean": mean, "lower": min(mean, quantile(.025)), "upper": max(mean, quantile(.975))}
 
 
-def calibration(result, state, expert, cell):
-    """A cell's frozen draw inputs: its two outcome beliefs and the first-order spread of its cost.
+def finite(value):
+    """A non-negative amount held at the largest float, so an absurdly wide belief saturates."""
+    return value if value <= sys.float_info.max else sys.float_info.max
+
+
+def money_terms(cost_per_credit, credit, credit_variance, included):
+    """``q``, ``C_run = q E[K]`` and ``q^2 Var(K)``: all 0 when the cost policy excludes worker money."""
+    if not included:
+        return 0., 0., 0.
+    return cost_per_credit, cost_per_credit * credit, finite(cost_per_credit * cost_per_credit * credit_variance)
+
+
+def cell_cost(beliefs, active_time, run_cost, run_variance, constants):
+    """Cost to an accepted result averaged over the cell's beliefs, with its exact spread.
+
+    ``R = 1 / (1 - theta_l)`` is the number of attempts until a run is not loud and ``S``
+    the accepted-defect share; ``E[R]``, ``E[R^2]``, ``E[S]`` and ``Var(S)`` are summed on
+    the beliefs' grids. With ``X = q K + lambda T + C_loud``, the cost of one attempt plus
+    ``C_loud``::
+
+        J      = (C_run + lambda E[T]) E[R] + C_loud (E[R] - 1) + C_silent E[S]
+        Var(J) = E[X^2] E[R^2] - (E[X] E[R])^2 + C_silent^2 Var(S)
+               = Var(X) E[R^2] + E[X]^2 Var(R) + C_silent^2 Var(S)
+        Var(X) = q^2 Var(K) + lambda^2 Var(T),   Var(T) = E[T]^2 (exp(s'^2) - 1)
+
+    Credit, active time, the loud rate and the accepted-defect share are independent
+    beliefs, so the spread follows from their means and variances with no approximation.
+    The second form of ``Var(J)`` is the one computed: every term is non-negative.
+    ``run_cost`` is ``C_run`` and ``run_variance`` is ``q^2 Var(K)``.
+    """
+    loud, silent = beliefs["loud"], beliefs["silent"]
+    rate, c_loud, c_silent = constants["lambda_per_hour"], constants["C_loud"], constants["C_silent"]
+    attempts = loud["attempts"]
+    hours = active_time["expected_seconds"] / 3600
+    attempt_cost = run_cost + rate * hours
+    j = attempt_cost * attempts + c_loud * loud["odds"] + c_silent * silent["mean"]
+    b = _belief_grid(loud)[1]
+    attempts_second = float(b @ GRID_ATTEMPTS ** 2)
+    attempts_variance = float(b @ (GRID_ATTEMPTS - attempts) ** 2)
+    hours_variance = finite(hours * hours * math.expm1(min(active_time["spread"] ** 2, EXP_CAP)))
+    mean_x = attempt_cost + c_loud
+    variance_x = run_variance + rate * rate * hours_variance
+    variance = (variance_x * attempts_second + mean_x * mean_x * attempts_variance
+                + c_silent * c_silent * belief_variance(silent))
+    return {"J": finite(j), "expected_attempts": attempts,
+            "cost_sd": math.sqrt(variance) if variance <= sys.float_info.max else sys.float_info.max}
+
+
+def calibration(result, state, cell):
+    """A cell's frozen draw inputs: its two outcome beliefs and the exact spread of its cost.
 
     Every input is the cell's own belief, already merged over the experts: the two rates
     from one corrected prediction each plus the runs counted for this cell, and active time and
-    run cost as their averages ``T`` and ``C_run``. Experts that disagree widen those
-    beliefs, so the spread has no separate between-expert term. The time term of the
-    spread is ``E[T]^2 * (exp(s'^2) - 1)``, and run cost is exact.
+    the credit of one run from their beliefs. Experts that disagree widen those beliefs,
+    so no expert is drawn and the spread has no separate between-expert term.
     """
     from .prediction import by_cell
     from .semantic import panel_lookup
@@ -680,24 +753,92 @@ def calibration(result, state, expert, cell):
     constants = result["constants"]
     beliefs = outcome_beliefs(by_cell(state["prediction"])[pair], pair, state.get("outcome_observations", []),
                               result["sampling_policy"], agent=cell["agent"], epsilon=constants["epsilon"])
-    probabilities = belief_probabilities(beliefs)
-    loud, silent = probabilities[1], probabilities[2]
     summary = panel_lookup(result["cells"])[pair]
-    # Delta-method spread of the same-cell retry objective: the two beliefs are independent, so
-    # their variances add, plus the log-normal variance of active time.
-    run = summary["session_cost_usd"] if cell["money_included"] else 0.
-    hours = summary["T"]
-    expected = cost(run, hours, loud, silent, constants)
-    d = denominator(loud)
-    share = beliefs["silent"]["mean"]
-    rates_variance = (((constants["C_loud"] + expected - constants["C_silent"] * share) / d) ** 2
-                      * belief_variance(beliefs["loud"])
-                      + constants["C_silent"] ** 2 * belief_variance(beliefs["silent"]))
-    hours_variance = min(sys.float_info.max, hours ** 2 * math.expm1(min(summary["active_time"]["spread"] ** 2, EXP_CAP)))
-    variance = rates_variance + ((constants["lambda_per_hour"] / d) ** 2) * hours_variance
-    return {"family": cell["family"], "effort": cell["effort"], "expert": expert["key"],
-            "outcome_beliefs": beliefs, "probabilities": probabilities,
-            "cost_sd": min(sys.float_info.max, math.sqrt(variance))}
+    _, run, run_variance = money_terms(summary["cost_per_credit"], summary["needed_credit_usd"],
+                                       summary["credit_variance"], cell["money_included"])
+    return {"family": cell["family"], "effort": cell["effort"],
+            "outcome_beliefs": beliefs, "probabilities": belief_probabilities(beliefs),
+            "cost_sd": cell_cost(beliefs, summary["active_time"], run, run_variance, constants)["cost_sd"]}
+
+
+SAMPLED_FIELDS = ("S", "u", "seconds", "credit")
+PARTS = ("run", "loud", "silent", "time")
+_STANDARD_NORMAL = NormalDist()
+
+
+def uniforms(seed, count):
+    """``count`` numbers strictly between 0 and 1 from ``numpy.random.PCG64`` seeded with ``seed``.
+
+    Each is ``((r >> 12) + 0.5) / 2**52`` from one raw 64-bit output ``r``, so a replay does
+    not depend on a library's distribution methods.
+    """
+    raw = np.random.PCG64(seed).random_raw(count)
+    return [((int(r) >> 12) + .5) / 4503599627370496. for r in raw]
+
+
+def sampled_amount(belief, z):
+    """One value of a log-normal amount belief at the standard normal value ``z``.
+
+    A value that is exactly zero has no centre and stays zero.
+    """
+    if belief["centre"] is None:
+        return 0.
+    return math.exp(min(EXP_CAP, belief["centre"] + belief["spread"] * z))
+
+
+def draw(numbers, beliefs, active_time, token_beliefs, rate_card, credit_rate, cost_per_credit, constants):
+    """One cell's draw from its four uniform numbers ``(U_S, U_u, U_T, U_K)``.
+
+    ``S_s`` and ``R_s = 1 + exp(u)`` are read at the first grid point where the running
+    total of their belief reaches ``U_S`` and ``U_u``. Active seconds are
+    ``exp(m' + s' z(U_T))`` and every token kind's count is ``exp(m_a + s_a z(U_K))``: one
+    ``U_K`` serves every kind because the kinds move together. The counts are priced as
+    their averages are, which gives the sampled credit ``K_s``. ``cost_per_credit`` is
+    ``q``: 0 when the cost policy excludes worker money. The sampled cost is the sum of
+    the four ``parts``::
+
+        run = q K_s R_s   time = lambda T_s R_s   loud = C_loud (R_s - 1)   silent = C_silent S_s
+    """
+    u_share, u_loud, u_time, u_credit = numbers
+    share_at, loud_at = belief_index(beliefs["silent"], u_share), belief_index(beliefs["loud"], u_loud)
+    share, attempts = float(GRID_P[share_at]), float(GRID_ATTEMPTS[loud_at])
+    seconds = sampled_amount(active_time, _STANDARD_NORMAL.inv_cdf(u_time))
+    z = _STANDARD_NORMAL.inv_cdf(u_credit)
+    costs = credit_by_kind({kind: sampled_amount(belief, z) for kind, belief in token_beliefs.items()},
+                           rate_card, credit_rate)
+    credit = None if costs is None else finite(math.fsum(costs.values()))
+    parts = {"run": finite(cost_per_credit * credit * attempts) if cost_per_credit and credit is not None else 0.,
+             "loud": constants["C_loud"] * float(GRID_ODDS[loud_at]),
+             "silent": constants["C_silent"] * share,
+             "time": finite(constants["lambda_per_hour"] * (seconds / 3600) * attempts)}
+    return {"sampled": {"S": share, "u": float(GRID_X[loud_at]), "seconds": seconds, "credit": credit},
+            "parts": parts, "sampled_J": sampled_cost(parts.values())}
+
+
+def sampled_cost(parts):
+    """``J_s``: the sum of the four sampled parts of a cell's cost."""
+    return finite(math.fsum(parts))
+
+
+def eligible_cells(pool, spreads, constants, policy):
+    """The pool's cell with the lowest ``J`` and the cells whose cost overlaps its.
+
+    A cell competes when ``J(c) - J(c*) <= uncertainty_multiplier * (sd(c*) + sd(c))``.
+    Only a risk class ``explore_within`` additionally caps the gap at that fraction of
+    ``|J(c*)|``. ``spreads`` maps ``(family, effort)`` to ``cost_sd``.
+    """
+    best = min(pool, key=lambda row: (row["J"], row["family"], row["effort"]))
+    fraction = constants.get("explore_within")
+    best_sd = spreads[best["family"], best["effort"]]
+    def band(row):
+        overlap = policy["uncertainty_multiplier"] * (best_sd + spreads[row["family"], row["effort"]])
+        return overlap if fraction is None else min(abs(best["J"]) * fraction, overlap)
+    return best, [row for row in pool if row["J"] - best["J"] <= band(row) + 1e-12]
+
+
+def drawn_cell(eligible):
+    """The eligible cell with the lowest sampled cost; ties go to the lower ``J``, then family and effort."""
+    return min(eligible, key=lambda row: (row["sampled_J"], row["J"], row["family"], row["effort"]))
 
 
 def same_number(actual, expected, tolerance=1e-10):
@@ -708,11 +849,14 @@ def same_number(actual, expected, tolerance=1e-10):
 
 
 def validate_selection(selection, semantic, capability, cost_policy, *, decision_format=DECISION_FORMAT, chosen=None,
-                       inventory=()):
+                       inventory=(), seed=None):
     """Validate frozen objective/cap meanings without reinterpreting older receipts.
 
     ``inventory`` is the receipt's native candidate list: a v11 receipt's credit numbers
-    are recomputed from the token beliefs at those prices.
+    are recomputed from the token beliefs at those prices. ``seed`` is the receipt's seed:
+    a v11 receipt's draw is replayed from it, so its sampled values, each ``sampled_J``,
+    the eligible set and the chosen cell must match. Older receipts keep the cost at the
+    posterior means and are not replayed.
     """
     # v11 sorts cells into tiers and retires the cap-unmet policy; older receipts keep theirs.
     tiered = decision_format == DECISION_FORMAT
@@ -745,6 +889,13 @@ def validate_selection(selection, semantic, capability, cost_policy, *, decision
     seen = set()
     if not isinstance(selection["cells"], list):
         raise HowHardError("decision.selection.cells: expected array")
+    if tiered:
+        # Cells draw in the order of semantic.sampling.cells, four uniform numbers each.
+        if type(seed) is not int or seed < 0:
+            raise HowHardError("decision.seed: expected non-negative integer")
+        draws = {(c["family"], c["effort"]): (index, c) for index, c in enumerate(semantic["sampling"]["cells"])}
+        numbers = uniforms(seed, 4 * len(draws))
+        included = cost_policy["worker_money_included"]
     for row in selection["cells"]:
         keys(row, ["model", "family", "effort", "P_clean", "P_loud", "P_silent", "C_run", "session_cost_usd", "cost_per_credit", "needed_credit_usd", "cost_basis", "T", "expected_attempts", "J", "P_silent_accepted", "admissible", "sampled_J", "credit_budget", "available_credit_usd", "credit_ok"]
              + ([] if legacy else ["admission_risk"]) + (["pi", "tier", "outcome_counts"] if tiered else [])
@@ -818,9 +969,10 @@ def validate_selection(selection, semantic, capability, cost_policy, *, decision
                 # cell's agent is the label stored with its native candidate.
                 if (row["model"], row["effort"]) not in candidates:
                     raise HowHardError("decision.selection: cell does not match native candidate inventory")
-                intervals = belief_intervals(outcome_beliefs(
+                rates = outcome_beliefs(
                     predicted[pair], pair, semantic["outcome_observations"], policy,
-                    agent=candidates[row["model"], row["effort"]].get("agent"), epsilon=constants["epsilon"]), policy)
+                    agent=candidates[row["model"], row["effort"]].get("agent"), epsilon=constants["epsilon"])
+                intervals = belief_intervals(rates, policy)
             else:
                 intervals, _ = posterior_intervals(
                     panels,
@@ -840,7 +992,7 @@ def validate_selection(selection, semantic, capability, cost_policy, *, decision
                 pi = number(row["pi"], "selection.pi", nonnegative=True)
                 if abs(pi - intervals["pi"]) > 1e-9:
                     raise HowHardError("decision.selection: pi does not match the frozen forecasts and outcome observations")
-                drawn = next((c for c in semantic["sampling"]["cells"] if (c["family"], c["effort"]) == pair), None)
+                position, drawn = draws.get(pair, (None, None))
                 if drawn is None or abs(drawn["outcome_beliefs"]["silent"]["pi"] - intervals["pi"]) > 1e-9:
                     raise HowHardError("decision.selection: pi of the frozen draw does not match the frozen forecasts and outcome observations")
                 if row["tier"] != admission_tier(pi, policy) or row["admissible"] != (row["tier"] == "trusted"):
@@ -868,6 +1020,26 @@ def validate_selection(selection, semantic, capability, cost_policy, *, decision
             ) / 3600
         if abs(row["T"]-expected_hours) > 1e-10 * max(1., expected_hours):
             raise HowHardError("decision.selection: expected time mismatch")
+        if tiered:
+            # The cost averaged over the beliefs and its exact spread, then this cell's draw.
+            if included and expected_credit is None:
+                raise HowHardError("decision.selection: worker money is included but the cell has no price")
+            q, run, run_variance = money_terms(cost_per_credit, *(expected_credit or (None, None))[:2], included)
+            expected = cell_cost(rates, beliefs["active_time"], run, run_variance, constants)
+            if not same_number(row["J"], expected["J"], 1e-8):
+                raise HowHardError("decision.selection: J does not match the cost averaged over the cell's beliefs")
+            if not same_number(row["expected_attempts"], expected["expected_attempts"], 1e-8):
+                raise HowHardError("decision.selection: expected_attempts does not match the loud belief")
+            if not same_number(drawn["cost_sd"], expected["cost_sd"], 1e-8):
+                raise HowHardError("decision.semantic.sampling: cost_sd does not match the exact spread of the cell's cost")
+            replayed = draw(numbers[4 * position:4 * position + 4], rates, beliefs["active_time"], beliefs["token_beliefs"],
+                            candidate.get("rate_card"), candidate.get("usd_per_mtok"), q, constants)
+            for field in SAMPLED_FIELDS:
+                if not same_number(drawn["sampled"][field], replayed["sampled"][field], 1e-8):
+                    raise HowHardError(f"decision.semantic.sampling: sampled.{field} does not match the draw replayed from seed")
+            if not same_number(row["sampled_J"], replayed["sampled_J"], 1e-8):
+                raise HowHardError("decision.selection: sampled_J does not match the draw replayed from seed")
+            continue
         run = row["session_cost_usd"] if cost_policy["worker_money_included"] else 0.
         if run is not None:
             number(run, "selection.session_cost_usd", nonnegative=True)
@@ -893,6 +1065,12 @@ def validate_selection(selection, semantic, capability, cost_policy, *, decision
             raise HowHardError("decision.chosen: selected cell is not schedulable within credit_budget")
         if not any(c is chosen_row for c in pool):
             raise HowHardError("decision.selection: the chosen cell is outside the admission pool")
+        # Replay the choice: the cells whose cost overlaps the best one, then the lowest sampled cost.
+        _, eligible = eligible_cells(pool, {pair: c["cost_sd"] for pair, (_, c) in draws.items()}, constants, policy)
+        if exploration.get("eligible_cells") != [{k: c[k] for k in ("model", "family", "effort")} for c in eligible]:
+            raise HowHardError("decision.selection: exploration.eligible_cells does not match J and cost_sd of the cells")
+        if drawn_cell(eligible) is not chosen_row:
+            raise HowHardError("decision.chosen: does not match the draw replayed from seed")
         cap_met = chosen_row["tier"] == "trusted"
         if any(type(selection[flag]) is not bool for flag in ("cap_met", "needs_review")) or (
                 selection["cap_met"] != cap_met or selection["needs_review"] != (not cap_met)):
