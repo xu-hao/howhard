@@ -1,6 +1,11 @@
-"""Derive authentic frozen legacy receipts from a current receipt's base structure.
+"""Frozen legacy receipts: an authentic v10 receipt, and older ones derived from a v10 receipt.
 
-``to_v10`` is the base of every older builder: it removes what v11 added (the host's name,
+``authentic_v10`` sets up a store holding the receipt a 5.0.0 build stored for a synthetic
+task (``fixtures/decision-v10``, made by its ``make_fixture.py``), with the runs it counted.
+``to_v9``, ``to_v8`` and ``to_v7`` start from a v10 receipt: that one, or one ``to_v10``
+derives from a current receipt for a scenario of its own.
+
+``to_v10`` removes what v11 added (the host's name,
 agent labels, ranges on active time and token kinds, the scored evidence candidates, admission
 tiers, the outcome beliefs on the log-odds scale, the amount beliefs and credit spread, the
 host-aware band with its core and reserved cells, and the cost averaged over the beliefs with
@@ -12,7 +17,10 @@ must have no reserved cell.
 """
 
 from copy import deepcopy
+import json
 import math
+from pathlib import Path
+import shutil
 
 import numpy as np
 
@@ -30,6 +38,24 @@ from howhard.success import (
     outcome_posterior,
     posterior_intervals,
 )
+
+AUTHENTIC_V10 = Path(__file__).resolve().parent / "fixtures" / "decision-v10"
+
+
+def authentic_v10(directory):
+    """Lay out a store in ``directory`` that holds what a 5.0.0 build recorded; return its v10 receipt.
+
+    The directory gets the fixture's project identity, its six recorded runs and its native
+    registry. The receipt is returned unstored: create the engine, then store it under its digest.
+    """
+    receipt = json.loads((AUTHENTIC_V10 / "receipt.json").read_bytes())
+    state = directory / ".howhard"
+    state.mkdir(parents=True)
+    (state / "project.json").write_text(json.dumps({"format": "howhard-project-v1", "id": receipt["project_identity"]}) + "\n")
+    for name in ("outcomes.jsonl", "native-models.json"):
+        shutil.copyfile(AUTHENTIC_V10 / name, state / name)
+    return receipt
+
 
 def without_reserved_slots(directory):
     """Configure the store in ``directory`` to forecast exactly its band, as older receipts did.

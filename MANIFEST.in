@@ -8,5 +8,5 @@ recursive-include docs *.md *.py *.txt
 recursive-exclude docs/_build *
 recursive-include scripts *
 recursive-include skills *.md
-recursive-include tests *.py
+recursive-include tests *.py *.json *.jsonl
 recursive-include benchmarks *.py *.json
