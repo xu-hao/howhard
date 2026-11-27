@@ -216,6 +216,41 @@
   not read. No configuration key is added and an existing store loads unchanged. v11 decisions stored by earlier unreleased builds no
   longer load; `v7` to `v10` receipts keep loading, observing, replaying and reporting.
 
+- Corrected prediction (#139). Every belief now starts from a prediction, not from the
+  merged forecast itself:
+  `phi(prediction) = phi(level) + gamma * (phi(guess) - phi(usual))`, on the log-odds
+  scale for the loud rate and the accepted-defect share and on the log scale for active
+  time, total tokens and each token kind. `level` (what happened) and `usual` (what had
+  been forecast) come down a ladder of five rungs: all hosts, this host, this agent
+  under it, this family under it and this cell under it. Each rung is the weighted
+  average of its runs and the rung above, which is worth `model_worth = 5` runs at the
+  family rung and the new optional `[sampling]` setting `rung_worth = 40` (positive)
+  elsewhere; above all hosts both equal the guess. The runs are the finished routed
+  runs on other tasks: outcome `clean`, `loud` or `silent`, with a decision that stored
+  a forecast for the cell that ran, under the host and agent that decision stores. The
+  decision's evidence candidates, runs with no decision and `interrupted` runs enter no
+  ladder. A run weighs its age factor, and all runs of one ticket together count for at
+  most one run. `gamma`, the weight on the forecaster's judgment, is measured once per
+  kind of value from all hosts' runs: the gap that happened between the runs forecast
+  above usual and the rest, divided by the gap that was forecast, held in `[0, 1]` and
+  leaning on 1 at the worth of `rung_worth` runs. The family's own runs set how firmly
+  a prediction is held (`worth = n_family + model_worth`), and for an amount the ladder
+  of squared misses gives `D`, the typical miss left after the correction, in place of
+  the fixed `duration_miss`. **Changed behaviour:** with finished routed runs on
+  record, predictions, `pi`, tiers, `T`, credit, `J`, `cost_sd` and sampled costs differ
+  from earlier builds for the same inputs; with an empty record every prediction is the
+  merged forecast, `gamma` is 1, `worth` is 5 and `D` is 1.3, as before. A v11 receipt
+  stores `semantic.prediction`: per kind of value `n`, both groups' sums, `gamma_hat`
+  and `gamma`; per forecast cell and value the `guess`, each rung's sums, `level`,
+  `usual`, `prediction`, `worth`, `N_start`, `s_stated`, `s` and, for an amount, `D`.
+  Each amount belief also reports `prediction_seconds` or `prediction_tokens` beside
+  its forecast. Loading a v11 decision merges every guess again from the frozen
+  forecasts, recomputes every derived number from the stored sums, and refuses a
+  receipt whose numbers do not follow. v11 decisions stored by earlier unreleased
+  builds no longer load. Runs with receipts older than v11 sit under the unnamed host
+  and the unnamed agent; `v10`, `v9`, `v8` and `v7` receipts keep loading, observing,
+  replaying and reporting unchanged.
+
 - Relatedness discounts (#134). A recorded run now counts as outcome evidence for cells
   other than the one that ran it, at a discount set by how related the two cells are:
   1 for the same cell, `effort_discount` (0.5) for the same family at another effort,

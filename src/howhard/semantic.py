@@ -663,12 +663,17 @@ def duration_observations(candidates, pairs):
     return result
 
 
-def augment(engine, prepared, response, payload, snapshot, usage, *, candidates, reused=()):
+def augment(engine, prepared, response, payload, snapshot, usage, *, candidates, record, reused=()):
     """Build the selection cells and the receipt's semantic section from the validated forecasts.
 
-    ``reused`` lists the cells whose memory-free row was merged from stored forecasts, with
-    their sources; it is checked against the panel before it enters the receipt.
+    ``candidates`` is the request's scored evidence and ``record`` the ladder sums read with
+    it (``prediction.collect``): the record corrects each forecast into the prediction its
+    belief starts from, and the candidates then update that belief. ``reused`` lists the
+    cells whose memory-free row was merged from stored forecasts, with their sources; it is
+    checked against the panel before it enters the receipt.
     """
+    from . import prediction
+    from .capability import cell_key
     from .prototypes import validate_reuse
     from .success import (admission_tier, belief_intervals, cell_beliefs, cost, counted_totals, credit_fits,
                           denominator, outcome_beliefs)
@@ -698,22 +703,26 @@ def augment(engine, prepared, response, payload, snapshot, usage, *, candidates,
     # the memories that actually produced a prospective forecast for this task.
     state["experts"] = [e for e in state["experts"] if e["key"] in worlds]
     normalize_support(state["experts"])
-    weights = {e["key"]: e["weight"] for e in state["experts"]}
     indexed = {key: panel_lookup(panel) for key, panel in worlds.items()}
+    # One prediction per value of each cell: the experts' forecasts are merged into a guess, and
+    # the record of this host on other tasks corrects it and says how firmly it is held.
+    predicted = prediction.assemble(record, indexed, state["experts"],
+                                    [(cell_key(row), (row["family"], row["effort"])) for row in result["cells"]], policy)
+    starts = prediction.by_cell(predicted)
     for row in result["cells"]:
         pair = row["family"], row["effort"]
-        # One belief each for the loud rate and the accepted-defect share, from the merged forecast
+        # One belief each for the loud rate and the accepted-defect share, from the prediction
         # and the runs counted for this cell: its own in full, a related cell's at a discount.
         # pi is the share of the second belief within epsilon; it sorts the cell into a tier.
         # The cell stores the sums only; each run's relation, discount and weight follow from the
         # stored runs, the cell's label and the policy, and are recomputed when they are needed.
         row["outcome_counts"] = counted_totals((*pair, agents[pair]), outcome_obs, policy)
-        beliefs = outcome_beliefs(indexed, state["experts"], pair, outcome_obs, policy, agent=agents[pair],
+        beliefs = outcome_beliefs(starts[pair], pair, outcome_obs, policy, agent=agents[pair],
                                   epsilon=result["constants"]["epsilon"])
         row.update(belief_intervals(beliefs, policy))
         row["tier"] = admission_tier(row["pi"], policy)
-        # One belief per value: the experts' forecasts are merged, then the cell's own runs update it.
-        row.update(cell_beliefs([(weights[k], indexed[k][pair]) for k in weights], pair, duration_obs, policy))
+        # One belief per value: it starts at the prediction, then the cell's own runs update it.
+        row.update(cell_beliefs(starts[pair], pair, duration_obs, policy))
         cell = next(c for c in cells if (c["family"], c["effort"]) == pair)
         row["cost_per_credit"] = cell["cost_per_credit"]
         row["needed_credit_usd"], row["credit_variance"], row["credit_p80_usd"] = (
@@ -736,6 +745,7 @@ def augment(engine, prepared, response, payload, snapshot, usage, *, candidates,
                           "worlds": worlds, "stored_forecasts": reused, "exposures": exposures, "beliefs": state,
                           "reason": response["reason"], "retrieval": payload["retrieval"],
                           "evidence": deepcopy(payload["evidence"]), "evidence_candidates": deepcopy(candidates),
+                          "prediction": predicted,
                           "duration_observations": duration_obs, "outcome_observations": outcome_obs,
                           "reader_usage": {k: usage[k] for k in ("backend", "seconds", "cost_usd", "calls")}, "interval_kind": INTERVAL_KIND}
     result["sampling_policy"] = deepcopy(policy)
@@ -795,10 +805,10 @@ def validate_receipt(state, *, decision_format=DECISION_FORMAT, selection=None, 
 
     ``selection`` is the receipt's selection and ``inventory`` its native candidates: the
     beliefs a v11 receipt stores on each of its cells are recomputed here from the frozen
-    forecasts, expert weights, counted runs and policy, and each cell's counted sums from
-    the stored labels (the runs' own, and the cell's in the inventory). ``host`` is the
-    receipt's host: the memory-free rows a v11 receipt reused from store are recomputed
-    from their sources, which must be that host's.
+    prediction, counted runs and policy, the prediction itself from its stored sums and the
+    frozen forecasts, and each cell's counted sums from the stored labels (the runs' own,
+    and the cell's in the inventory). ``host`` is the receipt's host: the memory-free rows a
+    v11 receipt reused from store are recomputed from their sources, which must be that host's.
     """
     legacy = decision_format in (LEGACY_DECISION_V7, LEGACY_DECISION_V8)
     # v10 opened per-cell evidence bounds; v11 adds ranges on active time and token kinds,
@@ -812,7 +822,7 @@ def validate_receipt(state, *, decision_format=DECISION_FORMAT, selection=None, 
     if not legacy:
         required.append("outcome_observations")
     if scored:
-        required += ["evidence_candidates", "stored_forecasts"]
+        required += ["evidence_candidates", "stored_forecasts", "prediction"]
     keys(state, required, ["sampled_expert"], "decision.semantic")
     if decision_format not in RECEIPT_SEMANTICS or (state["format"], state["prompt_version"]) != RECEIPT_SEMANTICS[decision_format]:
         raise HowHardError("decision.semantic: unsupported forecast format or prompt version")
@@ -943,6 +953,9 @@ def validate_receipt(state, *, decision_format=DECISION_FORMAT, selection=None, 
         panels_by_key = {k: panel_lookup(p) for k, p in state["worlds"].items()}
         if any(e["key"] not in panels_by_key for e in belief["experts"]):
             raise HowHardError("decision.semantic.beliefs: expert without a forecast panel")
+        # Where each belief starts: recomputed from the stored ladder sums and the frozen forecasts.
+        from . import prediction
+        starts = prediction.validate(state["prediction"], panels_by_key, belief["experts"], allowed, sampling["policy"])
 
         def same(stored, wanted, where):
             keys(stored, list(wanted), where=where)
@@ -969,8 +982,7 @@ def validate_receipt(state, *, decision_format=DECISION_FORMAT, selection=None, 
             evidence.same([row["outcome_counts"]],
                           [counted_totals((*pair, agents[pair]), state["outcome_observations"], sampling["policy"])],
                           "decision.selection.outcome_counts")
-            expected = cell_beliefs([(e["weight"], panels_by_key[e["key"]][pair]) for e in belief["experts"]],
-                                    pair, duration_obs, sampling["policy"])
+            expected = cell_beliefs(starts[pair], pair, duration_obs, sampling["policy"])
             same(row["active_time"], expected["active_time"], "decision.selection.active_time")
             keys(row["token_beliefs"], list(expected["token_beliefs"]), where="decision.selection.token_beliefs")
             for kind, record in expected["token_beliefs"].items():
@@ -1032,8 +1044,8 @@ def validate_receipt(state, *, decision_format=DECISION_FORMAT, selection=None, 
                     raise HowHardError("decision.semantic.sampling: unknown calibrated expert")
                 if pair not in agents:
                     raise HowHardError("decision.selection: missing forecasted cells")
-                # Recompute both beliefs from the frozen forecasts, expert weights, counted runs and policy.
-                expected = outcome_beliefs(panels_by_key, belief["experts"], pair, state["outcome_observations"],
+                # Recompute both beliefs from the frozen prediction and the counted runs.
+                expected = outcome_beliefs(starts[pair], pair, state["outcome_observations"],
                                            sampling["policy"], agent=agents[pair])
                 stored = c["outcome_beliefs"]
                 keys(stored, list(RATES), where="sampling.outcome_beliefs")

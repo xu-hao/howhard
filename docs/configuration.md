@@ -221,6 +221,7 @@ all_excluded_factor = 0.50
 half_life_days = 14.0
 comparison_cap = 256
 model_worth = 5.0
+rung_worth = 40.0
 task_worth_amount = 1.0
 duration_miss = 1.3
 scatter_share = 0.5
@@ -260,29 +261,57 @@ in `(0,0.5)`. Probability/strength margins are in `[0,1]`; order penalty is nonn
 The uncertainty multiplier is positive,
 `admission_quantile` lies in `[0.5, 1)`, `trial_probability` in
 `[0, admission_quantile]`, `all_excluded_factor` in `[0, 1]`, `half_life_days` is positive,
-`comparison_cap` is a positive integer, `model_worth`, `task_worth_silent` and
-`task_worth_loud` are positive, and `effort_discount`, `model_discount` and
-`agent_discount` lie in `[0, 1]`. A value outside its range is refused with a
-message that names the key.
+`comparison_cap` is a positive integer, `model_worth`, `rung_worth`,
+`task_worth_silent` and `task_worth_loud` are positive, and `effort_discount`,
+`model_discount` and `agent_discount` lie in `[0, 1]`. A value outside its range is
+refused with a message that names the key.
 
-The three worths set how many runs a forecast counts for at the start of a cell's
+The worths set how many runs a prediction counts for at the start of a cell's
 {ref}`outcome beliefs <outcome-posterior>`:
 
 ```text
-N_start = 1 / (1/model_worth + 1/N_task)
+worth   = n_family + model_worth
+N_start = 1 / (1/worth + 1/N_task)
 ```
 
-- `model_worth`: how many runs the record says about a model family, 5.
+- `n_family`: the weight of the family's own finished routed runs on other tasks,
+  under the request's host and the cell's agent
+  ({ref}`corrected prediction <corrected-prediction>`). It is 0 with an empty record.
+- `model_worth`: how many runs the rest of the record says about a model family, 5.
 - `N_task`: the most a record on other tasks is worth for one task:
   `task_worth_silent` (32) for the accepted-defect share and `task_worth_loud` (16) for
   the loud rate.
-- `N_start`: how many runs the forecast is worth. Each counted run then adds its own
-  weight, and the forecast keeps the weight of `N_start` runs.
+- `N_start`: how many runs the prediction is worth. Each counted run then adds its own
+  weight, and the prediction keeps the weight of `N_start` runs.
 
-In plain words, a larger worth makes the forecast harder to move and its start
+In plain words, a larger worth makes the prediction harder to move and its start
 narrower; a smaller one lets counted runs take over sooner. Example: with the defaults
-the forecast of the accepted-defect share is worth `1 / (1/5 + 1/32) = 4.32` runs and
-that of the loud rate `1 / (1/5 + 1/16) = 3.81` runs.
+and an empty record the prediction of the accepted-defect share is worth
+`1 / (1/5 + 1/32) = 4.32` runs and that of the loud rate `1 / (1/5 + 1/16) = 3.81`
+runs. A family with 15 runs' worth on record has `worth = 20`, and its prediction of
+the accepted-defect share is worth `1 / (1/20 + 1/32) = 12.3` runs.
+
+`rung_worth` and `model_worth` also set how much each rung of the
+{ref}`corrected prediction <corrected-prediction>` leans on the rung above it:
+
+```text
+level(r) = (sum_i a_i * y_i + kappa_r * level(r+)) / (sum_i a_i + kappa_r)
+```
+
+- `r`, `r+`: a rung and the one above it: all hosts, this host, this agent, this
+  family, this cell.
+- `sum_i a_i`, `sum_i a_i * y_i`: the weight of the rung's runs, and their weighted
+  results.
+- `kappa_r`: how many runs the rung above is worth: `model_worth` (5) at the family
+  rung and `rung_worth` (40) at every other rung.
+
+`rung_worth` is also the worth at which the measured weight on the forecaster leans on
+1: `gamma = (n * gamma_hat + rung_worth) / (n + rung_worth)`. In plain words, a larger
+`rung_worth` makes a host, an agent or a cell need more runs of its own before its
+level leaves the level above it. Example: an agent with 100 runs' worth, 5 of them
+silent, under a host whose level is 0.0622 has the level
+`(5 + 40 * 0.0622) / (100 + 40) = 0.0535`; with `rung_worth = 10` it is
+`(5 + 10 * 0.0622) / (100 + 10) = 0.0511`.
 
 `prior_strength`, `min_concentration` and `max_concentration` are retired. A file that
 still sets one loads: the key is accepted, its value is ignored, and one notice per key
@@ -352,16 +381,17 @@ All four are optional and are stored in each receipt's sampling policy.
 
 | Key | Symbol | Meaning | Default |
 | --- | --- | --- | --- |
-| `model_worth` | `worth` | How many runs the record says about a model family's own level | 5 |
+| `model_worth` | `kappa_m` | How many runs the record says about a model family's own level, beside the family's own runs: `worth = n_family + model_worth` | 5 |
 | `task_worth_amount` | `N_task` | The most a record on other tasks is worth for one task, for an amount | 1 |
-| `duration_miss` | `D` | The typical remaining miss of a prediction, as a spread of `ln(actual / prediction)` | 1.3 |
+| `duration_miss` | `D` | The typical remaining miss of a prediction, as a spread of `ln(actual / prediction)`, before any run is on record; the record then measures `D` for each cell | 1.3 |
 | `scatter_share` | | The share of `D^2` that is run-to-run scatter on one task | 0.5 |
 
 `model_worth`, `task_worth_amount` and `duration_miss` are positive, and `scatter_share`
 lies in `(0, 1]`. They give the run-to-run scatter `tau = D * sqrt(scatter_share)`, the
 number of runs a prediction is worth `N_start = 1 / (1/worth + 1/N_task)`, and the
-minimum spread of a belief `tau / sqrt(N_start)`. With the defaults `tau = 0.919`,
-`N_start = 0.833` and the minimum spread is 1.007 for active time and every token kind.
+minimum spread of a belief `tau / sqrt(N_start)`. With the defaults and an empty record
+`tau = 0.919`, `N_start = 0.833` and the minimum spread is 1.007 for active time and
+every token kind.
 A larger `duration_miss` widens every belief, which raises `credit_p80_usd` and the
 spread of the cost; a larger `scatter_share` makes each recorded run count for less.
 

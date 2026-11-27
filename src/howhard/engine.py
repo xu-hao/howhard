@@ -44,6 +44,7 @@ class Engine:
         self.last_memory_update = {"status": "not-requested"}
         self._summaries = {}
         self.receipt_hosts = {}
+        self.receipt_forecasts = {}
         self.refresh()
         from .retrieval import RetrievalPipeline
         self.retrieval = retrieval if retrieval is not None else RetrievalPipeline.from_config(self.config)
@@ -244,10 +245,10 @@ class Engine:
         bundle["read_state"] = read_state
         bundle["dependencies"] = {"configuration": configuration(reader.config), "memories": {}, "evidence": {}}
         prototypes.prepare_stage1(reader, bundle)
-        self._score_evidence(reader, bundle)
         bundle["inventory_source"] = inventory
         bundle["native_candidates"] = candidates
         bundle["project_root"] = str(self.config.project_root)
+        self._score_evidence(reader, bundle)
         pending = self._save_request(bundle, validate=False)
         if not auto_decide:
             return pending
@@ -268,8 +269,9 @@ class Engine:
         """Choose and score the request's evidence candidates once, on captured rows and outside every lock.
 
         All three readers weigh this one set; the capability reader's observations are fixed here.
+        The record on other tasks is read with it: the ladder sums that correct each forecast.
         """
-        from . import capability, evidence
+        from . import capability, evidence, prediction
         receipts = {}  # Each decision a candidate row names is loaded once for both readers.
         candidates = evidence.collect(reader, bundle["forecast_template"], bundle.get("prototype_state"), receipts)
         filtering = bundle["stage"] == "filter"
@@ -277,7 +279,8 @@ class Engine:
         # The failed runs behind the asking host's caught share are read once, on the same captured rows.
         caught = capability.caught_record(reader, bundle["host"], candidates) if filtering else None
         bundle["learned_state"] = {"weights_policy": "snapshot", "evidence_candidates": candidates,
-                                   "capability_observations": observed, "caught_record": caught}
+                                   "capability_observations": observed, "caught_record": caught,
+                                   "prediction": prediction.collect(reader, bundle, candidates)}
 
     def _save_request(self, bundle, *, validate=True):
         from .request_state import extend
@@ -479,6 +482,7 @@ class Engine:
         prepared[0]["host"] = bundle["host"]
         prepared = semantic.augment(self, prepared, combined, combined_payload, snapshot, usage,
                                     candidates=bundle["learned_state"]["evidence_candidates"],
+                                    record=bundle["learned_state"]["prediction"],
                                     reused=prototypes.reused_forecasts(bundle.get("prototype_state"), forecast_pairs))
         state = deepcopy(bundle["capability"])
         state["disagreements"] = capability.disagreements(state, prepared)

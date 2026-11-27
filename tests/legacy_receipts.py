@@ -209,6 +209,8 @@ def to_v10(receipt, on_cap_unmet="flag-review"):
     sem.pop("stored_forecasts")
     # v10 rows carried their own score and similarity, and outcomes a count-based age.
     scored = {c["id"]: c for c in sem.pop("evidence_candidates")["candidates"]}
+    # v10 started every belief from the forecast itself: there is no corrected prediction.
+    sem.pop("prediction")
     ages, outcomes = {}, []
     for obs in sem["outcome_observations"]:
         pair = obs["family"], obs["effort"]

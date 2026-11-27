@@ -102,6 +102,11 @@ choose the candidates: a prototype's score and a run's membership weight enter n
 weight. A task that matches no prototype has no candidate, and nothing is counted;
 there is no fallback search. `interrupted` runs are never candidates.
 
+The finished routed runs on other tasks, which are not candidates, count in another
+way: they set the level from which each belief starts
+({ref}`corrected prediction <corrected-prediction>`). A candidate, scored or beyond the
+cap below, enters none of that prediction's ladders.
+
 At most `comparison_cap` (256) candidates are scored, most recent first by
 `observed_at`; the rest count nowhere. A count keeps the result independent of machine
 load and bounds one decision's local model work. Each candidate is compared with the
