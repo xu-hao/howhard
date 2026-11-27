@@ -14,17 +14,19 @@ examples illustrate capture, not permission to run another worker or repeat comp
 ```sh
 codex exec --json --model ACTUAL_MODEL -c model_reasoning_effort=ACTUAL_EFFORT 'AUTHORIZED_TASK' > /tmp/EXECUTION_ID-codex.jsonl
 claude -p --verbose --output-format stream-json --model ACTUAL_MODEL 'AUTHORIZED_TASK' > /tmp/EXECUTION_ID-claude.jsonl
+agy --output-format stream-json --model ACTUAL_MODEL -p 'AUTHORIZED_TASK' > /tmp/EXECUTION_ID-agy.jsonl
 ```
 
-Use `codex-exec-v1` for the first artifact and `claude-sdk-v1` for the second. Record
-the concrete host version from `codex --version` or `claude --version`, the exact session
+Use `codex-exec-v1` for the first artifact, `claude-sdk-v1` for the second and
+`agy-print-v1` for the third. Record the concrete host version from `codex --version`,
+`claude --version` or `agy --version`, the exact session
 identity emitted by the invocation, and the completed source byte range. A failed launch
 is not a completed invocation. Preserve the original artifact on failure and never run a
 second task merely to manufacture usage for the first.
 
 Supported source schemas are `0.166.0` for both Codex adapters,
 `2.1.318` for Claude sessions, and the verified underlying Claude Code runtime
-`2.1.318` for the SDK adapter. An SDK package version does not prove the runtime's
+`2.1.318` for the SDK adapter, and `1.5.18` for both Antigravity adapters. An SDK package version does not prove the runtime's
 cumulative accounting behavior; do not supply an SDK package version as `host_version`.
 Verify the actual underlying Claude Code runtime even when the SDK package version
 differs. Set `host_version` to the exact supported runtime identity; another version is refused,
@@ -38,6 +40,24 @@ baseline makes usage unavailable; decreasing counters or mismatched identity are
 The result UUID identifies the invocation. Always supply `included_sessions`, even an
 empty list when no independent host sessions were included. Native Claude children
 sharing the parent session use the separate exact `included_agents` mapping below.
+
+For `agy-print-v1`, the session identity is the emitted `conversation_id`. Its
+`result.usage` is cumulative over the conversation, so a span holds one `result`. A fresh
+`-p` conversation captured from byte zero, with its `init` event and `num_turns: 1`, needs
+no baseline. A resumed or multi-turn conversation needs `baseline:
+{"conversation_id": "EXACT_CONVERSATION_ID", "usage": {...}}` holding the previous
+`result.usage` (`{}` only when nothing ran before); without it usage is unavailable, and
+decreasing counters are refused. Only `status: "SUCCESS"` is a terminal boundary.
+Antigravity `input_tokens` excludes cache reads and `output_tokens` already includes
+thinking. Antigravity reports bare model slugs; a manifest `model` of `agy/<slug>` or
+`agy:<slug>` matches them and is kept on segments, so a rate card for the qualified name
+applies.
+
+For an already running Antigravity conversation, `agy-transcript-v1` reads
+`<appDataDir>/brain/<conversationId>/.system_generated/logs/transcript.jsonl` with the
+same exclusive byte-span rules below. Each `PLANNER_RESPONSE` step counts once by its
+`step_index` (a rewritten step replaces its earlier record), its model must match, and
+the span is complete only when every such step has `status: "DONE"`.
 
 For an already running session, use `codex-session-v1` or `claude-session-v1` only when
 the host exposes the exact owned session artifact and an exclusive byte span. Save its

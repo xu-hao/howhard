@@ -1275,14 +1275,18 @@ Tokens are nonoverlapping `input`, `output`, `cache_read`, `cache_write`,
 `cache_write_5m`, and `cache_write_1h` categories. Unknown is null. Codex input includes
 cached input, which is subtracted once; reasoning output is already included in output.
 Claude input excludes cache reads/writes; cache creation TTL buckets partition total
-cache creation. A known aggregate never supplies a guessed partition. Optional segment `reported_tokens`
+cache creation. Antigravity `input_tokens` excludes `cache_read_tokens`, `output_tokens`
+includes `thinking_tokens` (larger thinking is refused), a present `total_tokens` must
+equal input plus output, and cache writes are zero. A known aggregate never supplies a guessed partition. Optional segment `reported_tokens`
 retains a measured inclusive aggregate when category coverage is partial; effective scalar
 `tokens` uses it only when every segment aggregate and the completed boundary are known.
 An interrupted boundary never becomes a complete scalar total. Collector sources
 retain host/schema version, content hash, coordinate and span/source identity, provider,
 model and tier. Supported schemas are Codex `0.166.0`, Claude sessions
 `2.1.318`, and Claude SDK artifacts from the verified underlying Claude Code runtime
-`2.1.318`; unknown runtime versions are refused. An SDK package version does not
+`2.1.318`, and Antigravity `1.5.18` (`agy-print-v1` for `agy --output-format
+stream-json` and `agy-transcript-v1` for a conversation's
+`.system_generated/logs/transcript.jsonl`); unknown runtime versions are refused. An SDK package version does not
 establish the runtime's cumulative accounting semantics and is not a supported
 `host_version` identity. A manifest's optional `coordinate_id` preserves append-only artifact
 identity across moves; different coordinate offsets cannot establish disjoint spans
@@ -1295,7 +1299,21 @@ prevents duplicate attachment in either order. Agent IDs are never guessed from 
 session aliases. Both arrays require distinct IDs and inclusive scope when nonempty.
 Claude SDK cumulative results require a same-session pre-invocation `modelUsage` baseline
 (an empty map explicitly means a fresh session), result UUID and declared child identities.
-Missing SDK baseline is unavailable; counter resets are refused. A resumed Codex session
+Missing SDK baseline is unavailable; counter resets are refused. Antigravity stream
+`result.usage` is also cumulative over the conversation: every `init`, `step_update` and
+`result` `conversation_id` must match `session_id`, a present `init.model` must match the
+manifest model, and a span holds at most one `result`. Without
+`baseline: {"conversation_id": ID, "usage": {...}}` (`{}` meaning zero) only a fresh
+span, starting at byte zero with an `init` event and `num_turns: 1`, is collected; any
+other span is unavailable. Baseline counters are subtracted by category and a decrease is
+refused as a reset. Only `status: "SUCCESS"` with no later `step_update` is a terminal
+boundary; `ERROR` and other results stay partial. In an Antigravity transcript, every
+record needs a string `type` and nonnegative `step_index`, a new step index lower than
+one already seen is refused, and only `PLANNER_RESPONSE` steps carry usage. A repeated
+step index replaces that step's earlier record, its bare `model` must match the manifest
+model directly or after an `agy/` or `agy:` prefix, and the span is terminal only when
+every retained `PLANNER_RESPONSE` has `status: "DONE"`. Both Antigravity adapters emit
+the manifest model on segments, so a rate card named `agy/<slug>` prices them. A resumed Codex session
 span requires raw measured starting cumulative usage in `baseline`; missing baseline
 or unreconciled cumulative/last-frame deltas keeps it partial. Explicit event identities
 and exclusive execution spans prevent inherited/forked usage
