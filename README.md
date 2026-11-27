@@ -25,16 +25,16 @@ failure guarantee. Without a usable LLM forecast, routing stops explicitly.
 You need Python 3.11+, a POSIX shell, Git and a current Codex, Claude Code or
 Antigravity client with native plugin support.
 
-Install the 3.0 backend from the tagged GitHub release in your project directory:
+Install the 6.0 backend from the tagged GitHub release in your project directory:
 
 ```sh
 python3 -m venv .venv-howhard
 . .venv-howhard/bin/activate
-python -m pip install "howhard @ git+https://github.com/xu-hao/howhard.git@v3.0.0"
+python -m pip install "howhard @ git+https://github.com/xu-hao/howhard.git@v6.0.0"
 howhard --version
 ```
 
-Expect `howhard 3.0.0`. Keep the environment active and start your agent from the same
+Expect `howhard 6.0.0`. Keep the environment active and start your agent from the same
 shell so it can find `howhard`. An existing GUI session may need the absolute path to
 `.venv-howhard/bin/howhard` in your project.
 

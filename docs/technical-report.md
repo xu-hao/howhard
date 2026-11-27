@@ -438,9 +438,10 @@ for the cell that ran, of all hosts for {math}`F_{\mathrm{all}}` and
 for every 14 days between the run and the request, divided by {math}`\max(1,A_t)`
 where {math}`A_t` is the total age factor of the failed runs of the same ticket, so
 one ticket's failed runs count as one run at most.
-A run's host is the name in its decision receipt; a receipt with no name, or older
-than decision v11, belongs to one unnamed host. {math}`\kappa_d=12` is the number of
-failed runs the prior is worth. {math}`d_0` is the caught share at which both edges
+A run's host is the name in its decision receipt. A receipt older than decision v11
+stores none, so its runs belong to the host an operator imported for that decision, or
+else, like a receipt with no name, to one unnamed host. {math}`\kappa_d=12` is the
+number of failed runs the prior is worth. {math}`d_0` is the caught share at which both edges
 below equal the configured ones.
 
 In plain words: {math}`d` is the share of its failures that the host caught. A host
@@ -680,9 +681,10 @@ Level and usual come down a ladder of five rungs, each leaning on the rung above
   both ladders equal the guess.
 - {math}`i`: a finished routed run at rung {math}`r`: its outcome is clean, loud or
   silent and its decision stored a forecast for the cell that ran. Its host and agent
-  are the names that decision stores. The evidence candidates of the new decision are
-  left out, because they count through their similarity to the new task; a run with no
-  decision enters no ladder.
+  are the names that decision stores; for a decision older than v11, the names an
+  operator imported for it and for the run's family. The evidence candidates of the
+  new decision are left out, because they count through their similarity to the new
+  task; a run with no decision enters no ladder.
 - {math}`a_i`: the age factor of section 3's evidence weights, halving every 14 days,
   divided by {math}`\max(1,A_t)` with {math}`A_t` the summed age factors of the runs of
   ticket {math}`t` in the ladder. A run with no ticket is not limited.
@@ -865,9 +867,10 @@ itself, and one ticket still counts for at most one run.
 
 A cell's family comes from the model registry and its agent from the label on its
 candidate. A run's agent is the label stored for the chosen cell in the receipt that
-the run's `decision_id` names. A run with no decision, a receipt older than v11 or an
-unlabeled candidate belongs to the one unnamed agent, as does an unlabeled cell of the
-new request.
+the run's `decision_id` names. A run with no decision or a receipt older than v11
+stores no label and takes the agent an operator imported for its family; without one it
+belongs, like an unlabeled candidate and an unlabeled cell of the new request, to the
+one unnamed agent.
 
 Example: the judged cell is family `f1` at effort `high` under agent `a1`, and every
 run has {math}`m_i=1`.
@@ -1219,7 +1222,11 @@ not reserve the full uncertain cost of future retries or prevent concurrent exte
 spending.
 
 Receipts freeze the inputs, retrieved evidence, memory versions, forecasts,
-capability state and selection details. A recorded seed reproduces selection
+capability state and selection details, under the
+{ref}`frozen formats <frozen-formats>` of decision v11. Older receipts keep loading
+and replaying under their own rules. They store no host and no agent labels, and an
+operator can {ref}`import names <imported-names>` for their runs once, without
+rewriting a receipt. A recorded seed reproduces selection
 given those frozen forecasts; fresh LLM inference can vary. Git worktrees share
 the project evidence store while capturing their own current checkout context.
 

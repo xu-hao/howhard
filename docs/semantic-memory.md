@@ -217,19 +217,14 @@ failure leaves the outcome durable and does not create a second execution.
 Routing seeds reproduce selection given recorded forecasts. They do not make fresh
 LLM calls deterministic. Cached forecasts and content-addressed receipts support replay;
 operational timing/cache metadata may differ between invocations.
-New receipts use `howhard-decision-v11` with capability (`howhard-capability-v6`),
-continuous prior decay, and accepted-result selection state. Requests use
-`howhard-agent-request-v7` and semantic state uses `howhard-semantic-v8`
-(`semantic-reader-v8`), whose forecast rows accept the
-{ref}`stated ranges <forecast-contract>` on active time and token kinds. Persisted
-`howhard-decision-v10` (`howhard-semantic-v7`, `howhard-capability-v5`/`v4`),
-`howhard-decision-v9` (`howhard-semantic-v6`,
-`howhard-capability-v4`/`v3`), `howhard-decision-v8` (`howhard-semantic-v5`,
-`howhard-capability-v3`), and `howhard-decision-v7`
-(`howhard-semantic-v4`, `howhard-capability-v1`/`v2`) receipts continue to load, validate,
-accept feedback, and participate in belief replay and reporting under their frozen rules.
-Older decision receipts v1–v6 remain in the store but are excluded from predictive scoring; raw
-evidence already linked to them remains intact.
+Receipts use the {ref}`frozen formats <frozen-formats>`: `howhard-decision-v11` with
+semantic state `howhard-semantic-v8` (reader prompt `semantic-reader-v8`), whose
+forecast rows accept the {ref}`stated ranges <forecast-contract>` on active time and
+token kinds, capability state `howhard-capability-v6` and accepted-result selection
+state. Requests use `howhard-agent-request-v7`. Stored `v7` to `v10` receipts keep
+loading, validating, accepting feedback and taking part in belief replay and reporting
+under their own rules. Receipts v1–v6 remain in the store but are excluded from
+predictive scoring; raw evidence already linked to them remains intact.
 
 Native host selection supplies `--candidates FILE` to `context` or `pick` before any
 baseline/reader forecasts. The inventory is generated from actual host controls, not a
@@ -304,7 +299,9 @@ evaluation arms; custom adapters should document the meaning of their reported c
 reports log loss/Brier scores and measured cost/latency, and accounts for amendments.
 Its `routing` list names, for every stored decision that can still be replayed, the
 {ref}`host <host-and-agent-names>` that asked for the route and the chosen cell with its
-agent label; `null` is the unnamed host or agent, including every receipt older than v11.
+agent label; `null` is the unnamed host or agent. A receipt older than v11 shows the
+names {ref}`imported <imported-names>` for it, and `null` without them. Its `receipts`
+block counts the stored receipts by format.
 These descriptive scores cannot recover unrun alternatives' outcomes or establish
 routing superiority. Follow the [real-project evaluation protocol](evaluation.md).
 

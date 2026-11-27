@@ -447,7 +447,7 @@ def test_large_learned_band_accepts_a_tight_refilter(tmp_path, monkeypatch, case
     # Synthetic scored candidates of today with the given similarity, and the capability
     # observations the reader makes of them, each with a forecast of its active time.
     scored = [{"id": f"run-{i}", "family": "native-" + hashlib.sha256(cells[pos]["model"].encode()).hexdigest(),
-               "effort": cells[pos]["effort"], "outcome": "clean", "active_seconds": float(active),
+               "effort": cells[pos]["effort"], "agent": None, "outcome": "clean", "active_seconds": float(active),
                "tokens": None, "token_usage": None, "ticket": None,
                "run_weight": 1., "score": math.log(weight / (1 - weight)),
                "similarity": evidence.similarity(math.log(weight / (1 - weight))), "days": 0., "age_factor": 1.}

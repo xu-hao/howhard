@@ -10,12 +10,14 @@ Run these commands from the project where you want to use howhard:
 ```sh
 python3 -m venv .venv-howhard
 . .venv-howhard/bin/activate
-python -m pip install "howhard @ git+https://github.com/xu-hao/howhard.git@v3.0.0"
+python -m pip install "howhard @ git+https://github.com/xu-hao/howhard.git@v6.0.0"
 howhard --version
 ```
 
-Expect `howhard 3.0.0`. This installs the tagged source release. Earlier PyPI distributions use the older
-protocol; installing 3.0 does not require a PyPI publication.
+Expect `howhard 6.0.0`. This installs the tagged source release; it does not require a
+PyPI publication, and earlier PyPI distributions use an older protocol. An existing
+store keeps working after the upgrade: read the
+[6.0.0 upgrade notes](changelog.md) first.
 
 Keep this environment active and start your coding agent from the same shell so it
 can find `howhard`. If an existing GUI session cannot find it, configure the absolute
@@ -151,6 +153,11 @@ howhard paths --json
 howhard memory list --json
 howhard report --json
 ```
+
+Runs recorded before the agent named itself belong to one unnamed host and one unnamed
+agent. To name them, an operator can import one optional file of hosts by decision ID
+and agents by model family with `howhard names import --file NAMES.json`
+({ref}`names for older decisions <imported-names>`); nothing requires it.
 
 Git worktrees share repository state while each task captures its current checkout.
 Plain folders use local `.howhard`. `paths` shows the resolved locations; the

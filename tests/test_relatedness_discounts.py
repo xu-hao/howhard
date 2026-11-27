@@ -417,7 +417,7 @@ def test_v7_to_v10_receipts_load_observe_replay_and_report_beside_related_runs(p
         load(engine.config, crossed)
 
 
-def test_a_request_scored_before_candidates_carried_an_agent_reads_its_runs_as_unnamed(project):
+def test_a_request_scored_before_candidates_carried_an_agent_is_refused(project):
     engine = Engine(project(), retrieval=Scripted())
     recorded(engine, "earlier", "haiku", "high", A, sim=.8)
     pending = engine.prepare("Y", "Repair rollback", native_candidates=labelled(("opus", "high", A)))
@@ -429,10 +429,8 @@ def test_a_request_scored_before_candidates_carried_an_agent_reads_its_runs_as_u
     with locked(engine.config):
         put(engine.config, "requests", request_id, canonical(bundle) + b"\n")
     request = pending["baseline_request"]
-    band = engine.decide(request_id, filtering(None) if request is None else fixture_filter(request))
-    result = engine.decide(band["request_id"], forecasts(band["baseline_request"]), seed=3)
-    receipt = load(engine.config, result["decision_id"])
-    assert scored(receipt)["earlier"]["agent"] is None and outcome_rows(receipt)["earlier"]["agent"] is None
-    # Unnamed, the run is no longer a run of the judged cell's own agent.
-    assert judged(receipt)["earlier"]["relation"] == "other"
+    # A request is readable only in the frozen shape: nothing reads its runs as unnamed.
+    with pytest.raises(HowHardError, match=r"request.learned_state.evidence_candidates: missing the agent label "
+                                           r"of each candidate run; .*run `howhard context` again"):
+        engine.decide(request_id, filtering(None) if request is None else fixture_filter(request))
     assert judged(decide(engine, labelled(("opus", "high", A))))["earlier"]["relation"] == "agent"

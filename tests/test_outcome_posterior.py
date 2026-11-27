@@ -452,10 +452,9 @@ def test_a_retired_sampling_key_loads_with_a_notice_and_changes_no_decision(tmp_
         engine = Engine(tmp_path / name / "howhard.toml")
         notices = capsys.readouterr().err.splitlines()
         if settings:
-            # One line per retired key, on standard error.
-            assert len(notices) == 3 and all("retired and ignored" in line for line in notices)
-            assert [key for line in notices for key in ("prior_strength", "min_concentration", "max_concentration")
-                    if f"sampling.{key} " in line] == ["prior_strength", "min_concentration", "max_concentration"]
+            # One line on standard error names every retired key the file sets.
+            assert notices == ["howhard: notice: these settings are retired and ignored: sampling.prior_strength, "
+                               "sampling.min_concentration, sampling.max_concentration"]
         else:
             assert notices == []
         policy = engine.config.data["sampling"]

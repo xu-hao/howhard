@@ -12,6 +12,12 @@ from .validation import HowHardError, keys, number, table, text
 from .writes import WritePolicy
 
 
+# Settings that are accepted and ignored, in the order the notice names them. The last three
+# are the Dirichlet posterior's constants, which only v7 to v10 receipts store.
+RETIRED_TOP = ("on_cap_unmet",)
+RETIRED_SAMPLING = ("outcome_recency", "prior_strength", "min_concentration", "max_concentration")
+
+
 def merge(base, changes):
     result = deepcopy(base)
     for key, value in changes.items():
@@ -109,29 +115,22 @@ def load_config(path=None, *, directory=None, state_directory=None):
         base = path.parent
         raw = path.read_bytes()
         overrides = parse_toml(raw, str(path))
-        # Retired with tiered admission: the key is still accepted so older files load, but
-        # nothing reads it. One notice goes to standard error; standard output is untouched.
-        if "on_cap_unmet" in overrides:
-            del overrides["on_cap_unmet"]
-            notice("on_cap_unmet is retired and ignored; tiered admission always draws a cell")
         data = merge(default, overrides)
     else:
         data = default
     keys(data, ["project", "journal", "logs", "classes", "models"],
-         ["task_types", "retrieval", "inventories", "capability", "sampling"], "config")
-    from .success import DEFAULTS as SAMPLING, RETIRED, validate_policy as validate_sampling
+         ["task_types", "retrieval", "inventories", "capability", "sampling", *RETIRED_TOP],
+         "config")
+    from .success import DEFAULTS as SAMPLING, validate_policy as validate_sampling
     sampling = dict(table(data.get("sampling", {}), "config.sampling"))
-    for key in RETIRED:
-        if key in sampling:
-            # Outcome beliefs on the log-odds scale have no Dirichlet concentration to bound.
-            del sampling[key]
-            notice(f"sampling.{key} is retired and ignored; an outcome belief starts from the forecast at the "
-                   "worth sampling.model_worth and the task worths give it")
-    if "outcome_recency" in sampling:
-        # Evidence ages by time, so the former per-observation decay is accepted and ignored.
-        del sampling["outcome_recency"]
-        notice("sampling.outcome_recency is accepted and ignored; evidence halves in weight every "
-               "sampling.half_life_days")
+    # Retired settings are still accepted so that older files load, but nothing reads them:
+    # tiered admission always draws a cell (on_cap_unmet), evidence ages by time
+    # (outcome_recency) and outcome beliefs have no Dirichlet concentration to bound. One
+    # notice on standard error names every one found; standard output is untouched.
+    found = [key for key in RETIRED_TOP if data.pop(key, None) is not None]
+    found += [f"sampling.{key}" for key in RETIRED_SAMPLING if sampling.pop(key, None) is not None]
+    if found:
+        notice("these settings are retired and ignored: " + ", ".join(found))
     data["sampling"] = validate_sampling(merge(SAMPLING, sampling))
     from .capability import DEFAULTS, validate_policy
     table(data.get("capability", {}), "config.capability")

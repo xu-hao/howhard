@@ -17,6 +17,7 @@ from .storage import effective_active_seconds
 from .validation import HowHardError, keys, number, text
 
 FORMAT = SETTINGS["format"]
+PROMPT_VERSION = SETTINGS["prompt_version"]
 LEGACY_FORMAT_V4 = "howhard-semantic-v4"
 LEGACY_PROMPT_V5 = "semantic-reader-v5"
 # Frozen receipt versions pin the semantic format and reader prompt they were produced with.
@@ -24,7 +25,7 @@ RECEIPT_SEMANTICS = {LEGACY_DECISION_V7: (LEGACY_FORMAT_V4, LEGACY_PROMPT_V5),
                      LEGACY_DECISION_V8: ("howhard-semantic-v5", "semantic-reader-v6"),
                      LEGACY_DECISION_V9: ("howhard-semantic-v6", "semantic-reader-v7"),
                      LEGACY_DECISION_V10: ("howhard-semantic-v7", "semantic-reader-v7"),
-                     DECISION_FORMAT: (FORMAT, SETTINGS["prompt_version"])}
+                     DECISION_FORMAT: (FORMAT, PROMPT_VERSION)}
 OUTCOMES = ("clean", "loud", "silent")
 FIELDS = ("family", "effort", "clean", "loud", "silent", "tokens", "seconds")
 # Stated 95% ranges on the two failure rates, and on active time and each token kind.
@@ -683,8 +684,6 @@ def augment(engine, prepared, response, payload, snapshot, usage, *, candidates,
     from .success import (admission_tier, belief_intervals, cell_beliefs, cell_cost, counted_totals, credit_fits,
                           money_terms, outcome_beliefs)
     result, cells = deepcopy(prepared[0]), prepared[1]
-    # A request scored before candidates carried an agent reads every run as the unnamed agent.
-    candidates = {**candidates, "candidates": [{**item, "agent": item.get("agent")} for item in candidates["candidates"]]}
     # The readers only weigh the request's scored candidates; nothing is compared again here.
     outcome_obs = outcome_observations(candidates)
     duration_obs = duration_observations(candidates, {(row["family"], row["effort"]) for row in result["cells"]})

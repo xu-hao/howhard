@@ -29,6 +29,8 @@ with zipfile.ZipFile(wheel) as archive:
 sdist = Path("dist") / f"howhard-{expected}.tar.gz"
 with tarfile.open(sdist) as archive:
     assert f"howhard-{expected}/tests/conftest.py" in archive.getnames()
+    for name in ("receipt.json", "outcomes.jsonl", "native-models.json", "make_fixture.py"):
+        assert f"howhard-{expected}/tests/fixtures/decision-v10/{name}" in archive.getnames()
     assert f"howhard-{expected}/scripts/migrate-payloads.py" in archive.getnames()
     for name in ("__init__.py", "rule_retrieval.py", "bench_rule_retrieval.py", "rule_cases.json"):
         assert f"howhard-{expected}/benchmarks/{name}" in archive.getnames()
@@ -112,4 +114,11 @@ with tempfile.TemporaryDirectory(prefix="howhard-wheel-") as directory:
     assert warm_auto["chosen"]["model"] == "wheel-native-model" and "decision_id" in warm_auto
     warm_pick = json.loads(subprocess.check_output([str(command), "pick", "bookkeeping", "--candidates", str(inventory), "--text", "repair spelling typo", "--seed", "42", "--json"], cwd=root, env=environment, text=True))
     assert warm_pick["chosen"]["model"] == "wheel-native-model" and warm_pick["semantic"]["backend"] == "prototype-materialized"
+    # The installed command imports names for runs whose receipt stores none; a v11 decision is skipped.
+    names = root / "names.json"
+    names.write_text(json.dumps({"hosts": {warm_pick["decision_id"]: "wheel-host"}, "agents": {"wheel-native-model": "wheel-agent"}}))
+    imported = json.loads(subprocess.check_output([str(command), "names", "import", "--file", str(names), "--json"], cwd=root, env=environment, text=True))
+    assert imported["hosts"]["skipped"] == 1 and imported["agents"]["stored"] == 1
+    again = json.loads(subprocess.check_output([str(command), "names", "import", "--file", str(names), "--json"], cwd=root, env=environment, text=True))
+    assert again["agents"] == {"stored": 0, "unchanged": 1, "replaced": 0, "skipped": 0}
 print(f"Verified howhard {expected} source distribution and clean installed wheel")

@@ -76,6 +76,12 @@ def parser():
         if name == "attach":
             command.add_argument("execution_id")
             command.add_argument("--id", required=True, help="stable append-only amendment ID")
+    names = commands.add_parser("names", help="name the host and agent of runs whose receipt stores none")
+    operations = names.add_subparsers(dest="names_command", required=True)
+    command = operations.add_parser("import", help="store names from a JSON file of hosts by decision ID and agents by family")
+    common(command)
+    command.add_argument("--file", required=True, metavar="NAMES.json",
+                         help='{"hosts": {DECISION_ID: HOST}, "agents": {FAMILY_OR_MODEL: AGENT}}; both optional')
     memory = commands.add_parser("memory", help="inspect and manage persistent semantic memory")
     operations = memory.add_subparsers(dest="memory_command", required=True)
     for name in ("list", "read", "search", "add", "edit", "remove", "restore", "merge", "split", "history", "apply", "beliefs", "learn", "learn-context"):
@@ -264,6 +270,8 @@ def main(argv=None):
             result = engine.retrieve(args.request_id, read_json(args.file))
         elif args.command == "memory":
             result = memory_command(engine, args)
+        elif args.command == "names":
+            result = engine.import_names(read_json(args.file))
         elif args.command == "report":
             from .report import report
             result = report(engine)

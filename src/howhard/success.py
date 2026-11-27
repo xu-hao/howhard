@@ -26,9 +26,6 @@ DEFAULTS = {"uncertainty_multiplier": 1., "admission_quantile": .8, "trial_proba
 # judged cell itself: the same family at another effort, another family of the same agent,
 # and another agent.
 DISCOUNTS = ("effort_discount", "model_discount", "agent_discount")
-# The Dirichlet posterior's three constants. Outcome beliefs on the log-odds scale do not read
-# them: a configuration that still sets one loads with a notice, and only v7-v10 receipts store them.
-RETIRED = ("prior_strength", "min_concentration", "max_concentration")
 # Frozen v7/v8 receipts recorded this policy shape; it is read-only history.
 LEGACY_DEFAULTS = ("min_concentration", "max_concentration", "prior_strength", "explore_within", "uncertainty_multiplier")
 # Frozen v9/v10 receipts aged evidence by count (outcome_recency), not by time, and had no

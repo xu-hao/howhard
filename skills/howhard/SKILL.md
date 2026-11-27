@@ -78,7 +78,8 @@ the host's actual tools execute the task.
    forecast at zero is exactly zero unless you state a non-zero upper end, and there is
    no range on total tokens or cost. Give the range you actually believe rather than
    omitting it or narrowing it to look confident. A forecast never fades out: each of a cell's two outcome
-   beliefs keeps it at the weight of about four runs, beside the runs counted for the cell (its own in full, a related cell's at a discount). Handle one explicit re-filter and stronger-only
+   beliefs starts from it, corrected by your host's record on other tasks, at the weight of about four runs
+   when that record is empty and more as it grows, beside the runs counted for the cell (its own in full, a related cell's at a discount). Handle one explicit re-filter and stronger-only
    widening requests; never truncate an inventory/band or forecast excluded cells.
    The forecast request can hold up to two cells outside the fit band, reserved for a
    model family with no run on this kind of task or for an agent the band leaves out:

@@ -330,7 +330,7 @@ def test_every_scored_candidate_is_a_request_dependency(project):
     assert set(receipt["request_snapshot"]["dependencies"]["evidence"]) == {"precedent", "other"}
 
 
-def test_request_stored_without_its_scored_candidates_scores_them_when_it_is_used(project):
+def test_request_stored_without_its_scored_candidates_is_refused_and_nothing_is_scored(project):
     config = project(rows=[run("precedent", relevance=2, seconds=100)])
     retrieval = Scripted(store=config)
     engine = Engine(config, retrieval=retrieval)
@@ -341,10 +341,12 @@ def test_request_stored_without_its_scored_candidates_scores_them_when_it_is_use
     with locked(config):
         put(config, "requests", request_id, canonical(bundle) + b"\n")
     retrieval.compared.clear(), retrieval.unlocked.clear()
-    band = engine.decide(request_id, filtering(pending["baseline_request"], 0, 0))
-    assert [len(documents) for documents in retrieval.compared] == [1] and retrieval.unlocked == [True]
+    with pytest.raises(HowHardError, match=r"request.learned_state: missing .*run `howhard context` again"):
+        engine.decide(request_id, filtering(pending["baseline_request"], 0, 0))
+    assert retrieval.compared == []
+    # The request as prepared decides, counting the candidate it scored when it was prepared.
+    band = engine.decide(pending["request_id"], filtering(pending["baseline_request"], 0, 0))
     result = engine.decide(band["request_id"], forecasts(band["baseline_request"]), seed=3)
-    assert [len(documents) for documents in retrieval.compared] == [1]
     receipt = load(config, result["decision_id"])
     assert set(scored(receipt)) == {"precedent"}
     for rows in readers(receipt):

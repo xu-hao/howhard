@@ -5,7 +5,8 @@ from copy import deepcopy
 import json
 import math
 
-from .decisions import agent, host, load, exists
+from .context import DECISION_FORMAT
+from .decisions import agent, load, exists
 from .semantic import OUTCOMES, SETTINGS, panel_lookup
 from .storage import INTERRUPTED_CAUSES, OBSERVATION_OUTCOMES
 from .validation import HowHardError
@@ -77,7 +78,8 @@ def report(engine):
         "effective_active_seconds": _time_summary([effective_active_seconds(row) for row in engine.rows]),
     }
     stored = scorable_decisions(engine)
-    return {"filter_quality": filter_quality(engine, stored), "routing": routing(stored),
+    return {"filter_quality": filter_quality(engine, stored), "routing": routing(stored, engine.names),
+            "receipts": receipts(engine, stored),
             "execution_accounting": summary(engine.rows), "project": engine.config.data["project"], "runs": len(engine.rows), "outcomes": {k: outcomes[k] for k in OBSERVATION_OUTCOMES},
             "interrupted_causes": {k: interrupted_causes[k] for k in INTERRUPTED_CAUSES},
             "forecast_metrics": metrics, "missing_receipts": missing, "unsupported_receipts": unsupported,
@@ -106,15 +108,43 @@ def scorable_decisions(engine):
     return decisions
 
 
-def routing(decisions):
+def routing(decisions, names=None):
     """Who asked for each stored decision and which agent its chosen cell belongs to.
 
     Both names are caller-supplied labels, never verified; ``None`` is the one unnamed
-    host or agent, which is also how receipts older than v11 read.
+    host or agent. A receipt older than v11 stores neither and shows the names imported
+    for its decision and its chosen family, if any.
     """
-    return [{"decision_id": decision_id, "host": host(decision),
-             "chosen": {**decision["chosen"], "agent": agent(decision)}}
+    from .names import family_agent, host as named_host
+
+    def chosen_agent(decision):
+        if decision["format"] == DECISION_FORMAT:
+            return agent(decision)
+        return family_agent(decision["chosen"]["family"], names)
+    return [{"decision_id": decision_id, "host": named_host(decision, decision_id, names),
+             "chosen": {**decision["chosen"], "agent": chosen_agent(decision)}}
             for decision_id, decision in decisions.items()]
+
+
+def receipts(engine, decisions):
+    """The sweep of every stored receipt: how many there are of each format, and how many
+    hold a capability probability that rounding carried above 1 within the tolerance.
+
+    Receipts older than v7 are counted by their format and are not scored.
+    """
+    from .capability import rounded_above_one
+    from .payload_store import decision_ids, get
+    formats = Counter()
+    for decision_id in decision_ids(engine.config):
+        decision = decisions.get(decision_id)
+        if decision is None:
+            try:
+                decision = json.loads(get(engine.config, "decisions", decision_id))
+            except (TypeError, ValueError, UnicodeError) as exc:
+                raise HowHardError(f"report: cannot read stored decision {decision_id}") from exc
+        formats[decision.get("format") if isinstance(decision, dict) else None] += 1
+    return {"formats": dict(sorted(formats.items(), key=lambda item: str(item[0]))),
+            "rounded_probabilities": sum(rounded_above_one(d["capability"]) for d in decisions.values())}
 
 
 def filter_quality(engine, decisions=None):

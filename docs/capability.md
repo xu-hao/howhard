@@ -18,7 +18,7 @@ Threshold-clearing probability `P_clear` is monotone along this decision's order
 It is the posterior probability that the task's threshold lies at or below the cell:
 the running sum of the posterior masses up to that cell, held within [0, 1] so that
 rounding cannot carry a saturated sum past 1. `P_timely`, below, is held the same way.
-A receipt with a probability above 1 is refused.
+A receipt with a probability more than `1e-10` above 1 is refused.
 The clearing interval starts at the first cell whose `P_clear` reaches the lower edge
 `e`. Its upper cut is the first cell at or above its anchor whose gain to the strongest
 cell is below the upper margin `g`. Both edges follow the share of its failures that
@@ -82,8 +82,10 @@ d(host) = (C_host + kappa_d * d(all)) / (F_host + kappa_d)
   no ticket is not limited.
 - `F` and `C`: the sum of `a_i` and the sum of `a_i * c_i` over the failed runs of all
   hosts (`F_all`, `C_all`) or of the asking host (`F_host`, `C_host`).
-- host of a run: the name in the run's decision receipt. A receipt with no name, or
-  older than decision v11, belongs to the one unnamed host.
+- host of a run: the name in the run's decision receipt. A receipt older than decision
+  v11 stores none: its runs belong to the host an operator
+  {ref}`imported <imported-names>` for that decision, if any. Otherwise, as for a
+  receipt with no name, they belong to the one unnamed host.
 - `kappa_d`: `caught_share_worth`, 12 failed runs' worth.
 - `d_0`: the caught share at which both edges below equal the configured ones.
 - `d`: `d(host)` of the asking host.
@@ -372,14 +374,19 @@ from its stored numbers is refused. Each of its cells
 also stores the candidate's {ref}`agent label <host-and-agent-names>` (`null` when
 unnamed), which must match the receipt's inventory and does not affect the order, the
 probabilities or the band; it decides only which agents the reserved slots count as
-missing. Persisted decision v10 receipts use `howhard-capability-v5`, a block without
-agent labels, caught share, core or reserved cells: its band uses the configured edges
-and its forecasts cover exactly the band and the widening cells. Persisted decision
-v10 and v9 receipts also accept `howhard-capability-v4`, while persisted decision v9 and
-v8 receipts with capability v3 retain the linear prior prefix, geometric tail, and
-contiguous band. Persisted decision v7 receipts support capability v2 and v1. Capability v1
-priors must uniformly match the linear tail or the geometric tail across all experts.
-These versions retain support for loading, feedback, belief replay, and reporting.
-Older decision formats v1–v6 remain inspectable as raw
+missing. A stored `P_clear` or `P_timely` may exceed 1 by at most `1e-10`, the rounding
+a running sum can leave in a receipt stored before probabilities were held within
+[0, 1]; a larger value is refused.
+
+Receipts older than v11 keep their own capability blocks
+({ref}`older receipts <frozen-formats>`): decision v10 receipts use
+`howhard-capability-v5`, a block without agent labels, caught share, core or reserved
+cells, whose band uses the configured edges and whose forecasts cover exactly the band
+and the widening cells. Decision v10 and v9 receipts also accept
+`howhard-capability-v4`, while decision v9 and v8 receipts with capability v3 retain the
+linear prior prefix, geometric tail, and contiguous band. Decision v7 receipts support
+capability v2 and v1. Capability v1 priors must uniformly match the linear tail or the
+geometric tail across all experts. These versions retain support for loading, feedback,
+belief replay, and reporting. Older decision formats v1–v6 remain inspectable as raw
 artifacts but cannot supply new receipt-bound feedback or predictive scores; old
 observation rows remain evidence.
