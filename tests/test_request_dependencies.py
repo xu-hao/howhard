@@ -331,7 +331,8 @@ def test_capability_recency_weights_do_not_move_with_unsurfaced_appends(tmp_path
     assert frozen['evidence'] == original['evidence']
     fresh = prepare(engine)
     updated = engine.decide(fresh['request_id'], filtering(fresh['baseline_request'], 0, 1))['capability']
-    assert updated['evidence'][0]['weight'] != original['evidence'][0]['weight']
+    # A fresh request measures the run's age to its own, later prepare time.
+    assert updated['evidence'][0]['weight'] < original['evidence'][0]['weight']
 
 
 def test_legacy_v5_requests_keep_conservative_validation(tmp_path):

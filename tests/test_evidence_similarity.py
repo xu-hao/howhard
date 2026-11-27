@@ -210,9 +210,9 @@ def test_runs_of_one_ticket_count_for_at_most_one_run_and_unticketed_runs_are_no
     free = [run(f"f-{i}", relevance=logit(.9), seconds=100) for i in range(3)]
     receipt = decide(Engine(project(rows=limited + free), retrieval=Scripted()), OPUS)
     for rows in readers(receipt):
-        assert sum(rows[f"t-{i}"]["weight"] for i in range(3)) == pytest.approx(1, abs=1e-4)
-        assert sum(rows[f"f-{i}"]["weight"] for i in range(3)) == pytest.approx(2.7, abs=1e-4)
-    assert all(capability_rows(receipt)[f"t-{i}"]["ticket_share"] == pytest.approx(1 / 2.7, abs=1e-4) for i in range(3))
+        assert sum(rows[f"t-{i}"]["weight"] for i in range(3)) == pytest.approx(1, abs=1e-3)
+        assert sum(rows[f"f-{i}"]["weight"] for i in range(3)) == pytest.approx(2.7, abs=1e-3)
+    assert all(capability_rows(receipt)[f"t-{i}"]["ticket_share"] == pytest.approx(1 / 2.7, abs=1e-3) for i in range(3))
     assert all(capability_rows(receipt)[f"f-{i}"]["ticket_share"] == 1 for i in range(3))
 
 

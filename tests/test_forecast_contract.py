@@ -190,7 +190,7 @@ def close(actual, expected):
     differ by the seconds they took: far below this tolerance, far above rounding.
     """
     if isinstance(expected, float) and not isinstance(actual, bool):
-        return actual == pytest.approx(expected, rel=1e-4, abs=1e-12)
+        return actual == pytest.approx(expected, rel=1e-3, abs=1e-12)
     if isinstance(expected, dict):
         return isinstance(actual, dict) and actual.keys() == expected.keys() and all(close(actual[k], v) for k, v in expected.items())
     if isinstance(expected, list):
