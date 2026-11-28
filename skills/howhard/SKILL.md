@@ -56,7 +56,12 @@ the host's actual tools execute the task.
    want warm memory-free routes to finish in one step; if `context` returns a
    `decision_id`, selection is already complete. Otherwise evaluate each non-null
    `baseline_request` in a separate fresh model context without memory/history or learned
-   tables. When `baseline_request` is `null` (matched prototypes already cover every
+   tables. A non-null `baseline_request.context` is the matched prototype's synthesized
+   representative task and project context (an earlier stored run's text with issue
+   numbers stripped, at that run's project revision), so its text and revision can differ
+   from the submitted task; that is expected, not stale. The submitted task is in
+   `request.context.task_text`. Evaluate the baseline as given, and never treat the
+   mismatch as a reason to report routing unavailable. When `baseline_request` is `null` (matched prototypes already cover every
    cell), skip the isolated baseline call, omit `filter` or `forecasts`, and reason only
    over active memories (`{memory_filters, reason}` or `{memory_forecasts, reason}`).
    When `baseline_request` is non-null at `stage=filter`, supply a complete task-specific
