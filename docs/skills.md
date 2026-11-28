@@ -85,38 +85,26 @@ agent's task or project instructions. Skill discovery and activation remain host
 ### Require howhard before delegation
 
 Add the following to the coordinating agent's persistent project instructions after
-installing the skill and backend. For Codex, use the project's `AGENTS.md`;
+installing the skills and backend. For Codex, use the project's `AGENTS.md`;
 [Codex loads project instructions before working](https://learn.chatgpt.com/docs/agent-configuration/agents-md).
 For another host, use its native project-instruction mechanism.
 
-```text
-Before delegating an authorized task to a worker, use the installed howhard skill to
-select the worker's native model and reasoning effort from the host's supported
-controls. Respect explicit user model choices and required review. Start the worker
-with the selected controls; if routing is unavailable or the controls cannot be
-enforced, report the limitation instead of silently bypassing routing.
-After execution, record the outcome and measured usage under a stable execution ID, then
-update howhard memory. On a host whose native spawn API applies explicit model and effort
-overrides, accepted controls plus completed execution match the requested cell unless
-the host reports launch failure, ignored controls, substitution or contradictory
-metadata. If no resolved identity is returned, note acceptance and completion as host-API
-provenance, not backend/provider attestation, and use the matched receipt. Otherwise,
-match only on exact reported actual model/effort; use raw feedback for a known different
-cell and leave feedback unscored only when neither accepted overrides nor an exact
-reported identity/control establishes a match. Usage stays measured-only. Record the outcome first, then use `usage collect` and
-`usage attach` on an explicitly owned artifact. No capture hook is installed; missing
-exact child-session binding leaves child usage unknown.
-Record usage by token kind where the host reports it, and active time apart from
-waiting: later routes of the same model and effort learn from both.
-The independent baseline forecast inside howhard is part of routing; do not
-recursively route that forecast through howhard.
+The block is the repository's root
+[`AGENTS.snippet.md`](https://github.com/xu-hao/howhard/blob/main/AGENTS.snippet.md),
+which also ships in the source distribution. It covers both of the plugin's skills:
+when each one applies, and the rules that hold whenever it does. Command syntax, flags
+and execution-attribution cases stay in the installed `howhard` and `attribute-failure`
+skills, which the agent reads when it invokes them.
+
+```{literalinclude} ../AGENTS.snippet.md
+:language: markdown
 ```
 
 This makes howhard use an instruction-level requirement for the coordinating agent.
 The plugin does not enforce it at the delegation tool boundary. A host-enforced
 guarantee would require the host to reject worker launches without a valid howhard
 decision matching the requested model and effort. Installing the plugin or adding
-this instruction does not implement that check or authorize additional delegation.
+these instructions does not implement that check or authorize additional delegation.
 
 (escaped-defect-attribution)=
 ## Escaped-defect attribution
@@ -138,15 +126,8 @@ monitor, Git hook, additional ledger or new observation field is installed.
 For future code tasks, keep the base/result commits, PR when applicable, stable
 execution ID and acceptance evidence in existing task artifacts and observation notes.
 Existing unknown links stay unknown. Installing the skill makes it discoverable; a
-project can require it with a short instruction:
-
-```text
-For every bug-fix task, invoke the installed attribute-failure skill to investigate
-whether the defect escaped an earlier accepted agent task. Correct only supported
-attribution through howhard's amendment and learning workflow; leave uncertain
-attribution unscored. Retain code-task commit/PR and execution provenance in existing
-task artifacts and observation notes.
-```
+project can require it for bug fixes and requested audits with the
+{ref}`shared project-instruction block <require-howhard-before-delegation>`.
 
 The complete maintained procedure lives in `skills/attribute-failure/SKILL.md`.
 
@@ -180,7 +161,9 @@ agent, not user configuration or tracked project tooling. Unknown native model I
 separate identity labels; generic categorical controls such as ultra remain exact
 rather than mapping to max/default. Missing candidate model/control values remain a
 capability gap. A separate resolved worker identity need not be returned after execution
-when accepted explicit overrides and task completion establish attribution as above.
+when accepted explicit overrides and task completion establish attribution under the
+installed skill's
+[attribution rules](https://github.com/xu-hao/howhard/blob/main/skills/howhard/SKILL.md).
 Concurrent clients rely on [backend-owned write admission](concurrency.md). The skill
 instructs agents to submit normal calls, inspect `writes --json` for contention and
 retry with stable IDs after a timeout. Agents must not create a writer-window or
@@ -264,7 +247,8 @@ agc run --label "native plugin validation" --resource cpu=1 -- .venv/bin/python 
 ```
 
 It runs Claude's strict marketplace check and Antigravity's checkout validation, then
-strictly validates an exact disposable Antigravity payload with its manifest/shared skill.
+strictly validates an exact disposable Antigravity payload with its manifest, shared
+skills and `AGENTS.snippet.md`.
 The multiprovider checkout intentionally has contributor `AGENTS.md` outside plugin
 rules and a portable root manifest superseded by Antigravity's own manifest; that client
 reports these as warnings. Claude's validator also prints separate public-directory

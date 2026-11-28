@@ -31,6 +31,7 @@ with tempfile.TemporaryDirectory(prefix="howhard-native-plugin-") as directory:
     payload = Path(directory)
     shutil.copytree(root / ".antigravity-plugin", payload / ".antigravity-plugin")
     shutil.copytree(root / "skills", payload / "skills")
+    shutil.copyfile(root / "AGENTS.snippet.md", payload / "AGENTS.snippet.md")
     strict = json.loads(run("agy", "plugin", "validate", str(payload), "--strict", "--json"))
     assert strict["components"]["skills"] == 2
 print("Verified Claude native manifests and Antigravity checkout/exact host payload; no installs")

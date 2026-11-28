@@ -32,6 +32,7 @@ with tarfile.open(sdist) as archive:
     for name in ("receipt.json", "outcomes.jsonl", "native-models.json", "make_fixture.py"):
         assert f"howhard-{expected}/tests/fixtures/decision-v10/{name}" in archive.getnames()
     assert f"howhard-{expected}/scripts/migrate-payloads.py" in archive.getnames()
+    assert f"howhard-{expected}/AGENTS.snippet.md" in archive.getnames()
     for name in ("__init__.py", "rule_retrieval.py", "bench_rule_retrieval.py", "rule_cases.json"):
         assert f"howhard-{expected}/benchmarks/{name}" in archive.getnames()
     for name in ("SKILL.md", "references/hosts.md", "references/workflow.md", "references/accounting.md"):
