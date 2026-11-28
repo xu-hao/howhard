@@ -10,6 +10,14 @@
   they do; command syntax, flags and execution-attribution cases stay in the installed
   skills. A project that copied either earlier block can replace its copy with this one:
   each rule in the earlier blocks is in the new block or in the installed skills.
+- State in the skill what a baseline request describes (#165). Step 4 of
+  `skills/howhard/SKILL.md` now says that a non-null `baseline_request.context` is the
+  matched prototype's synthesized representative task and project context, so its text and
+  revision can differ from the submitted task, which is expected and not stale; that the
+  submitted task is in `request.context.task_text`; and that the baseline is evaluated as
+  given, never as a reason to report routing unavailable. The behavior is unchanged and
+  was already documented in the workflow reference, capability, semantic-memory and
+  reference pages.
 
 ## 6.0.0 — 2026-11-27
 
