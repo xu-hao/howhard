@@ -11,7 +11,7 @@ requires-python = ">=3.11"
 dependencies = ["numpy>=1.24", "fastembed==0.9.1", "usearch>=2.21,<3", "zstandard>=0.23"]
 
 [project.optional-dependencies]
-test = ["pytest>=8", "build", "pytest-probability==0.3.0"]
+test = ["pytest>=8", "build", "setuptools>=77", "pytest-probability==0.3.0"]
 docs = ["sphinx>=8", "myst-parser>=4", "furo"]
 bench = ["pytest-probability==0.3.0", "fastembed==0.9.1"]
 qwen = ["sentence-transformers>=5.4,<7"]

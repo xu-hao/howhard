@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Ship the project instructions for both skills as one short block in the root
+  `AGENTS.snippet.md` (#164). It replaces the two longer blocks in the
+  [installation guide](https://github.com/xu-hao/howhard/blob/main/docs/skills.md),
+  which now includes the file itself, and it ships in the source distribution. The block
+  states when `howhard` and `attribute-failure` apply and the rules that hold whenever
+  they do; command syntax, flags and execution-attribution cases stay in the installed
+  skills. A project that copied either earlier block can replace its copy with this one:
+  each rule in the earlier blocks is in the new block or in the installed skills.
+
 ## 6.0.0 — 2026-11-27
 
 A major release: the prepared request, the forecast contract and the decision receipt
